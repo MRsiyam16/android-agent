@@ -49,6 +49,7 @@
   function nodeHeaderLabel(hash) {
     const meta = nodeMeta.get(hash);
     if (!meta) return hash.slice(0, 8);
+    if (meta.screenName) return (meta.screenNumber ? `#${meta.screenNumber} ` : '') + meta.screenName;
     const base = meta.activity ? meta.activity.split('.').pop() : (meta.package || '').split('.').pop();
     return base || hash.slice(0, 8);
   }
@@ -611,6 +612,8 @@
       screenshot: record.screenshot_b64 || existingMeta.screenshot || '',
       action: record.executed_action || existingMeta.action || null,
       section: existingMeta.section,
+      screenName: record.screen_name || existingMeta.screenName || '',
+      screenNumber: record.screen_number || existingMeta.screenNumber || null,
     };
     nodeMeta.set(record.state_hash, meta);
 
@@ -956,7 +959,10 @@
     resetGraph();
     currentSessionId = project.sessionId || null;
     (project.nodes || []).forEach((n) => {
-      nodeMeta.set(n.hash, { package: n.package, activity: n.activity, elements: n.elements || [], screenshot: n.screenshot, action: n.action, section: n.section });
+      nodeMeta.set(n.hash, {
+        package: n.package, activity: n.activity, elements: n.elements || [], screenshot: n.screenshot,
+        action: n.action, section: n.section, screenName: n.screenName || '', screenNumber: n.screenNumber || null,
+      });
       nodesData.update({ id: n.hash, x: 0, y: 0, fixed: { x: true, y: true } });
     });
     (project.sections || []).forEach((s) => sections.set(s.name, s.list.slice()));
@@ -995,6 +1001,9 @@
     document.getElementById('modalImage').src = screenshotSrc(meta.screenshot) || PLACEHOLDER_IMG;
     document.getElementById('modalPackage').textContent = meta.package || 'Unknown package';
     document.getElementById('modalActivity').textContent = meta.activity || '';
+    document.getElementById('modalScreenName').textContent = meta.screenNumber
+      ? `#${meta.screenNumber} ${meta.screenName || ''}`
+      : (meta.screenName || '—');
     document.getElementById('modalHash').textContent = hash;
     document.getElementById('modalElementCount').textContent = (meta.elements || []).length;
     document.getElementById('modalAction').textContent = meta.action ? ('click: ' + meta.action.label) : 'Entry / start state';

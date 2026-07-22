@@ -12,12 +12,33 @@ _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 # Attribute values that look dynamic (clock, battery %, dates, live counters) and should
 # not influence the structural state hash — two otherwise-identical screens captured a
 # minute apart must hash the same.
+#
+# This list started out too narrow: "^\d+$" only caught bare integers, so a calculator's
+# result field (e.g. "3.14", "-42", "1,234.56") or a note's "Edited 2m ago" timestamp would
+# leak into the signature and fragment what is visually the same screen into dozens of
+# "new" states. The patterns below cover numeric/expression-style content generally and
+# common relative-time phrasing, rather than one-off exact formats.
 _DYNAMIC_PATTERNS = [
     re.compile(r"^\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?$"),   # clock e.g. "10:42"
-    re.compile(r"^\d{1,3}\s?%$"),                                # battery / progress "87%"
-    re.compile(r"^\d+$"),                                        # bare numeric counters
+    re.compile(r"^-?\d+(\.\d+)?\s?%$"),                          # battery / progress "87%", "12.5%"
+    re.compile(r"^-?\d{1,3}(,\d{3})*(\.\d+)?$"),                 # numeric counters/results incl.
+                                                                  # negatives, decimals, thousands
+                                                                  # separators: "42", "-42", "3.14",
+                                                                  # "1,234.56"
+    re.compile(r"^[\d\s+\-×÷x*/=.,()]+$"),                       # calculator-style expressions/
+                                                                  # results made only of digits and
+                                                                  # math operators, e.g. "12+34="
     re.compile(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s"),     # weekday-prefixed dates
     re.compile(r"^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}$"),          # date formats
+    re.compile(r"^(just now|today|yesterday)$", re.IGNORECASE), # relative-day words
+    re.compile(                                                   # relative durations: "2m ago",
+        r"^\d+\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|"  # "5 minutes", "2 hours ago"
+        r"h|hr|hrs|hour|hours|d|day|days|w|week|weeks|mo|month|months|"
+        r"y|yr|yrs|year|years)\s*(ago)?$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^(edited|modified|last edited|updated|saved)\s+.+$", re.IGNORECASE),  # "Edited 2m ago"
+    re.compile(r"^\d+\s+[a-zA-Z]+$"),                            # count labels: "120 words", "5 items"
 ]
 
 
