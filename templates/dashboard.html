@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android Agent — Live Telemetry</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        Android Agent
+      </div>
+      <div class="divider"></div>
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-tab="graph">Flow Graph</button>
+        <button class="tab" data-tab="remote">Remote Control</button>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="stat-pill" id="statSession">Session — none</div>
+      <div class="stat-pill" id="statNodes">0 states</div>
+      <div class="stat-pill" id="statEdges">0 transitions</div>
+      <div class="conn-indicator" id="connIndicator" title="WebSocket status">
+        <span class="conn-dot"></span>
+        <span id="connLabel">Connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- STATUS BANNER (preflight checks / progress) -->
+  <div class="status-banner" id="statusBanner">
+    <span class="status-dot"></span>
+    <span id="statusMessage"></span>
+  </div>
+
+  <!-- GRAPH VIEW -->
+  <section class="view active" id="view-graph">
+    <div class="graph-body">
+      <div class="graph-wrap" id="graphWrap">
+        <div id="network"></div>
+
+        <svg class="connector-svg" id="connectorSvg">
+          <defs>
+            <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#0099ff"></path>
+            </marker>
+          </defs>
+          <g id="connectorPaths"></g>
+        </svg>
+
+        <div class="connector-layer" id="sectionHeadings"></div>
+        <div class="connector-layer" id="nodeCards"></div>
+        <div class="connector-layer" id="nodeHeaders"></div>
+        <div class="connector-layer" id="connectorLabels"></div>
+        <div class="connector-layer" id="connectorMarkers"></div>
+        <div class="connector-layer" id="commentsLayer"></div>
+        <div class="connector-layer" id="textNotesLayer"></div>
+        <div class="selection-box" id="selectionBox"></div>
+        <div class="tool-overlay" id="toolOverlay"></div>
+
+        <div class="empty-state" id="emptyState">
+          <div class="empty-title">Waiting for telemetry…</div>
+          <div class="empty-sub">Run <code>python run_agent.py --package &lt;pkg&gt;</code> to start exploring an app.</div>
+        </div>
+      </div>
+
+      <!-- RIGHT PILL TOOLBAR -->
+      <div class="dock" id="dock">
+        <div class="dock-btn active" id="toolPan" data-tool="pan" title="Pan / click to open (V)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"></path><path d="M14 10V4a2 2 0 0 0-4 0v6"></path><path d="M10 10.5V6a2 2 0 0 0-4 0v8"></path><path d="M6 14v-2a2 2 0 0 0-4 0v3a8 8 0 0 0 8 8h2a8 8 0 0 0 8-8v-4a2 2 0 0 0-4 0v2"></path></svg>
+        </div>
+        <div class="dock-btn" id="toolSelect" data-tool="select" title="Select — drag to box-select, drag a screen to move the group (S)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"></path></svg>
+        </div>
+        <div class="dock-btn" id="toolText" data-tool="text" title="Add a note (T)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="12" y1="4" x2="12" y2="20"></line><line x1="8" y1="20" x2="16" y2="20"></line></svg>
+        </div>
+        <div class="dock-btn" id="toolComment" data-tool="comment" title="Comment on a spot in a screen (C)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn" id="zoomOutBtn" title="Zoom out">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </div>
+        <div class="dock-zoom" id="zoomPct">100%</div>
+        <div class="dock-btn" id="zoomInBtn" title="Zoom in">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </div>
+        <div class="dock-btn" id="fitBtn" title="Fit to screen">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn" id="observeBtn" title="Observe flow — hide labels">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+        </div>
+        <div class="dock-btn" id="fullscreenBtn" title="Toggle fullscreen">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>
+        </div>
+        <div class="dock-btn" id="livePreviewBtn" title="Live device preview">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"></rect><line x1="11" y1="18" x2="13" y2="18"></line></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn" id="saveBtn" title="Save project to file">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        </div>
+        <div class="dock-btn" id="importBtn" title="Import saved project">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+        </div>
+        <input type="file" id="importFile" accept="application/json" hidden>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn danger" id="clearBtn" title="Clear dashboard">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn" id="settingsBtn" title="Display settings">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </div>
+
+        <!-- Settings popover -->
+        <div class="dock-popover" id="settingsPopover">
+          <div class="popover-section-title">Layout</div>
+          <div class="popover-row">
+            <label>Label length</label>
+            <input type="range" id="labelLengthSlider" min="4" max="60" value="22">
+            <span id="labelLengthValue">22</span>
+          </div>
+          <div class="popover-row">
+            <label>Connector length</label>
+            <input type="range" id="connectorLengthSlider" min="60" max="100" value="100">
+            <span id="connectorLengthValue">100%</span>
+          </div>
+          <button class="popover-action" id="resetLayoutBtn">Reset layout to grid</button>
+
+          <div class="popover-section-title">Display</div>
+          <label class="popover-toggle"><input type="checkbox" id="toggleTapMarkers" checked> Tap markers</label>
+          <label class="popover-toggle"><input type="checkbox" id="toggleHeadings" checked> Section headings</label>
+          <label class="popover-toggle"><input type="checkbox" id="toggleGridBg" checked> Background grid</label>
+          <label class="popover-toggle"><input type="checkbox" id="toggleAutoFit"> Auto-fit on new state</label>
+        </div>
+      </div>
+
+      <!-- LIVE PREVIEW SIDEBAR -->
+      <div class="live-sidebar" id="liveSidebar">
+        <div class="live-resize-handle" id="liveResizeHandle"></div>
+        <div class="live-sidebar-head">
+          <span>Live device preview</span>
+          <button class="icon-x" id="liveSidebarClose">✕</button>
+        </div>
+        <div class="phone-frame">
+          <div class="phone-screen-wrap" id="liveScreenWrap">
+            <img id="liveScreen" alt="Live device screen" draggable="false">
+            <div class="overlay-layer" id="liveOverlayLayer"></div>
+            <div class="phone-placeholder" id="livePlaceholder">Waiting for a frame…</div>
+          </div>
+        </div>
+        <label class="chip-toggle" style="margin-top:12px;">
+          <input type="checkbox" id="liveOverlayToggle" checked>
+          Show element bounds
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <!-- REMOTE CONTROL VIEW -->
+  <section class="view" id="view-remote">
+    <div class="remote-layout">
+      <div class="remote-phone-col">
+        <div class="phone-frame">
+          <div class="phone-screen-wrap" id="phoneScreenWrap">
+            <img id="phoneScreen" alt="Live device screen" draggable="false">
+            <div class="overlay-layer" id="overlayLayer"></div>
+            <div class="phone-placeholder" id="phonePlaceholder">No live frame yet — send a command to fetch one.</div>
+          </div>
+        </div>
+        <div class="phone-actions">
+          <button class="chip-btn" data-cmd="back">← Back</button>
+          <button class="chip-btn" data-cmd="home">● Home</button>
+          <button class="chip-btn" id="refreshFrameBtn">⟳ Refresh</button>
+          <label class="chip-toggle">
+            <input type="checkbox" id="overlayToggle" checked>
+            Show element bounds
+          </label>
+        </div>
+      </div>
+
+      <div class="remote-chat-col">
+        <div class="chat-log" id="chatLog"></div>
+        <form class="chat-input-row" id="chatForm">
+          <input type="text" id="chatInput" placeholder='e.g. click Sign in · tap 400 800 · type hello · launch com.example.app' autocomplete="off">
+          <button type="submit">Send</button>
+        </form>
+        <div class="chat-hint">Commands: <code>click [text]</code>, <code>tap [x] [y]</code>, <code>type [text]</code>, <code>back</code>, <code>home</code>, <code>launch [package]</code></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- NODE DETAIL MODAL -->
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal">
+    <button class="modal-close" id="modalClose">✕</button>
+    <div class="modal-body">
+      <div class="modal-image-col">
+        <img id="modalImage" alt="Screen detail">
+      </div>
+      <div class="modal-meta-col">
+        <div class="modal-title" id="modalPackage">—</div>
+        <div class="modal-sub" id="modalActivity">—</div>
+        <div class="modal-row"><span>State hash</span><code id="modalHash">—</code></div>
+        <div class="modal-row"><span>Elements found</span><span id="modalElementCount">0</span></div>
+        <div class="modal-row"><span>Reached via</span><span id="modalAction">—</span></div>
+        <div class="modal-elements" id="modalElements"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>
