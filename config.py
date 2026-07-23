@@ -84,3 +84,19 @@ EXCLUDE_BOTTOM_PCT: float = 0.08
 # --- Screenshot capture ---------------------------------------------------------
 SCREENSHOT_FORMAT: str = "jpeg"
 SCREENSHOT_QUALITY: int = 90
+
+# --- LLM-assisted exploration (optional) ---------------------------------------------------------
+# Off by default — enable with --llm-explore or USE_LLM_EXPLORATION=true. Requires the `anthropic`
+# package and an ANTHROPIC_API_KEY (or `ant auth login` profile); any API failure falls back to the
+# existing heuristic exploration, it never blocks a run.
+USE_LLM_EXPLORATION: bool = os.environ.get("USE_LLM_EXPLORATION", "false").lower() in ("1", "true", "yes")
+LLM_FAST_MODEL: str = os.environ.get("LLM_FAST_MODEL", "claude-haiku-4-5")
+LLM_SMART_MODEL: str = os.environ.get("LLM_SMART_MODEL", "claude-opus-4-8")
+LLM_SMART_ANALYSIS_INTERVAL: int = int(os.environ.get("LLM_SMART_ANALYSIS_INTERVAL", 5))
+LLM_MAX_ACTIONS_TO_MODEL: int = int(os.environ.get("LLM_MAX_ACTIONS_TO_MODEL", 40))
+
+# --- Persistent per-app memory (optional) ---------------------------------------------------------
+# Off by default — enable with --memory or USE_MEMORY=true. Purely local (memory/<package>.json);
+# lets a run resume where a previous one left off and avoids re-flagging/re-reviewing screens
+# already seen in an earlier run. Independent of USE_LLM_EXPLORATION.
+USE_MEMORY: bool = os.environ.get("USE_MEMORY", "false").lower() in ("1", "true", "yes")

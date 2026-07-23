@@ -11,6 +11,8 @@ import time
 import uuid
 
 import config
+import llm_explorer
+import memory
 from adb_device import AdbDevice, DeviceError, list_serials
 from extractor import compute_state_hash, extract_actions
 from graph import ExplorationGraph
@@ -26,6 +28,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=config.MAX_STEPS, help="Max exploration steps")
     parser.add_argument("--serial", default=None, help="ADB device serial (auto-detected if omitted)")
     parser.add_argument("--server", default=config.SERVER_URL, help="Telemetry server base URL")
+    parser.add_argument(
+        "--llm-explore",
+        action="store_true",
+        help="Use Claude (fast model for taps, smart model for bug review) during exploration",
+    )
+    parser.add_argument(
+        "--memory",
+        action="store_true",
+        help="Persist per-app exploration memory (memory/<package>.json) to resume across runs "
+             "and avoid re-flagging bugs already found",
+    )
     return parser.parse_args()
 
 
@@ -95,9 +108,28 @@ def ensure_device_ready(device: AdbDevice, telemetry: TelemetryClient, timeout: 
         time.sleep(2.0)
 
 
-def run(package: str, max_steps: int, serial: str | None, server_url: str) -> None:
+def run(
+    package: str,
+    max_steps: int,
+    serial: str | None,
+    server_url: str,
+    llm_explore: bool = False,
+    memory_flag: bool = False,
+) -> None:
     if not package:
         raise SystemExit("--package is required (or set TARGET_PACKAGE in config.py)")
+
+    use_llm = llm_explore or config.USE_LLM_EXPLORATION
+    if use_llm:
+        logger.info(
+            "LLM-assisted exploration enabled (fast=%s, smart=%s, every %d new states)",
+            config.LLM_FAST_MODEL, config.LLM_SMART_MODEL, config.LLM_SMART_ANALYSIS_INTERVAL,
+        )
+
+    use_memory = memory_flag or config.USE_MEMORY
+    app_memory = memory.load(package) if use_memory else None
+    if use_memory:
+        logger.info("Persistent memory enabled for %s", package)
 
     resolved_serial = resolve_serial(serial)
     logger.info("Connecting to device%s...", f" ({resolved_serial})" if resolved_serial else "")
@@ -118,6 +150,7 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
 
     prev_state_hash: str | None = None
     step = 0
+    new_states_since_analysis = 0
 
     while step < max_steps:
         step += 1
@@ -151,7 +184,18 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
 
         state_hash = compute_state_hash(current_package, current_activity, xml)
         actions = extract_actions(xml, width, height)
+        is_new_state = state_hash not in graph.nodes
+        is_new_ever = is_new_state and not (use_memory and app_memory.is_known(state_hash))
         graph.upsert_node(state_hash, current_package, current_activity, actions)
+
+        if use_memory and is_new_state:
+            # First time this state is upserted into *this run's* graph — replay any
+            # actions a previous run already tried here so they aren't re-tapped, and
+            # record the state as known (idempotent if it already was).
+            for prev_action_id in app_memory.previously_tried(state_hash):
+                graph.mark_tried(state_hash, prev_action_id)
+            app_memory.record_new_state(state_hash)
+            memory.save(app_memory)
 
         try:
             screenshot_b64 = device.screenshot_b64()
@@ -169,7 +213,28 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
             parent_state_hash=prev_state_hash,
         )
 
-        action = graph.pick_next_action(state_hash)
+        if use_llm and is_new_ever:
+            # is_new_ever (not just is_new_state) so a screen already reviewed in a
+            # previous run doesn't get re-analyzed/re-flagged every time we revisit it.
+            new_states_since_analysis += 1
+            if new_states_since_analysis >= config.LLM_SMART_ANALYSIS_INTERVAL:
+                new_states_since_analysis = 0
+                analysis = llm_explorer.analyze_screen(screenshot_b64, current_package, current_activity)
+                if analysis:
+                    level = "warning" if analysis["bug_suspected"] else "info"
+                    telemetry.post_status(f"[AI review] {current_activity}: {analysis['summary']}", level=level)
+                    if use_memory:
+                        app_memory.record_analysis(state_hash, current_activity, analysis)
+                        memory.save(app_memory)
+
+        memory_hints = app_memory.outcome_hints(state_hash) if use_memory else None
+        chooser = (
+            (lambda cands: llm_explorer.pick_action(
+                cands, screenshot_b64, current_package, current_activity, memory_hints=memory_hints,
+            ))
+            if use_llm else None
+        )
+        action = graph.pick_next_action(state_hash, chooser=chooser)
 
         if action is None:
             logger.info("[step %d] state %s exhausted (%d actions tried) — BACK", step, state_hash[:8], len(actions))
@@ -217,6 +282,11 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
 
         graph.record_edge(state_hash, next_hash, action["id"], f"click: {action['label']}")
 
+        if use_memory:
+            next_is_new_ever = next_hash not in graph.nodes and not app_memory.is_known(next_hash)
+            app_memory.record_tried(state_hash, action["id"], led_to_new_state=next_is_new_ever)
+            memory.save(app_memory)
+
         # Only report the resulting screen to the dashboard/map if it's still in scope —
         # otherwise an action that briefly hands off to another app (a permission dialog,
         # a stray intent) leaks that other app's screen into the graph, even though the
@@ -254,7 +324,10 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
 
 def main() -> None:
     args = parse_args()
-    run(args.package, args.steps, args.serial, args.server)
+    run(
+        args.package, args.steps, args.serial, args.server,
+        llm_explore=args.llm_explore, memory_flag=args.memory,
+    )
 
 
 if __name__ == "__main__":

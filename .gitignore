@@ -53,6 +53,7 @@ flow-graph*.json
 server.log
 notes_test.log
 run-*.log
+memory/*.json
 
 # Environment
 .env

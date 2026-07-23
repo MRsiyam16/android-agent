@@ -1,6 +1,7 @@
 """In-memory exploration graph: screen-state nodes, action edges, and next-step selection."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import config
@@ -69,9 +70,17 @@ class ExplorationGraph:
         node = self.nodes.get(state_hash)
         return node is None or not node.untried_actions()
 
-    def pick_next_action(self, state_hash: str) -> dict | None:
+    def pick_next_action(
+        self, state_hash: str, chooser: Callable[[list[dict]], str | None] | None = None
+    ) -> dict | None:
         """Return an untried action for this state, or None if it's fully explored
-        (caller should backtrack with BACK)."""
+        (caller should backtrack with BACK).
+
+        If `chooser` is given and there's more than one untried action, it's offered
+        the candidate list and may return the id of the one to try next (e.g. an
+        LLM-backed pick). Any exception, or a returned id that doesn't match a
+        candidate, falls back to the default first-untried heuristic.
+        """
         node = self.nodes.get(state_hash)
         if node is None:
             return None
@@ -79,6 +88,14 @@ class ExplorationGraph:
         if not untried:
             return None
         self._consecutive_backtracks = 0
+        if chooser is not None and len(untried) > 1:
+            try:
+                chosen_id = chooser(untried)
+            except Exception:
+                chosen_id = None
+            match = next((a for a in untried if a["id"] == chosen_id), None) if chosen_id else None
+            if match is not None:
+                return match
         return untried[0]
 
     def should_force_stop(self) -> bool:
