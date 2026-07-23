@@ -134,6 +134,11 @@ def extract_actions(xml: str, width: int, height: int) -> list[dict]:
         if pkg and pkg in config.BLOCKED_PACKAGES:
             continue
 
+        label_for_filter = _label_for(attrib).lower()
+        resource_id_for_filter = attrib.get("resource-id", "").lower()
+        if any(kw in label_for_filter or kw in resource_id_for_filter for kw in config.BLOCKED_ACTION_KEYWORDS):
+            continue
+
         bounds = _parse_bounds(attrib.get("bounds", ""))
         if not bounds:
             continue

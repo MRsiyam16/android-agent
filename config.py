@@ -48,6 +48,15 @@ TARGET_PACKAGE: str = os.environ.get("TARGET_PACKAGE", "")
 # the agent backtracks (BACK) whenever it lands outside this whitelist.
 ALLOWED_PACKAGES: set[str] = set(filter(None, os.environ.get("ALLOWED_PACKAGES", "").split(",")))
 
+# Actions whose label or resource-id suggests they hand off to another app entirely
+# (camera, gallery picker, voice recorder, share sheet, file export/print) — these almost
+# always leave the target app's scope, so the agent skips clicking them rather than
+# discover that the hard way via an out-of-scope backtrack loop.
+BLOCKED_ACTION_KEYWORDS: set[str] = set(filter(None, os.environ.get(
+    "BLOCKED_ACTION_KEYWORDS",
+    "camera,photo,gallery,voice,audio,record,share,export,print",
+).lower().split(",")))
+
 # Packages the agent will never treat as explorable app state (system chrome, launchers,
 # soft keyboards) — landing on one of these always triggers an immediate BACK.
 BLOCKED_PACKAGES: set[str] = {

@@ -141,8 +141,12 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
             graph.note_backtrack()
             time.sleep(config.ACTION_SETTLE_SECONDS)
             if graph.should_force_stop():
-                logger.warning("Too many consecutive backtracks — stopping exploration.")
-                break
+                logger.warning("Max backtracks reached out-of-scope — restarting target app '%s'", package)
+                try:
+                    device.start_app(package)
+                    graph.note_progress()
+                except DeviceError:
+                    break
             continue
 
         state_hash = compute_state_hash(current_package, current_activity, xml)
@@ -175,8 +179,12 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
                 logger.warning("[step %d] BACK failed: %s", step, exc)
             graph.note_backtrack()
             if graph.should_force_stop():
-                logger.warning("Too many consecutive backtracks — stopping exploration.")
-                break
+                logger.warning("Max backtracks reached — restarting target app '%s'", package)
+                try:
+                    device.start_app(package)
+                    graph.note_progress()
+                except DeviceError:
+                    break
             prev_state_hash = state_hash
             time.sleep(config.ACTION_SETTLE_SECONDS)
             continue
@@ -209,20 +217,28 @@ def run(package: str, max_steps: int, serial: str | None, server_url: str) -> No
 
         graph.record_edge(state_hash, next_hash, action["id"], f"click: {action['label']}")
 
-        try:
-            screenshot_after_b64 = device.screenshot_b64()
-        except DeviceError:
-            screenshot_after_b64 = ""
+        # Only report the resulting screen to the dashboard/map if it's still in scope —
+        # otherwise an action that briefly hands off to another app (a permission dialog,
+        # a stray intent) leaks that other app's screen into the graph, even though the
+        # loop's own in-scope check (top of the next iteration) will correctly BACK out of
+        # it without exploring further.
+        if in_scope(next_package):
+            try:
+                screenshot_after_b64 = device.screenshot_b64()
+            except DeviceError:
+                screenshot_after_b64 = ""
 
-        telemetry.post_state(
-            package_name=next_package,
-            activity_name=next_activity,
-            state_hash=next_hash,
-            screenshot_b64=screenshot_after_b64,
-            available_elements=[],
-            executed_action={"label": action["label"], "x": action["x"], "y": action["y"], "from_state": state_hash},
-            parent_state_hash=state_hash,
-        )
+            telemetry.post_state(
+                package_name=next_package,
+                activity_name=next_activity,
+                state_hash=next_hash,
+                screenshot_b64=screenshot_after_b64,
+                available_elements=[],
+                executed_action={"label": action["label"], "x": action["x"], "y": action["y"], "from_state": state_hash},
+                parent_state_hash=state_hash,
+            )
+        else:
+            logger.info("[step %d] resulting state is out-of-scope (%s) — not reporting to dashboard", step, next_package)
 
         prev_state_hash = next_hash
 
