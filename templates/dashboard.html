@@ -23,6 +23,7 @@
       <div class="tabs" id="tabs">
         <button class="tab active" data-tab="graph">Flow Graph</button>
         <button class="tab" data-tab="remote">Remote Control</button>
+        <button class="tab" data-tab="projects">Projects</button>
       </div>
     </div>
 
@@ -210,6 +211,19 @@
           <button type="submit">Send</button>
         </form>
         <div class="chat-hint">Commands: <code>click [text]</code>, <code>tap [x] [y]</code>, <code>type [text]</code>, <code>back</code>, <code>home</code>, <code>launch [package]</code></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROJECTS VIEW -->
+  <section class="view" id="view-projects">
+    <div class="projects-layout">
+      <div class="projects-header">
+        <input type="text" id="newProjectPackage" placeholder="Package name, e.g. com.example.app" autocomplete="off">
+        <button class="chip-btn" id="newProjectBtn">+ New Project</button>
+      </div>
+      <div class="projects-list" id="projectsList">
+        <div class="projects-empty" id="projectsEmpty">No projects yet — create one above, or one will appear automatically the first time you run <code>run_agent.py --package &lt;pkg&gt;</code>.</div>
       </div>
     </div>
   </section>

@@ -422,6 +422,29 @@ div.vis-tooltip {
 .chat-hint { padding: 0 18px 14px; font-size: 11px; color: var(--ink-faint); }
 .chat-hint code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 
+/* ---------------- PROJECTS ---------------- */
+.projects-layout { max-width: 760px; margin: 0 auto; padding: 32px 24px; }
+.projects-header { display: flex; gap: 10px; margin-bottom: 22px; }
+.projects-header input {
+  flex: 1; background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
+  font-size: 13px; padding: 11px 14px; border-radius: var(--radius-md); outline: none;
+}
+.projects-header input:focus { border-color: var(--accent-blue); }
+.projects-list { display: flex; flex-direction: column; gap: 10px; }
+.projects-empty { color: var(--ink-faint); font-size: 13px; padding: 24px; text-align: center; }
+.projects-empty.hidden { display: none; }
+.projects-empty code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.project-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  background: var(--surface-1); border: 1px solid var(--hairline); border-radius: var(--radius-md);
+  padding: 14px 16px; cursor: pointer;
+}
+.project-row:hover { background: var(--surface-2); border-color: var(--accent-blue); }
+.project-row-main { min-width: 0; }
+.project-row-package { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
+.project-row-meta { font-size: 11.5px; color: var(--ink-faint); margin-top: 3px; }
+.project-row-stats { display: flex; gap: 8px; flex-shrink: 0; }
+
 /* ---------------- MODAL ---------------- */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(4px);

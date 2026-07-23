@@ -1,8 +1,12 @@
 """FastAPI telemetry + remote-control server for the Android App Testing Agent dashboard."""
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,6 +25,7 @@ logger = logging.getLogger("server")
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+PROJECTS_DIR = BASE_DIR / "projects"
 
 app = FastAPI(title="Android App Testing Agent — Telemetry Server")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -39,6 +44,87 @@ state_store: dict[str, dict[str, Any]] = {}
 telemetry_history: list[dict[str, Any]] = []
 latest_state: dict[str, Any] | None = None
 _device_cache: dict[str, Any] = {}
+
+# --------------------------------------------------------------------------------------
+# Projects: one local folder per app package (projects/<package>/), auto-populated as
+# telemetry arrives — meta.json (bookkeeping), screenshots/<state_hash>.jpg (one file per
+# newly-discovered state), memory.json (written by memory.py, not this module), and
+# flow-graph.json (the same "project blob" shape the dashboard already builds for its
+# manual Save/Import feature — see static/dashboard.js's saveBtn handler and loadProject()).
+# --------------------------------------------------------------------------------------
+def _safe_package_name(package: str) -> str:
+    return "".join(c if (c.isalnum() or c in ".-_") else "_" for c in package) or "unknown"
+
+
+def _project_dir(package: str) -> Path:
+    return PROJECTS_DIR / _safe_package_name(package)
+
+
+def _screenshots_dir(package: str) -> Path:
+    return _project_dir(package) / "screenshots"
+
+
+def _meta_path(package: str) -> Path:
+    return _project_dir(package) / "meta.json"
+
+
+def _flow_graph_path(package: str) -> Path:
+    return _project_dir(package) / "flow-graph.json"
+
+
+def _read_meta(package: str) -> dict[str, Any] | None:
+    path = _meta_path(package)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not read project meta for %s: %s", package, exc)
+        return None
+
+
+def _write_meta(package: str, **updates: Any) -> dict[str, Any]:
+    """Merge-update meta.json for a project, creating it (and the project dir) if needed."""
+    meta = _read_meta(package) or {
+        "package": package,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "last_run_at": None,
+        "last_saved_at": None,
+        "state_count": 0,
+        "edge_count": 0,
+    }
+    meta.update(updates)
+    try:
+        _project_dir(package).mkdir(parents=True, exist_ok=True)
+        _meta_path(package).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write project meta for %s: %s", package, exc)
+    return meta
+
+
+def _ensure_project(package: str) -> None:
+    """Auto-create a project the first time telemetry arrives for a package."""
+    if _meta_path(package).is_file():
+        return
+    _write_meta(package)
+
+
+def _save_screenshot_if_new(package: str, state_hash: str, screenshot_b64: str) -> None:
+    if not screenshot_b64:
+        return
+    dest = _screenshots_dir(package) / f"{state_hash}.jpg"
+    if dest.exists():
+        return
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(base64.b64decode(screenshot_b64))
+    except (OSError, binascii.Error) as exc:
+        logger.warning("Could not save screenshot for %s/%s: %s", package, state_hash[:8], exc)
+
+
+class ProjectCreatePayload(BaseModel):
+    package: str
+
 
 # --------------------------------------------------------------------------------------
 # Screen naming (breadcrumb paths) + graph-for-agents bookkeeping.
@@ -205,6 +291,11 @@ async def post_telemetry(payload: TelemetryPayload):
             "label": action_label or "?",
         })
 
+    if payload.package_name:
+        _ensure_project(payload.package_name)
+        _write_meta(payload.package_name, last_run_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        _save_screenshot_if_new(payload.package_name, payload.state_hash, payload.screenshot_b64)
+
     logger.info(
         "telemetry: pkg=%s state=%s..%s (#%d %s) elements=%d action=%s",
         payload.package_name, payload.state_hash[:8], payload.state_hash[-4:],
@@ -231,6 +322,59 @@ async def clear_state():
     latest_state = None
     _reset_screen_naming()
     await manager.broadcast({"type": "clear"})
+    return {"ok": True}
+
+
+@app.get("/projects")
+async def list_projects():
+    """All known projects (one per app package tested), newest-run-first."""
+    if not PROJECTS_DIR.is_dir():
+        return []
+    projects = []
+    for entry in PROJECTS_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        meta = _read_meta(entry.name)
+        if meta is not None:
+            projects.append(meta)
+    projects.sort(key=lambda m: m.get("last_run_at") or "", reverse=True)
+    return projects
+
+
+@app.post("/projects")
+async def create_project(payload: ProjectCreatePayload):
+    """Idempotent: returns the existing project's meta if it's already there."""
+    if not payload.package.strip():
+        raise HTTPException(status_code=400, detail="package is required")
+    meta = _write_meta(payload.package)
+    return meta
+
+
+@app.get("/projects/{package}/flow-graph")
+async def get_project_flow_graph(package: str):
+    path = _flow_graph_path(package)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No saved flow graph for this project yet")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read flow graph: {exc}") from exc
+
+
+@app.post("/projects/{package}/flow-graph")
+async def save_project_flow_graph(package: str, payload: dict):
+    try:
+        _project_dir(package).mkdir(parents=True, exist_ok=True)
+        _flow_graph_path(package).write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not save flow graph: {exc}") from exc
+
+    _write_meta(
+        package,
+        last_saved_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        state_count=len(payload.get("nodes") or []),
+        edge_count=len(payload.get("edges") or []),
+    )
     return {"ok": True}
 
 

@@ -1,7 +1,8 @@
 """Optional per-app persistent memory for the exploration agent.
 
-Stored as one local JSON file per app under android-agent/memory/<package>.json —
-purely local disk state, no network calls of its own. This lets a run:
+Stored as memory.json inside that app's project folder
+(android-agent/projects/<package>/memory.json) — purely local disk state, no
+network calls of its own. This lets a run:
 
 - resume where a previous run left off (previously-tried actions are replayed into
   the fresh in-memory graph so they aren't re-tapped),
@@ -23,12 +24,16 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger("memory")
 
-MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory")
+PROJECTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
+
+
+def _project_dir(package: str) -> str:
+    safe_name = "".join(c if (c.isalnum() or c in ".-_") else "_" for c in package) or "unknown"
+    return os.path.join(PROJECTS_DIR, safe_name)
 
 
 def _memory_path(package: str) -> str:
-    safe_name = "".join(c if (c.isalnum() or c in ".-_") else "_" for c in package) or "unknown"
-    return os.path.join(MEMORY_DIR, f"{safe_name}.json")
+    return os.path.join(_project_dir(package), "memory.json")
 
 
 @dataclass
@@ -88,7 +93,7 @@ def load(package: str) -> AppMemory:
 
 def save(mem: AppMemory) -> None:
     try:
-        os.makedirs(MEMORY_DIR, exist_ok=True)
+        os.makedirs(_project_dir(mem.package), exist_ok=True)
         path = _memory_path(mem.package)
         data = {
             "package": mem.package,

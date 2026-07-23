@@ -21,6 +21,8 @@
   let lastElements = [];
   let lastDims = { w: 1080, h: 1920 };
   let currentSessionId = null;
+  let currentPackage = null;
+  let autoSaveTimer = null;
   let showTapMarkers = true;
   let showHeadings = true;
   let autoFitOnNewState = false;
@@ -593,6 +595,7 @@
   function ingest(record) {
     if (!record || !record.state_hash) return;
     if (record.session_id) currentSessionId = record.session_id;
+    if (record.package_name) currentPackage = record.package_name;
 
     if (Array.isArray(record.available_elements) && record.available_elements.length) {
       lastElements = record.available_elements;
@@ -629,6 +632,7 @@
       nodesData.update({ id: record.state_hash, x: 0, y: 0, fixed: { x: true, y: true } });
       relayoutAll();
       if (autoFitOnNewState) network.fit({ animation: true });
+      scheduleAutoSave();
     }
 
     if (record.executed_action && record.parent_state_hash) {
@@ -917,8 +921,8 @@
   document.getElementById('liveOverlayToggle').addEventListener('change', drawLiveOverlay);
 
   // -- Save / Import --
-  document.getElementById('saveBtn').addEventListener('click', () => {
-    const project = {
+  function buildProjectBlob() {
+    return {
       version: 1,
       savedAt: new Date().toISOString(),
       sessionId: currentSessionId,
@@ -929,12 +933,103 @@
       notes: Array.from(textNotes.values()),
       comments: Array.from(comments.values()),
     };
+  }
+
+  document.getElementById('saveBtn').addEventListener('click', () => {
+    const project = buildProjectBlob();
     const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `android-agent-flow-${(currentSessionId || 'session')}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
+    if (currentPackage) persistProjectToServer();
+  });
+
+  // -- Projects (server-persisted, one per app package) --
+  function scheduleAutoSave() {
+    if (!currentPackage) return;
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(persistProjectToServer, 2000);
+  }
+
+  async function persistProjectToServer() {
+    if (!currentPackage) return;
+    try {
+      await fetch(`/projects/${encodeURIComponent(currentPackage)}/flow-graph`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildProjectBlob()),
+      });
+    } catch (err) {
+      // Best-effort — the live dashboard/telemetry keeps working even if this fails.
+      console.warn('Could not auto-save project:', err);
+    }
+  }
+
+  async function fetchProjects() {
+    const list = document.getElementById('projectsList');
+    const empty = document.getElementById('projectsEmpty');
+    let projects = [];
+    try {
+      const resp = await fetch('/projects');
+      projects = await resp.json();
+    } catch (err) {
+      showStatus('Could not load projects: ' + err.message, 'error');
+      return;
+    }
+    list.querySelectorAll('.project-row').forEach((el) => el.remove());
+    empty.classList.toggle('hidden', projects.length > 0);
+    projects.forEach((p) => {
+      const row = document.createElement('div');
+      row.className = 'project-row';
+      const lastRun = p.last_run_at ? new Date(p.last_run_at).toLocaleString() : 'never';
+      row.innerHTML = `
+        <div class="project-row-main">
+          <div class="project-row-package">${escapeHtml(p.package)}</div>
+          <div class="project-row-meta">last tested: ${escapeHtml(lastRun)}</div>
+        </div>
+        <div class="project-row-stats">
+          <div class="stat-pill">${p.state_count || 0} states</div>
+          <div class="stat-pill">${p.edge_count || 0} transitions</div>
+        </div>`;
+      row.addEventListener('click', () => openProject(p.package));
+      list.appendChild(row);
+    });
+  }
+
+  async function openProject(pkg) {
+    currentPackage = pkg;
+    try {
+      const resp = await fetch(`/projects/${encodeURIComponent(pkg)}/flow-graph`);
+      if (resp.status === 404) {
+        resetGraph();
+        showStatus(`Project "${pkg}" has no saved runs yet — start exploring to populate it.`, 'info');
+        return;
+      }
+      const project = await resp.json();
+      loadProject(project);
+      document.querySelector('.tab[data-tab="graph"]').click();
+    } catch (err) {
+      showStatus('Could not open project: ' + err.message, 'error');
+    }
+  }
+
+  document.getElementById('newProjectBtn').addEventListener('click', async () => {
+    const input = document.getElementById('newProjectPackage');
+    const pkg = input.value.trim();
+    if (!pkg) return;
+    try {
+      await fetch('/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ package: pkg }),
+      });
+      input.value = '';
+      fetchProjects();
+    } catch (err) {
+      showStatus('Could not create project: ' + err.message, 'error');
+    }
   });
 
   const importFile = document.getElementById('importFile');
@@ -987,6 +1082,7 @@
       tab.classList.add('active');
       document.getElementById('view-' + tab.dataset.tab).classList.add('active');
       if (tab.dataset.tab === 'graph') { network.redraw(); scheduleRenderOverlay(); }
+      if (tab.dataset.tab === 'projects') fetchProjects();
     });
   });
 
