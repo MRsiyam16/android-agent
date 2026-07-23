@@ -45,13 +45,19 @@ memory.save(m)
 Only call this for goal-directed hand runs that didn't already go through
 `run_agent.py --memory` (which updates memory itself).
 
-## Flow summary
+## Flow summary / test report
 
-Write a short markdown summary of what was covered — screens in order, the action
-that led between them, and anything flagged as broken — to a file the manager
-tells you to use (default: alongside the hand's screenshots in the session
-scratchpad, unless told to write it into the repo). Keep it scannable: a short
-paragraph plus a bullet list of screen → action → screen, not a full transcript.
+Use `report.py`'s `append_manual_note(package, note)` (run via a short `python -c`
+snippet from `android-agent/`) to record what the hand agent covered — screens
+visited, flows verified, anything broken or still unverified — into
+`projects/<package>/REPORT.md`'s preserved MANUAL section. This is the durable,
+cross-session handoff doc: a future agent picking up this app reads this file
+first to see what's already covered and avoid re-running it. Keep each note
+scannable (a short paragraph, not a full transcript) and be explicit about what's
+verified-working vs. still-unconfirmed. If the report doesn't exist yet for this
+package, `append_manual_note()` creates it automatically via `write_report()`
+(which also regenerates the AUTO section — states/bugs summary — from memory.py,
+so you don't need to touch that part yourself).
 
 ## What to report back to the manager
 

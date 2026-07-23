@@ -160,3 +160,38 @@ class AdbDevice:
             self.d.app_stop(package)
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(f"app_stop({package!r}) failed: {exc}") from exc
+
+    # -- crash / ANR detection -----------------------------------------------------------
+    def clear_logs(self) -> None:
+        """Clear the device's log buffers so a later read_new_crashes() call only sees
+        what happens from this point forward, not stale crashes from before the run."""
+        try:
+            self.d.shell(["logcat", "-c"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("clear_logs() failed: %s", exc)
+
+    def read_new_crashes(self, package: str) -> str | None:
+        """Check the main/system/crash log buffers for a crash or ANR involving `package`
+        since the last call — buffers are cleared after every read, so each call only
+        covers what happened since the previous one (call once per step, right after an
+        action). Returns a short excerpt if something looks like a crash/ANR, else None."""
+        try:
+            output = self.d.shell(["logcat", "-d", "-b", "main", "-b", "system", "-b", "crash"]).output
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("read_new_crashes() failed: %s", exc)
+            return None
+        finally:
+            try:
+                self.d.shell(["logcat", "-c"])
+            except Exception:  # noqa: BLE001
+                pass
+
+        lines = output.splitlines()
+        for i, line in enumerate(lines):
+            if "FATAL EXCEPTION" in line:
+                window = lines[i : i + 12]
+                if any(package in w for w in window):
+                    return "\n".join(window)
+            elif "ANR in" in line and package in line:
+                return line
+        return None

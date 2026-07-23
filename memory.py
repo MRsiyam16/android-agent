@@ -36,6 +36,11 @@ def _memory_path(package: str) -> str:
     return os.path.join(_project_dir(package), "memory.json")
 
 
+def project_dir(package: str) -> str:
+    """Public accessor for report.py — same per-package folder memory.json lives in."""
+    return _project_dir(package)
+
+
 @dataclass
 class AppMemory:
     package: str
@@ -43,12 +48,16 @@ class AppMemory:
     tried_action_ids: dict[str, set[str]] = field(default_factory=dict)       # state_hash -> action ids
     action_outcomes: dict[str, dict[str, bool]] = field(default_factory=dict)  # state_hash -> {action_id: led_to_new_state}
     bug_reports: dict[str, dict] = field(default_factory=dict)                # state_hash -> {bug_suspected, summary, activity}
+    state_activities: dict[str, str] = field(default_factory=dict)            # state_hash -> activity name, for report.py
 
     def is_known(self, state_hash: str) -> bool:
         return state_hash in self.known_state_hashes
 
     def record_new_state(self, state_hash: str) -> None:
         self.known_state_hashes.add(state_hash)
+
+    def record_activity(self, state_hash: str, activity: str) -> None:
+        self.state_activities[state_hash] = activity
 
     def record_tried(self, state_hash: str, action_id: str, led_to_new_state: bool) -> None:
         self.tried_action_ids.setdefault(state_hash, set()).add(action_id)
@@ -81,6 +90,7 @@ def load(package: str) -> AppMemory:
         mem.tried_action_ids = {k: set(v) for k, v in data.get("tried_action_ids", {}).items()}
         mem.action_outcomes = data.get("action_outcomes", {})
         mem.bug_reports = data.get("bug_reports", {})
+        mem.state_activities = data.get("state_activities", {})
         logger.info(
             "Loaded memory for %s: %d known states, %d bug reports",
             package, len(mem.known_state_hashes), len(mem.bug_reports),
@@ -101,6 +111,7 @@ def save(mem: AppMemory) -> None:
             "tried_action_ids": {k: sorted(v) for k, v in mem.tried_action_ids.items()},
             "action_outcomes": mem.action_outcomes,
             "bug_reports": mem.bug_reports,
+            "state_activities": mem.state_activities,
         }
         tmp_path = path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:

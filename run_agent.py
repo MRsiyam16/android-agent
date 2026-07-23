@@ -13,6 +13,7 @@ import uuid
 import config
 import llm_explorer
 import memory
+import report
 from adb_device import AdbDevice, DeviceError, list_serials
 from extractor import compute_state_hash, extract_actions
 from graph import ExplorationGraph
@@ -147,6 +148,7 @@ def run(
     telemetry.post_status(f"Launching {package}...", level="info")
     device.start_app(package)
     time.sleep(1.5)
+    device.clear_logs()  # baseline so read_new_crashes() only sees crashes from here on
 
     prev_state_hash: str | None = None
     step = 0
@@ -211,6 +213,7 @@ def run(
             for prev_action_id in app_memory.previously_tried(state_hash):
                 graph.mark_tried(state_hash, prev_action_id)
             app_memory.record_new_state(state_hash)
+            app_memory.record_activity(state_hash, current_activity)
             memory.save(app_memory)
 
         if carried_screenshot_b64 is not None:
@@ -322,6 +325,27 @@ def run(
                 break
             time.sleep(config.ACTION_SETTLE_POLL_SECONDS)
 
+        crash_excerpt = device.read_new_crashes(package)
+        if crash_excerpt:
+            logger.error(
+                "[step %d] crash/ANR detected after clicking '%s': %s",
+                step, action["label"], crash_excerpt.splitlines()[0],
+            )
+            telemetry.post_status(
+                f"\U0001F534 Crash/ANR after tapping '{action['label']}' on {current_activity}: "
+                f"{crash_excerpt.splitlines()[0]}",
+                level="error",
+            )
+            if use_memory:
+                app_memory.record_analysis(
+                    state_hash, current_activity,
+                    {"bug_suspected": True, "summary": f"Crash/ANR after '{action['label']}': {crash_excerpt[:400]}"},
+                )
+                memory.save(app_memory)
+                # Write the report immediately (not just at the end of run()) so a
+                # crash survives even if this process is later killed before finishing.
+                report.write_report(package, app_memory)
+
         next_is_new_ever = next_hash not in graph.nodes and not (use_memory and app_memory.is_known(next_hash))
 
         graph.record_edge(state_hash, next_hash, action["id"], f"click: {action['label']}")
@@ -379,6 +403,10 @@ def run(
     # post_state/post_status are fire-and-forget onto a background thread — make sure the
     # last few posts actually land before the process exits instead of being dropped with it.
     telemetry.flush(timeout=10.0)
+
+    if use_memory:
+        report_path = report.write_report(package, app_memory)
+        logger.info("Wrote test report: %s", report_path)
 
 
 def main() -> None:
