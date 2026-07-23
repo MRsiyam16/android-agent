@@ -151,19 +151,35 @@ def run(
     prev_state_hash: str | None = None
     step = 0
     new_states_since_analysis = 0
+    # Carried forward from the previous iteration's post-click read (same screen this
+    # iteration starts from) so we don't re-fetch the UI dump/app-info/screenshot from the
+    # device a second time for the exact same screen — that redundant round-trip was the
+    # single largest per-step cost. Left as None whenever the next screen is genuinely
+    # unknown (after BACK, after an exhausted-state backtrack, after a restart) so those
+    # paths still force a fresh read.
+    pending: dict | None = None
 
     while step < max_steps:
         step += 1
-        try:
-            width, height = device.window_size
-            xml = device.dump_xml()
-            app_info = device.current_app()
-            current_package = app_info.get("package", "")
-            current_activity = app_info.get("activity", "")
-        except DeviceError as exc:
-            logger.error("[step %d] device read failed: %s — retrying shortly", step, exc)
-            time.sleep(1.0)
-            continue
+        if pending is not None:
+            width, height = pending["width"], pending["height"]
+            xml = pending["xml"]
+            current_package = pending["package"]
+            current_activity = pending["activity"]
+            carried_screenshot_b64 = pending["screenshot_b64"]
+            pending = None
+        else:
+            try:
+                width, height = device.window_size
+                xml = device.dump_xml()
+                app_info = device.current_app()
+                current_package = app_info.get("package", "")
+                current_activity = app_info.get("activity", "")
+            except DeviceError as exc:
+                logger.error("[step %d] device read failed: %s — retrying shortly", step, exc)
+                time.sleep(1.0)
+                continue
+            carried_screenshot_b64 = None
 
         if not in_scope(current_package):
             logger.info("[step %d] out-of-scope package '%s' — pressing BACK", step, current_package)
@@ -197,11 +213,16 @@ def run(
             app_memory.record_new_state(state_hash)
             memory.save(app_memory)
 
-        try:
-            screenshot_b64 = device.screenshot_b64()
-        except DeviceError as exc:
-            logger.warning("[step %d] screenshot failed: %s", step, exc)
-            screenshot_b64 = ""
+        if carried_screenshot_b64 is not None:
+            # Same screen we just captured at the end of the previous iteration — reuse it
+            # instead of taking a fresh screenshot of an unchanged screen.
+            screenshot_b64 = carried_screenshot_b64
+        else:
+            try:
+                screenshot_b64 = device.screenshot_b64()
+            except DeviceError as exc:
+                logger.warning("[step %d] screenshot failed: %s", step, exc)
+                screenshot_b64 = ""
 
         telemetry.post_state(
             package_name=current_package,
@@ -268,9 +289,14 @@ def run(
 
         time.sleep(config.ACTION_SETTLE_SECONDS)
 
-        # Capture the resulting state and report the edge that produced it.
+        # Capture the resulting state once and report the edge that produced it. This same
+        # read is carried forward as next iteration's starting state (see `pending` above)
+        # instead of being re-fetched from the device a moment later.
         next_package, next_activity = current_package, current_activity
+        next_width, next_height = width, height
+        xml_after: str | None = None
         try:
+            next_width, next_height = device.window_size
             xml_after = device.dump_xml()
             app_info_after = device.current_app()
             next_package = app_info_after.get("package", "")
@@ -307,6 +333,16 @@ def run(
                 executed_action={"label": action["label"], "x": action["x"], "y": action["y"], "from_state": state_hash},
                 parent_state_hash=state_hash,
             )
+
+            if xml_after is not None:
+                pending = {
+                    "width": next_width,
+                    "height": next_height,
+                    "xml": xml_after,
+                    "package": next_package,
+                    "activity": next_activity,
+                    "screenshot_b64": screenshot_after_b64,
+                }
         else:
             logger.info("[step %d] resulting state is out-of-scope (%s) — not reporting to dashboard", step, next_package)
 
