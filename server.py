@@ -277,6 +277,13 @@ async def post_telemetry(payload: TelemetryPayload):
     _register_screen(payload.state_hash, payload.parent_state_hash, action_label)
 
     record = payload.model_dump()
+    if not record.get("screenshot_b64"):
+        # Agents skip re-capturing a screenshot for screens they've already reported (see
+        # run_agent.py) — backfill from whatever we already have for this state_hash so a
+        # blank revisit post never regresses an already-known screen to a blank image.
+        existing = state_store.get(payload.state_hash)
+        if existing and existing.get("screenshot_b64"):
+            record["screenshot_b64"] = existing["screenshot_b64"]
     record["screen_name"] = screen_names[payload.state_hash]
     record["screen_number"] = node_index[payload.state_hash]
     state_store[payload.state_hash] = record

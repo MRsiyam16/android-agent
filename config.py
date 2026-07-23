@@ -38,6 +38,10 @@ SERVER_URL: str = os.environ.get("SERVER_URL", f"http://localhost:{SERVER_PORT}"
 # --- Exploration limits ---------------------------------------------------------
 MAX_STEPS: int = int(os.environ.get("MAX_STEPS", 200))
 ACTION_SETTLE_SECONDS: float = float(os.environ.get("ACTION_SETTLE_SECONDS", 0.9))
+# Ceiling for the adaptive post-click wait in run_agent.py: it polls the UI and stops as
+# soon as the screen actually changes, instead of always sleeping the full amount. This is
+# the poll interval between checks; ACTION_SETTLE_SECONDS above is the max total budget.
+ACTION_SETTLE_POLL_SECONDS: float = float(os.environ.get("ACTION_SETTLE_POLL_SECONDS", 0.25))
 MAX_CONSECUTIVE_BACKTRACKS: int = 6
 
 # --- Target / package filtering ---------------------------------------------------------

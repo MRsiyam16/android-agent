@@ -217,12 +217,19 @@ def run(
             # Same screen we just captured at the end of the previous iteration — reuse it
             # instead of taking a fresh screenshot of an unchanged screen.
             screenshot_b64 = carried_screenshot_b64
-        else:
+        elif is_new_ever or use_llm:
+            # Only worth the capture cost for a screen the dashboard/memory hasn't seen
+            # before, or when the LLM chooser needs an image to pick a tap regardless of
+            # novelty. A blank screenshot_b64 on a known revisit is fine to post — server.py
+            # backfills it from the state's previously-stored screenshot, and dashboard.js's
+            # ingest() falls back the same way client-side.
             try:
                 screenshot_b64 = device.screenshot_b64()
             except DeviceError as exc:
                 logger.warning("[step %d] screenshot failed: %s", step, exc)
                 screenshot_b64 = ""
+        else:
+            screenshot_b64 = ""
 
         telemetry.post_state(
             package_name=current_package,
@@ -287,29 +294,39 @@ def run(
             time.sleep(config.ACTION_SETTLE_SECONDS)
             continue
 
-        time.sleep(config.ACTION_SETTLE_SECONDS)
-
-        # Capture the resulting state once and report the edge that produced it. This same
-        # read is carried forward as next iteration's starting state (see `pending` above)
-        # instead of being re-fetched from the device a moment later.
+        # Adaptive settle: poll for the screen to actually change instead of always sleeping
+        # the full ACTION_SETTLE_SECONDS ceiling. Most taps render well under that budget (a
+        # calculator digit, a toggle) — this captures the resulting state as soon as it
+        # differs from the pre-click state, and only burns the full wait on screens that are
+        # genuinely slow to update. This same read is carried forward as next iteration's
+        # starting state (see `pending` above) instead of being re-fetched a moment later.
         next_package, next_activity = current_package, current_activity
         next_width, next_height = width, height
         xml_after: str | None = None
-        try:
-            next_width, next_height = device.window_size
-            xml_after = device.dump_xml()
-            app_info_after = device.current_app()
-            next_package = app_info_after.get("package", "")
-            next_activity = app_info_after.get("activity", "")
-            next_hash = compute_state_hash(next_package, next_activity, xml_after)
-        except DeviceError as exc:
-            logger.warning("[step %d] post-action read failed: %s", step, exc)
-            next_hash = state_hash
+        next_hash = state_hash
+        deadline = time.monotonic() + config.ACTION_SETTLE_SECONDS
+        while True:
+            try:
+                next_width, next_height = device.window_size
+                xml_after = device.dump_xml()
+                app_info_after = device.current_app()
+                next_package = app_info_after.get("package", "")
+                next_activity = app_info_after.get("activity", "")
+                next_hash = compute_state_hash(next_package, next_activity, xml_after)
+            except DeviceError as exc:
+                logger.warning("[step %d] post-action read failed: %s", step, exc)
+                next_hash = state_hash
+                xml_after = None
+                break
+            if next_hash != state_hash or time.monotonic() >= deadline:
+                break
+            time.sleep(config.ACTION_SETTLE_POLL_SECONDS)
+
+        next_is_new_ever = next_hash not in graph.nodes and not (use_memory and app_memory.is_known(next_hash))
 
         graph.record_edge(state_hash, next_hash, action["id"], f"click: {action['label']}")
 
         if use_memory:
-            next_is_new_ever = next_hash not in graph.nodes and not app_memory.is_known(next_hash)
             app_memory.record_tried(state_hash, action["id"], led_to_new_state=next_is_new_ever)
             memory.save(app_memory)
 
@@ -319,9 +336,12 @@ def run(
         # loop's own in-scope check (top of the next iteration) will correctly BACK out of
         # it without exploring further.
         if in_scope(next_package):
-            try:
-                screenshot_after_b64 = device.screenshot_b64()
-            except DeviceError:
+            if next_is_new_ever or use_llm:
+                try:
+                    screenshot_after_b64 = device.screenshot_b64()
+                except DeviceError:
+                    screenshot_after_b64 = ""
+            else:
                 screenshot_after_b64 = ""
 
             telemetry.post_state(
@@ -356,6 +376,9 @@ def run(
         f"Exploration finished — {graph.node_count} states, {graph.edge_count} transitions.",
         level="ok",
     )
+    # post_state/post_status are fire-and-forget onto a background thread — make sure the
+    # last few posts actually land before the process exits instead of being dropped with it.
+    telemetry.flush(timeout=10.0)
 
 
 def main() -> None:
