@@ -169,9 +169,12 @@ input[type="range"]::-moz-range-thumb {
   transform: translate(-50%, -100%);
   display: flex; align-items: center; gap: 6px;
   font-size: 12px; font-weight: 500; color: var(--ink);
-  white-space: nowrap; padding-bottom: 6px;
+  padding-bottom: 6px;
 }
 .node-header .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.node-header-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
 
 /* Section heading — one per row/flow (e.g. "Main", "History", "Keypad") */
 .section-heading {

@@ -187,6 +187,16 @@
     return { x: rect.left + rect.width * frac.x, y: rect.top + rect.height * frac.y };
   }
 
+  // Text (headers, headings, connector labels, tap markers) is rendered at a fixed
+  // screen-pixel size — it never scales with zoom. Below this threshold there's
+  // simply no room for it: nodes shrink to tiny thumbnails while the fixed-size
+  // text would overlap into an unreadable blob, so we hide it entirely and show
+  // just the clean node/connector layout until the user zooms in far enough to read it.
+  const LABEL_VISIBILITY_SCALE = 0.35;
+  function labelsVisible() {
+    return network.getScale() >= LABEL_VISIBILITY_SCALE;
+  }
+
   // ---------------------------------------------------------------------------
   // Master overlay render — node cards, headers, section headings, connectors,
   // self-loops, comment pins, text notes. Everything synced every animation
@@ -247,6 +257,7 @@
     const headingsLayer = document.getElementById('sectionHeadings');
     headersLayer.innerHTML = '';
     headingsLayer.innerHTML = '';
+    if (!labelsVisible()) return;
 
     nodesData.forEach((n) => {
       const rect = nodeDomRect(n.id);
@@ -255,7 +266,8 @@
       header.className = 'node-header';
       header.style.left = (rect.left + rect.width / 2) + 'px';
       header.style.top = rect.top + 'px';
-      header.innerHTML = `<span class="dot" style="background:#22c55e;"></span>${escapeHtml(nodeHeaderLabel(n.id))}`;
+      header.style.maxWidth = rect.width + 'px';
+      header.innerHTML = `<span class="dot" style="background:#22c55e;"></span><span class="node-header-text">${escapeHtml(nodeHeaderLabel(n.id))}</span>`;
       headersLayer.appendChild(header);
     });
 
@@ -322,16 +334,18 @@
       path.setAttribute('marker-end', 'url(#arrowBlue)');
       svgPaths.appendChild(path);
 
-      const midX = (start.x + end.x) / 2;
-      const midY = (start.y + end.y) / 2 - (vertical ? 0 : 14);
-      const label = document.createElement('div');
-      label.className = 'connector-label';
-      label.style.left = midX + 'px';
-      label.style.top = midY + 'px';
-      label.textContent = truncate(meta.fullLabel, labelLength);
-      labelsLayer.appendChild(label);
+      if (labelsVisible()) {
+        const midX = (start.x + end.x) / 2;
+        const midY = (start.y + end.y) / 2 - (vertical ? 0 : 14);
+        const label = document.createElement('div');
+        label.className = 'connector-label';
+        label.style.left = midX + 'px';
+        label.style.top = midY + 'px';
+        label.textContent = truncate(meta.fullLabel, labelLength);
+        labelsLayer.appendChild(label);
+      }
 
-      if (showTapMarkers) {
+      if (showTapMarkers && labelsVisible()) {
         const marker = document.createElement('div');
         marker.className = 'connector-tap-marker';
         marker.style.left = start.x + 'px';
@@ -360,14 +374,16 @@
     path.setAttribute('marker-end', 'url(#arrowBlue)');
     svgPaths.appendChild(path);
 
-    const label = document.createElement('div');
-    label.className = 'connector-label';
-    label.style.left = (p2.x + 10) + 'px';
-    label.style.top = p2.y + 'px';
-    label.textContent = truncate(meta.fullLabel, labelLength);
-    labelsLayer.appendChild(label);
+    if (labelsVisible()) {
+      const label = document.createElement('div');
+      label.className = 'connector-label';
+      label.style.left = (p2.x + 10) + 'px';
+      label.style.top = p2.y + 'px';
+      label.textContent = truncate(meta.fullLabel, labelLength);
+      labelsLayer.appendChild(label);
+    }
 
-    if (showTapMarkers) {
+    if (showTapMarkers && labelsVisible()) {
       const marker = document.createElement('div');
       marker.className = 'connector-tap-marker';
       marker.style.left = p0.x + 'px';
