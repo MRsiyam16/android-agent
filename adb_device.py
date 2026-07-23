@@ -142,10 +142,18 @@ class AdbDevice:
             raise DeviceError(f"press({key!r}) failed: {exc}") from exc
 
     def start_app(self, package: str) -> None:
+        """Launch via `monkey`, not `am start`/`app_start` — some OEM ROMs (observed on a
+        Transsion-family device) silently block background-initiated `am start` calls and
+        redirect to a Settings screen instead. `monkey`'s instrumentation-based launch is
+        not subject to that restriction and reliably foregrounds the app."""
         try:
-            self.d.app_start(package, stop=True)
+            self.d.app_stop(package)
+        except Exception:  # noqa: BLE001 - best-effort reset, not fatal if it fails
+            pass
+        try:
+            self.d.shell(["monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"])
         except Exception as exc:  # noqa: BLE001
-            raise DeviceError(f"app_start({package!r}) failed: {exc}") from exc
+            raise DeviceError(f"start_app({package!r}) via monkey failed: {exc}") from exc
 
     def stop_app(self, package: str) -> None:
         try:
