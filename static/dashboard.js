@@ -502,37 +502,214 @@
     const isSticky = kind === 'sticky';
     textNotes.set(id, {
       id, kind, cx: canvasPos.x, cy: canvasPos.y,
-      text: isSticky ? 'New note' : 'Note',
+      text: isSticky ? 'Write in **Markdown**.' : 'Note',
       fontSize: isSticky ? 12 : 16,
+      ...(isSticky ? { title: 'Note', color: 'slate', width: 'medium' } : {}),
     });
     setTool('pan');
     scheduleRenderOverlay();
     scheduleAutoSave();
   }
 
+  // Header colours are for triage at a glance — red for bugs, amber for flaky, and so on.
+  // Values come from the design tokens so notes stay in the same palette as the rest of the UI.
+  const STICKY_COLORS = [
+    { key: 'slate',  label: 'Neutral', css: 'var(--surface-3)', ink: 'var(--ink)' },
+    { key: 'red',    label: 'Bug',     css: 'var(--danger)',        ink: '#1a0207' },
+    { key: 'orange', label: 'Flaky',   css: 'var(--accent-orange)', ink: '#1c0c04' },
+    { key: 'green',  label: 'Passing', css: 'var(--success)',       ink: '#04140a' },
+    { key: 'blue',   label: 'Info',    css: 'var(--accent-blue)',   ink: '#001526' },
+    { key: 'purple', label: 'Idea',    css: '#a855f7',              ink: '#14042a' },
+  ];
+  const STICKY_WIDTHS = [
+    { key: 'screen', label: 'Screen', px: 150 },
+    { key: 'medium', label: 'Medium', px: 240 },
+    { key: 'wide',   label: 'Wide',   px: 320 },
+  ];
+  const stickyColor = (key) => STICKY_COLORS.find((c) => c.key === key) || STICKY_COLORS[0];
+  const stickyWidth = (key) => STICKY_WIDTHS.find((w) => w.key === key) || STICKY_WIDTHS[1];
+
+  // Small Markdown subset, rendered locally rather than pulling in a library: the dashboard
+  // is used against devices on isolated networks, so a CDN script would simply fail there.
+  // The source is HTML-escaped first, so note text can never inject markup.
+  function renderMarkdown(src) {
+    const lines = escapeHtml(src || '').split('\n');
+    const inline = (s) => s
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+      // Only http(s) links — otherwise a note could smuggle in a javascript: URL.
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+               '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+    let html = '', list = null, code = false;
+    const endList = () => { if (list) { html += `</${list}>`; list = null; } };
+
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      if (/^```/.test(line)) { endList(); code = !code; html += code ? '<pre><code>' : '</code></pre>'; continue; }
+      if (code) { html += line + '\n'; continue; }
+      if (!line.trim()) { endList(); continue; }
+
+      let m;
+      if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+        endList(); const lvl = m[1].length; html += `<h${lvl}>${inline(m[2])}</h${lvl}>`; continue;
+      }
+      if (/^(-{3,}|\*{3,})$/.test(line.trim())) { endList(); html += '<hr>'; continue; }
+      if ((m = line.match(/^&gt;\s?(.*)$/))) { endList(); html += `<blockquote>${inline(m[1])}</blockquote>`; continue; }
+      if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+        if (list !== 'ul') { endList(); html += '<ul>'; list = 'ul'; }
+        html += `<li>${inline(m[1])}</li>`; continue;
+      }
+      if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+        if (list !== 'ol') { endList(); html += '<ol>'; list = 'ol'; }
+        html += `<li>${inline(m[1])}</li>`; continue;
+      }
+      endList();
+      html += `<p>${inline(line)}</p>`;
+    }
+    endList();
+    if (code) html += '</code></pre>';
+    return html;
+  }
+
   function renderTextNotes() {
     const layer = document.getElementById('textNotesLayer');
+
+    // Rebuilding the layer while a note is being typed into would destroy the caret, and
+    // renderOverlay runs on every pan/zoom frame. When something in here has focus, move
+    // the existing elements instead of recreating them.
+    if (layer.contains(document.activeElement)) {
+      layer.querySelectorAll('.text-note').forEach((el) => {
+        const note = textNotes.get(el.dataset.noteId);
+        if (!note) return;
+        const pos = network.canvasToDOM({ x: note.cx, y: note.cy });
+        el.style.left = pos.x + 'px';
+        el.style.top = pos.y + 'px';
+      });
+      return;
+    }
+
     layer.innerHTML = '';
     textNotes.forEach((note) => {
       const pos = network.canvasToDOM({ x: note.cx, y: note.cy });
       const el = document.createElement('div');
-      el.className = 'text-note kind-' + (note.kind === 'sticky' ? 'sticky' : 'text');
+      const isSticky = note.kind === 'sticky';
+      el.className = 'text-note kind-' + (isSticky ? 'sticky' : 'text');
+      el.dataset.noteId = note.id;
       el.style.left = pos.x + 'px';
       el.style.top = pos.y + 'px';
-      el.innerHTML = `
-        <div class="text-note-drag">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="6" r="1.6"></circle><circle cx="8" cy="12" r="1.6"></circle><circle cx="8" cy="18" r="1.6"></circle><circle cx="16" cy="6" r="1.6"></circle><circle cx="16" cy="12" r="1.6"></circle><circle cx="16" cy="18" r="1.6"></circle></svg>
-        </div>
-        <div class="text-note-content" contenteditable="true" style="font-size:${note.fontSize}px;">${escapeHtml(note.text)}</div>
-        <div class="text-note-delete">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-        </div>
-      `;
-      el.querySelector('.text-note-content').addEventListener('blur', (e) => { note.text = e.target.innerText; scheduleAutoSave(); });
-      el.querySelector('.text-note-delete').addEventListener('click', () => { textNotes.delete(note.id); scheduleRenderOverlay(); scheduleAutoSave(); });
-      el.querySelector('.text-note-drag').addEventListener('mousedown', (e) => startNoteDrag(note, e));
+
+      if (isSticky) {
+        const color = stickyColor(note.color);
+        el.style.width = stickyWidth(note.width).px + 'px';
+        el.innerHTML = `
+          <div class="sticky-head" style="background:${color.css};color:${color.ink};">
+            <div class="sticky-title" contenteditable="true" spellcheck="false">${escapeHtml(note.title || 'Note')}</div>
+            <div class="sticky-btn sticky-menu-btn" title="Note settings">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="17" x2="20" y2="17"></line></svg>
+            </div>
+            <div class="sticky-btn sticky-close" title="Delete note">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </div>
+          </div>
+          <div class="sticky-body markdown" contenteditable="true" style="font-size:${note.fontSize}px;">${renderMarkdown(note.text)}</div>
+        `;
+
+        const title = el.querySelector('.sticky-title');
+        title.addEventListener('blur', (e) => { note.title = e.target.innerText.trim() || 'Note'; scheduleAutoSave(); });
+        title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
+
+        const body = el.querySelector('.sticky-body');
+        // Swap the rendered HTML for the raw Markdown while editing, then render on the way out.
+        body.addEventListener('focus', () => { body.textContent = note.text; });
+        body.addEventListener('blur', () => {
+          note.text = body.innerText;
+          body.innerHTML = renderMarkdown(note.text);
+          scheduleAutoSave();
+        });
+
+        el.querySelector('.sticky-close').addEventListener('click', () => {
+          textNotes.delete(note.id); scheduleRenderOverlay(); scheduleAutoSave();
+        });
+        el.querySelector('.sticky-menu-btn').addEventListener('mousedown', (e) => {
+          e.stopPropagation(); e.preventDefault(); openNoteMenu(note, e.currentTarget);
+        });
+        // The header doubles as the title bar you drag the note by.
+        el.querySelector('.sticky-head').addEventListener('mousedown', (e) => {
+          if (e.target.closest('.sticky-btn') || e.target.closest('.sticky-title')) return;
+          startNoteDrag(note, e);
+        });
+      } else {
+        el.innerHTML = `
+          <div class="text-note-drag">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="6" r="1.6"></circle><circle cx="8" cy="12" r="1.6"></circle><circle cx="8" cy="18" r="1.6"></circle><circle cx="16" cy="6" r="1.6"></circle><circle cx="16" cy="12" r="1.6"></circle><circle cx="16" cy="18" r="1.6"></circle></svg>
+          </div>
+          <div class="text-note-content" contenteditable="true" style="font-size:${note.fontSize}px;">${escapeHtml(note.text)}</div>
+          <div class="text-note-delete">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        `;
+        el.querySelector('.text-note-content').addEventListener('blur', (e) => { note.text = e.target.innerText; scheduleAutoSave(); });
+        el.querySelector('.text-note-delete').addEventListener('click', () => { textNotes.delete(note.id); scheduleRenderOverlay(); scheduleAutoSave(); });
+        el.querySelector('.text-note-drag').addEventListener('mousedown', (e) => startNoteDrag(note, e));
+      }
+
       layer.appendChild(el);
     });
+  }
+
+  function openNoteMenu(note, anchorEl) {
+    document.querySelectorAll('.note-menu').forEach((m) => m.remove());
+    const rect = anchorEl.getBoundingClientRect();
+    const layerRect = document.getElementById('textNotesLayer').getBoundingClientRect();
+
+    const menu = document.createElement('div');
+    menu.className = 'note-menu';
+    menu.style.left = (rect.left - layerRect.left) + 'px';
+    menu.style.top = (rect.bottom - layerRect.top + 6) + 'px';
+    menu.innerHTML = `
+      <div class="note-menu-label">Colour</div>
+      <div class="note-menu-swatches">
+        ${STICKY_COLORS.map((c) => `
+          <div class="note-swatch${(note.color || 'slate') === c.key ? ' active' : ''}"
+               data-color="${c.key}" title="${c.label}" style="background:${c.css}"></div>`).join('')}
+      </div>
+      <div class="note-menu-label">Width</div>
+      <div class="note-menu-row">
+        ${STICKY_WIDTHS.map((w) => `
+          <div class="note-menu-chip${(note.width || 'medium') === w.key ? ' active' : ''}"
+               data-width="${w.key}">${w.label}</div>`).join('')}
+      </div>
+      <div class="note-menu-label">Text size</div>
+      <div class="note-menu-row">
+        ${[12, 14, 16].map((s) => `
+          <div class="note-menu-chip${(note.fontSize || 12) === s ? ' active' : ''}"
+               data-size="${s}">${s}px</div>`).join('')}
+      </div>
+    `;
+
+    menu.addEventListener('mousedown', (e) => e.stopPropagation());
+    menu.addEventListener('click', (e) => {
+      const swatch = e.target.closest('[data-color]');
+      const width = e.target.closest('[data-width]');
+      const size = e.target.closest('[data-size]');
+      if (swatch) note.color = swatch.dataset.color;
+      else if (width) note.width = width.dataset.width;
+      else if (size) note.fontSize = parseInt(size.dataset.size, 10);
+      else return;
+      menu.remove();
+      scheduleRenderOverlay();
+      scheduleAutoSave();
+    });
+
+    document.getElementById('textNotesLayer').appendChild(menu);
+    setTimeout(() => {
+      const close = (ev) => {
+        if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', close); }
+      };
+      document.addEventListener('mousedown', close);
+    }, 0);
   }
 
   function startNoteDrag(note, e) {

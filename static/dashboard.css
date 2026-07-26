@@ -291,10 +291,15 @@ input[type="range"]::-moz-range-thumb {
 .text-note {
   position: absolute; z-index: 8; pointer-events: auto;
 }
-/* A sticky is sized to a screen card (150x300, see CARD_W/CARD_H in dashboard.js) so it
-   never outweighs the screens it annotates. Width is fixed and height is capped at one
-   card; a note longer than that scrolls rather than growing past the screens. */
-.text-note.kind-sticky { width: 150px; }
+/* Width is set per note from the menu (Screen 150 / Medium 240 / Wide 320). */
+.text-note.kind-sticky {
+  width: 240px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-float);
+  overflow: hidden;
+}
 /* The plain T-tool note is a bare caption on the board, so it sizes to its own text. */
 .text-note.kind-text { max-width: 320px; }
 .text-note-drag {
@@ -311,22 +316,106 @@ input[type="range"]::-moz-range-thumb {
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
-/* Sticky note, built from the design system rather than a literal yellow Post-it: the same
-   surface, hairline, radius and float elevation as the other floating panels, with the
-   comment-pin accent as a spine so a note reads as an annotation at a glance. */
-.text-note.kind-sticky .text-note-content {
-  background: var(--surface-2);
-  border: 1px solid var(--hairline);
-  border-left: 3px solid var(--accent-orange);
-  border-radius: var(--radius-md);
-  box-shadow: var(--elevation-float);
-  color: var(--ink);
-  font-family: var(--font-body); font-weight: 450; letter-spacing: 0; line-height: 1.5;
-  padding: 10px 12px;
-  max-height: 300px; overflow-y: auto;
-}
 .text-note-content:focus {
   box-shadow: var(--elevation-float), 0 0 0 2px var(--accent-blue);
+}
+
+/* ---------------- STICKY NOTE (titled card) ---------------- */
+/* Colour-coded title bar; the colour is chosen per note so a board can be read at a
+   glance (red = bug, orange = flaky, green = passing...). Doubles as the drag handle. */
+.sticky-head {
+  display: flex; align-items: center; gap: 4px;
+  padding: 7px 8px 7px 11px;
+  cursor: grab; user-select: none;
+}
+.sticky-head:active { cursor: grabbing; }
+.sticky-title {
+  flex: 1 1 auto; min-width: 0;
+  font-family: var(--font-display); font-weight: 700; font-size: 13px;
+  letter-spacing: -0.01em; outline: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: text;
+}
+.sticky-title:focus { text-overflow: clip; }
+.sticky-btn {
+  flex: 0 0 auto; width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm); opacity: 0.65; cursor: pointer;
+}
+.sticky-btn:hover { opacity: 1; background: rgba(0, 0, 0, 0.18); }
+
+.sticky-body {
+  color: var(--ink); font-family: var(--font-body); line-height: 1.5;
+  padding: 10px 12px; outline: none;
+  max-height: 320px; overflow-y: auto;
+  overflow-wrap: break-word;
+}
+.sticky-body:focus {
+  /* Raw Markdown is shown while editing, so keep the author's line breaks visible. */
+  white-space: pre-wrap;
+  box-shadow: inset 0 0 0 2px var(--accent-blue);
+}
+
+/* Rendered Markdown — tuned tight, these cards are small. */
+.markdown > *:first-child { margin-top: 0; }
+.markdown > *:last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 0.6em; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  font-family: var(--font-display); font-weight: 700; line-height: 1.25;
+  margin: 0.9em 0 0.4em; letter-spacing: -0.01em;
+}
+.markdown h1 { font-size: 1.35em; }
+.markdown h2 { font-size: 1.2em; }
+.markdown h3 { font-size: 1.08em; }
+.markdown h4 { font-size: 1em; color: var(--ink-muted); }
+.markdown ul, .markdown ol { margin: 0 0 0.6em; padding-left: 1.3em; }
+.markdown li { margin: 0.15em 0; }
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
+  background: var(--surface-3); border-radius: 4px; padding: 0.1em 0.35em;
+}
+.markdown pre {
+  background: var(--surface-3); border-radius: var(--radius-sm);
+  padding: 8px 10px; margin: 0 0 0.6em; overflow-x: auto;
+}
+.markdown pre code { background: none; padding: 0; }
+.markdown blockquote {
+  margin: 0 0 0.6em; padding-left: 0.7em;
+  border-left: 2px solid var(--hairline); color: var(--ink-muted);
+}
+.markdown hr { border: 0; border-top: 1px solid var(--hairline); margin: 0.8em 0; }
+.markdown a { color: var(--accent-blue); }
+.markdown strong { font-weight: 700; }
+
+/* ---------------- NOTE SETTINGS MENU ---------------- */
+.note-menu {
+  position: absolute; z-index: 28; width: 176px;
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); box-shadow: var(--elevation-float);
+  padding: 10px; pointer-events: auto;
+}
+.note-menu-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-faint); margin: 0 0 6px;
+}
+.note-menu-label:not(:first-child) { margin-top: 12px; }
+.note-menu-swatches { display: flex; gap: 6px; }
+.note-swatch {
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+.note-swatch:hover { transform: scale(1.12); }
+.note-swatch.active { border-color: var(--ink); }
+.note-menu-row { display: flex; gap: 6px; }
+.note-menu-chip {
+  flex: 1; text-align: center; cursor: pointer;
+  font-size: 11px; padding: 5px 0; border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--ink-muted);
+  border: 1px solid var(--hairline);
+}
+.note-menu-chip:hover { color: var(--ink); }
+.note-menu-chip.active {
+  background: var(--accent-blue); border-color: var(--accent-blue); color: #fff;
 }
 .text-note-delete {
   position: absolute; right: -22px; top: 2px; width: 16px; height: 16px;
