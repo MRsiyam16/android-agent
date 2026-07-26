@@ -503,8 +503,8 @@
     textNotes.set(id, {
       id, kind, cx: canvasPos.x, cy: canvasPos.y,
       text: isSticky ? 'Write in **Markdown**.' : 'Note',
-      fontSize: isSticky ? 12 : 16,
-      ...(isSticky ? { title: 'Note', color: 'slate', width: 'medium' } : {}),
+      fontSize: isSticky ? 13 : 16,
+      ...(isSticky ? { title: 'Note', color: 'slate', w: 310 } : {}),
     });
     setTool('pan');
     scheduleRenderOverlay();
@@ -521,55 +521,161 @@
     { key: 'blue',   label: 'Info',    css: 'var(--accent-blue)',   ink: '#001526' },
     { key: 'purple', label: 'Idea',    css: '#a855f7',              ink: '#14042a' },
   ];
+  // Sizes are canvas units, the same space the screen cards live in (CARD_W 150 x CARD_H
+  // 300), so a note holds its size relative to the flow and scales with zoom instead of
+  // ballooning when you zoom out.
   const STICKY_WIDTHS = [
-    { key: 'screen', label: 'Screen', px: 150 },
-    { key: 'medium', label: 'Medium', px: 240 },
-    { key: 'wide',   label: 'Wide',   px: 320 },
+    { key: 'screen', label: '1 screen', w: 150 },
+    { key: 'medium', label: '2 screens', w: 310 },
+    { key: 'wide',   label: '3 screens', w: 470 },
   ];
+  const STICKY_MIN_W = 110, STICKY_MIN_H = 90;
   const stickyColor = (key) => STICKY_COLORS.find((c) => c.key === key) || STICKY_COLORS[0];
-  const stickyWidth = (key) => STICKY_WIDTHS.find((w) => w.key === key) || STICKY_WIDTHS[1];
+  // Older notes stored a width preset key rather than an explicit canvas width.
+  const stickyW = (note) => note.w
+    || (STICKY_WIDTHS.find((w) => w.key === note.width) || STICKY_WIDTHS[1]).w;
 
   // Small Markdown subset, rendered locally rather than pulling in a library: the dashboard
   // is used against devices on isolated networks, so a CDN script would simply fail there.
   // The source is HTML-escaped first, so note text can never inject markup.
-  function renderMarkdown(src) {
-    const lines = escapeHtml(src || '').split('\n');
-    const inline = (s) => s
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-      // Only http(s) links — otherwise a note could smuggle in a javascript: URL.
+  function mdInline(s) {
+    // Pull inline code out first and re-insert at the end, so ** or _ inside a code span
+    // is never treated as emphasis.
+    const spans = [];
+    let out = s.replace(/`([^`]+)`/g, (_, code) => `\u0000${spans.push(`<code>${code}</code>`) - 1}\u0000`);
+
+    out = out
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-               '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+               '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      // Bare URLs, but not ones already inside an href="" from the line above.
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,
+               '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
+      .replace(/~~(.+?)~~/g, '<del>$1</del>')
+      .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/__(.+?)__/g, '<strong>$1</strong>')
+      .replace(/\*(?!\s)(.+?)(?<!\s)\*/g, '<em>$1</em>')
+      .replace(/(^|[\s(])_(?!\s)(.+?)(?<!\s)_(?=[\s.,;:!?)]|$)/g, '$1<em>$2</em>')
+      // Two trailing spaces = hard line break, as in standard Markdown.
+      .replace(/ {2,}$/, '<br>');
 
-    let html = '', list = null, code = false;
-    const endList = () => { if (list) { html += `</${list}>`; list = null; } };
+    return out.replace(/\u0000(\d+)\u0000/g, (_, i) => spans[+i]);
+  }
 
-    for (const raw of lines) {
-      const line = raw.trimEnd();
-      if (/^```/.test(line)) { endList(); code = !code; html += code ? '<pre><code>' : '</code></pre>'; continue; }
-      if (code) { html += line + '\n'; continue; }
-      if (!line.trim()) { endList(); continue; }
+  // Escape once at the boundary; renderBlocks works on already-escaped text so nested
+  // constructs (blockquotes) can recurse without double-escaping.
+  function renderMarkdown(src) {
+    return renderBlocks(escapeHtml(src || ''));
+  }
+
+  function renderBlocks(escaped) {
+    const lines = escaped.replace(/\r/g, '').split('\n');
+    let html = '';
+    let i = 0;
+
+    const isBlank = (l) => !l.trim();
+    const listItem = (l) => l.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+
+    // Lists are parsed as a unit so indentation can nest them, which the previous
+    // line-at-a-time version could not express.
+    function parseList(indent) {
+      const first = listItem(lines[i]);
+      const ordered = /\d/.test(first[2]);
+      let out = ordered ? '<ol>' : '<ul>';
+      let lastListIndex = -1;
+      while (i < lines.length) {
+        if (i === lastListIndex) break;   // same progress guard as the block loop
+        lastListIndex = i;
+        const m = listItem(lines[i]);
+        if (!m || m[1].length < indent) break;
+        if (m[1].length > indent) {
+          // A nested list belongs inside the item above it, not beside it.
+          const nested = parseList(m[1].length);
+          out = out.endsWith('</li>') ? out.slice(0, -5) + nested + '</li>' : out + nested;
+          continue;
+        }
+        if (/\d/.test(m[2]) !== ordered) break;
+        let text = m[3];
+        let cls = '';
+        const task = text.match(/^\[([ xX])\]\s+(.*)$/);
+        if (task) {
+          cls = ' class="task"';
+          text = `<span class="task-box">${task[1].toLowerCase() === 'x' ? '☑' : '☐'}</span> ${task[2]}`;
+        }
+        i++;
+        // Continuation lines belong to the item they follow.
+        const cont = [];
+        while (i < lines.length && !isBlank(lines[i]) && !listItem(lines[i])
+               && !/^(#{1,6}\s|&gt;|```|\||(-{3,}|\*{3,})\s*$)/.test(lines[i].trim())) {
+          cont.push(lines[i].trim()); i++;
+        }
+        const body = cont.length ? text + ' ' + cont.join(' ') : text;
+        out += `<li${cls}>${task ? body : mdInline(body)}</li>`;
+      }
+      return out + (ordered ? '</ol>' : '</ul>');
+    }
+
+    function parseTable() {
+      const row = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+      const head = row(lines[i]); i += 2;               // skip the |---|---| separator
+      let out = '<table><thead><tr>' + head.map((c) => `<th>${mdInline(c)}</th>`).join('') + '</tr></thead><tbody>';
+      while (i < lines.length && lines[i].includes('|') && !isBlank(lines[i])) {
+        out += '<tr>' + row(lines[i]).map((c) => `<td>${mdInline(c)}</td>`).join('') + '</tr>';
+        i++;
+      }
+      return out + '</tbody></table>';
+    }
+
+    // Every branch below is expected to consume at least one line. If one ever fails to —
+    // on some input I did not anticipate — this guard forces progress instead of spinning
+    // forever and freezing the tab, which is exactly what an earlier version did.
+    let lastIndex = -1;
+    while (i < lines.length) {
+      if (i === lastIndex) { html += `<p>${mdInline(lines[i])}</p>`; i++; continue; }
+      lastIndex = i;
+
+      const line = lines[i];
+
+      if (isBlank(line)) { i++; continue; }
 
       let m;
-      if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
-        endList(); const lvl = m[1].length; html += `<h${lvl}>${inline(m[2])}</h${lvl}>`; continue;
+      if ((m = line.match(/^\s*```\s*(\S*)/))) {
+        i++;
+        const buf = [];
+        while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++;
+        const lang = m[1] ? ` class="lang-${m[1]}"` : '';
+        html += `<pre><code${lang}>${buf.join('\n')}</code></pre>`;
+        continue;
       }
-      if (/^(-{3,}|\*{3,})$/.test(line.trim())) { endList(); html += '<hr>'; continue; }
-      if ((m = line.match(/^&gt;\s?(.*)$/))) { endList(); html += `<blockquote>${inline(m[1])}</blockquote>`; continue; }
-      if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
-        if (list !== 'ul') { endList(); html += '<ul>'; list = 'ul'; }
-        html += `<li>${inline(m[1])}</li>`; continue;
+      if ((m = line.match(/^\s*(#{1,6})\s+(.*)$/))) {
+        const lvl = Math.min(m[1].length, 6);
+        html += `<h${lvl}>${mdInline(m[2].replace(/\s+#+\s*$/, ''))}</h${lvl}>`;
+        i++; continue;
       }
-      if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
-        if (list !== 'ol') { endList(); html += '<ol>'; list = 'ol'; }
-        html += `<li>${inline(m[1])}</li>`; continue;
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { html += '<hr>'; i++; continue; }
+      if (/^\s*&gt;/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^\s*&gt;/.test(lines[i])) {
+          buf.push(lines[i].replace(/^\s*&gt;\s?/, '')); i++;
+        }
+        html += `<blockquote>${renderBlocks(buf.join('\n'))}</blockquote>`;
+        continue;
       }
-      endList();
-      html += `<p>${inline(line)}</p>`;
+      if (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:-]*-[\s:|-]*$/.test(lines[i + 1])) {
+        html += parseTable(); continue;
+      }
+      if (listItem(line)) { html += parseList(listItem(line)[1].length); continue; }
+
+      // Paragraph: consecutive non-blank lines join with a soft break rather than each
+      // becoming its own <p>, which is what made wrapped prose look broken before.
+      const buf = [];
+      while (i < lines.length && !isBlank(lines[i]) && !listItem(lines[i])
+             && !/^\s*(#{1,6}\s|&gt;|```|(-{3,}|\*{3,}|_{3,})\s*$)/.test(lines[i])) {
+        buf.push(lines[i]); i++;
+      }
+      html += `<p>${buf.map(mdInline).join('<br>')}</p>`;
     }
-    endList();
-    if (code) html += '</code></pre>';
     return html;
   }
 
@@ -602,7 +708,13 @@
 
       if (isSticky) {
         const color = stickyColor(note.color);
-        el.style.width = stickyWidth(note.width).px + 'px';
+        // Lay the note out at its canvas size, then scale the whole element by the current
+        // zoom. Everything inside — text, padding, header, buttons — scales together, so a
+        // note keeps its proportion to the screens instead of being a fixed screen size.
+        el.style.width = stickyW(note) + 'px';
+        if (note.h) el.style.height = note.h + 'px';
+        el.style.transformOrigin = 'top left';
+        el.style.transform = `scale(${network.getScale()})`;
         el.innerHTML = `
           <div class="sticky-head" style="background:${color.css};color:${color.ink};">
             <div class="sticky-title" contenteditable="true" spellcheck="false">${escapeHtml(note.title || 'Note')}</div>
@@ -614,6 +726,7 @@
             </div>
           </div>
           <div class="sticky-body markdown" contenteditable="true" style="font-size:${note.fontSize}px;">${renderMarkdown(note.text)}</div>
+          <div class="sticky-resize" title="Drag to resize"></div>
         `;
 
         const title = el.querySelector('.sticky-title');
@@ -639,6 +752,9 @@
         el.querySelector('.sticky-head').addEventListener('mousedown', (e) => {
           if (e.target.closest('.sticky-btn') || e.target.closest('.sticky-title')) return;
           startNoteDrag(note, e);
+        });
+        el.querySelector('.sticky-resize').addEventListener('mousedown', (e) => {
+          startNoteResize(note, el, e);
         });
       } else {
         el.innerHTML = `
@@ -678,7 +794,7 @@
       <div class="note-menu-label">Width</div>
       <div class="note-menu-row">
         ${STICKY_WIDTHS.map((w) => `
-          <div class="note-menu-chip${(note.width || 'medium') === w.key ? ' active' : ''}"
+          <div class="note-menu-chip${Math.round(stickyW(note)) === w.w ? ' active' : ''}"
                data-width="${w.key}">${w.label}</div>`).join('')}
       </div>
       <div class="note-menu-label">Text size</div>
@@ -695,8 +811,12 @@
       const width = e.target.closest('[data-width]');
       const size = e.target.closest('[data-size]');
       if (swatch) note.color = swatch.dataset.color;
-      else if (width) note.width = width.dataset.width;
-      else if (size) note.fontSize = parseInt(size.dataset.size, 10);
+      else if (width) {
+        const preset = STICKY_WIDTHS.find((w) => w.key === width.dataset.width);
+        note.w = preset.w;
+        delete note.width;
+        delete note.h;       // let height fall back to fitting the text at the new width
+      } else if (size) note.fontSize = parseInt(size.dataset.size, 10);
       else return;
       menu.remove();
       scheduleRenderOverlay();
@@ -710,6 +830,30 @@
       };
       document.addEventListener('mousedown', close);
     }, 0);
+  }
+
+  function startNoteResize(note, el, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX, startY = e.clientY;
+    const scale = network.getScale();
+    const startW = stickyW(note);
+    const startH = note.h || el.getBoundingClientRect().height / scale;
+
+    function onMove(ev) {
+      // Pointer travel is in screen pixels; the note's size is in canvas units.
+      note.w = Math.max(STICKY_MIN_W, startW + (ev.clientX - startX) / scale);
+      note.h = Math.max(STICKY_MIN_H, startH + (ev.clientY - startY) / scale);
+      delete note.width;   // an explicit size supersedes any preset
+      scheduleRenderOverlay();
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      scheduleAutoSave();
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   }
 
   function startNoteDrag(note, e) {

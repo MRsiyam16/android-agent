@@ -291,9 +291,11 @@ input[type="range"]::-moz-range-thumb {
 .text-note {
   position: absolute; z-index: 8; pointer-events: auto;
 }
-/* Width is set per note from the menu (Screen 150 / Medium 240 / Wide 320). */
+/* Size is in canvas units and applied inline; the element is then scaled by the current
+   zoom, so a note holds its proportion to the screen cards at any zoom level. */
 .text-note.kind-sticky {
-  width: 240px;
+  display: flex;
+  flex-direction: column;
   background: var(--surface-2);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
@@ -345,11 +347,21 @@ input[type="range"]::-moz-range-thumb {
 .sticky-btn:hover { opacity: 1; background: rgba(0, 0, 0, 0.18); }
 
 .sticky-body {
+  flex: 1 1 auto; min-height: 0;
   color: var(--ink); font-family: var(--font-body); line-height: 1.5;
   padding: 10px 12px; outline: none;
-  max-height: 320px; overflow-y: auto;
-  overflow-wrap: break-word;
+  overflow-y: auto;
+  overflow-wrap: break-word; word-break: break-word;
 }
+/* Corner grip — drag to set the note's canvas size. */
+.sticky-resize {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize; opacity: 0.5;
+  background:
+    linear-gradient(135deg, transparent 0 52%, var(--ink-faint) 52% 62%, transparent 62% 74%,
+                    var(--ink-faint) 74% 84%, transparent 84%);
+}
+.text-note.kind-sticky:hover .sticky-resize { opacity: 0.9; }
 .sticky-body:focus {
   /* Raw Markdown is shown while editing, so keep the author's line breaks visible. */
   white-space: pre-wrap;
