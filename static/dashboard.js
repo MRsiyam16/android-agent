@@ -503,8 +503,8 @@
     textNotes.set(id, {
       id, kind, cx: canvasPos.x, cy: canvasPos.y,
       text: isSticky ? 'Write in **Markdown**.' : 'Note',
-      fontSize: isSticky ? 13 : 16,
-      ...(isSticky ? { title: 'Note', color: 'slate', w: 310 } : {}),
+      fontSize: isSticky ? 11 : 16,
+      ...(isSticky ? { title: 'Note', color: 'slate', w: 235 } : {}),
     });
     setTool('pan');
     scheduleRenderOverlay();
@@ -799,8 +799,8 @@
       </div>
       <div class="note-menu-label">Text size</div>
       <div class="note-menu-row">
-        ${[12, 14, 16].map((s) => `
-          <div class="note-menu-chip${(note.fontSize || 12) === s ? ' active' : ''}"
+        ${[11, 13, 15].map((s) => `
+          <div class="note-menu-chip${(note.fontSize || 11) === s ? ' active' : ''}"
                data-size="${s}">${s}px</div>`).join('')}
       </div>
     `;
