@@ -326,36 +326,41 @@ input[type="range"]::-moz-range-thumb {
 /* Colour-coded title bar; the colour is chosen per note so a board can be read at a
    glance (red = bug, orange = flaky, green = passing...). Doubles as the drag handle. */
 .sticky-head {
-  display: flex; align-items: center; gap: 3px;
-  padding: 5px 6px 5px 9px;
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px 4px 3px 7px;
   cursor: grab; user-select: none;
 }
 .sticky-head:active { cursor: grabbing; }
 .sticky-title {
   flex: 1 1 auto; min-width: 0;
-  font-family: var(--font-display); font-weight: 700; font-size: 11.5px;
+  /* 12px is the floor: Chrome's "minimum font size" setting clamps anything smaller, so
+     specifying less here silently renders at 12px anyway and only misleads the next reader.
+     Make notes smaller with width and padding instead. */
+  font-family: var(--font-display); font-weight: 700; font-size: 12px;
   letter-spacing: -0.01em; outline: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   cursor: text;
 }
 .sticky-title:focus { text-overflow: clip; }
 .sticky-btn {
-  flex: 0 0 auto; width: 17px; height: 17px;
+  flex: 0 0 auto; width: 14px; height: 14px;
   display: flex; align-items: center; justify-content: center;
   border-radius: var(--radius-sm); opacity: 0.65; cursor: pointer;
 }
 .sticky-btn:hover { opacity: 1; background: rgba(0, 0, 0, 0.18); }
+/* The icons are authored at 16px; scale them down to fit the smaller button box. */
+.sticky-btn svg { width: 12px; height: 12px; }
 
 .sticky-body {
   flex: 1 1 auto; min-height: 0;
-  color: var(--ink); font-family: var(--font-body); line-height: 1.45;
-  padding: 8px 10px; outline: none;
+  color: var(--ink); font-family: var(--font-body); line-height: 1.35;
+  padding: 5px 7px; outline: none;
   overflow-y: auto;
   overflow-wrap: break-word; word-break: break-word;
 }
 /* Corner grip — drag to set the note's canvas size. */
 .sticky-resize {
-  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  position: absolute; right: 0; bottom: 0; width: 12px; height: 12px;
   cursor: nwse-resize; opacity: 0.5;
   background:
     linear-gradient(135deg, transparent 0 52%, var(--ink-faint) 52% 62%, transparent 62% 74%,
