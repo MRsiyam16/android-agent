@@ -84,7 +84,15 @@ class TelemetryClient:
             logger.warning("telemetry clear failed: %s", exc)
             return False
 
-    def post_status(self, message: str, level: str = "info") -> bool:
-        """Push a preflight/progress banner message the dashboard can display."""
-        self._queue.put(("/status", {"session_id": self.session_id, "message": message, "level": level}))
+    def post_status(self, message: str, level: str = "info", popup: bool = False) -> bool:
+        """Push a preflight/progress banner message the dashboard can display.
+
+        `popup=True` additionally surfaces a blocking modal dialog on the dashboard
+        (not just the thin status banner) — use it for conditions that need the
+        user to physically go do something on the device, like unlocking it.
+        """
+        self._queue.put((
+            "/status",
+            {"session_id": self.session_id, "message": message, "level": level, "popup": popup},
+        ))
         return True

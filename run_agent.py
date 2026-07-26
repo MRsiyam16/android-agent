@@ -99,11 +99,14 @@ def ensure_device_ready(device: AdbDevice, telemetry: TelemetryClient, timeout: 
 
         if not warned:
             logger.warning("🔒 Device is locked. Please unlock your phone to start testing.")
-            telemetry.post_status("🔒 Please unlock your phone to start testing.", level="warning")
+            telemetry.post_status(
+                "🔒 Phone is locked. Please unlock your device to start testing.",
+                level="warning", popup=True,
+            )
             warned = True
 
         if time.monotonic() >= deadline:
-            telemetry.post_status("Timed out waiting for device unlock.", level="error")
+            telemetry.post_status("Timed out waiting for device unlock.", level="error", popup=True)
             raise SystemExit("Timed out waiting for the device to be unlocked. Unlock your phone and try again.")
 
         time.sleep(2.0)

@@ -166,9 +166,26 @@ node_index: dict[str, int] = {}               # state_hash -> 1-based sequential
 edge_index: dict[str, dict[str, Any]] = {}    # "from->to->label" -> {from_hash, to_hash, label}
 
 
-def _register_screen(state_hash: str, parent_hash: Optional[str], action_label: Optional[str]) -> None:
-    """Assign a stable breadcrumb name + sequential number the first time a state is seen."""
+def _register_screen(
+    state_hash: str,
+    parent_hash: Optional[str],
+    action_label: Optional[str],
+    explicit_name: Optional[str] = None,
+) -> None:
+    """Assign a stable breadcrumb name + sequential number the first time a state is seen.
+
+    `explicit_name` is used verbatim when the caller already knows what the node means —
+    scripted journeys (see `journey.py`) name each step themselves ("3. Tap 5 -> 7+5"),
+    which is far more informative than a breadcrumb derived from keypad labels. Autonomous
+    exploration passes nothing here and keeps the derived-breadcrumb behaviour."""
     if state_hash in screen_names:
+        return
+
+    if explicit_name:
+        screen_paths[state_hash] = [explicit_name]
+        screen_names[state_hash] = explicit_name
+        node_order.append(state_hash)
+        node_index[state_hash] = len(node_order)
         return
 
     parent_path = screen_paths.get(parent_hash, []) if parent_hash else []
@@ -212,6 +229,14 @@ class TelemetryPayload(BaseModel):
     screenshot_b64: str = ""
     available_elements: list[dict] = []
     executed_action: Optional[dict] = None
+    # Scripted-journey extras. A journey posts one node per step (its `state_hash` is a
+    # per-step id, not a structural hash) so the flow renders as the ordered chain the
+    # test actually walked, instead of collapsing onto one self-looping screen.
+    step_label: Optional[str] = None
+    section: Optional[str] = None
+    # The structural hash of the screen this step landed on, so a journey step can still be
+    # correlated back to a screen discovered by autonomous exploration.
+    state_hash_struct: Optional[str] = None
 
 
 class CommandPayload(BaseModel):
@@ -223,6 +248,7 @@ class StatusPayload(BaseModel):
     session_id: Optional[str] = None
     message: str
     level: str = "info"
+    popup: bool = False
 
 
 # --------------------------------------------------------------------------------------
@@ -274,7 +300,7 @@ async def favicon():
 async def post_telemetry(payload: TelemetryPayload):
     global latest_state
     action_label = (payload.executed_action or {}).get("label") if payload.executed_action else None
-    _register_screen(payload.state_hash, payload.parent_state_hash, action_label)
+    _register_screen(payload.state_hash, payload.parent_state_hash, action_label, payload.step_label)
 
     record = payload.model_dump()
     if not record.get("screenshot_b64"):
@@ -290,12 +316,15 @@ async def post_telemetry(payload: TelemetryPayload):
     telemetry_history.append(record)
     latest_state = record
 
-    if payload.executed_action and payload.parent_state_hash:
+    # A journey step is a link in a chain, so it earns an edge from its parent even with no
+    # tap behind it — verdict/checkpoint steps have no action, and skipping them would break
+    # the flow into disconnected fragments. Exploration still needs an action to draw an edge.
+    if payload.parent_state_hash and (payload.executed_action or payload.step_label):
         edge_key = f"{payload.parent_state_hash}->{payload.state_hash}->{action_label}"
         edge_index.setdefault(edge_key, {
             "from_hash": payload.parent_state_hash,
             "to_hash": payload.state_hash,
-            "label": action_label or "?",
+            "label": action_label or ("next" if payload.step_label else "?"),
         })
 
     if payload.package_name:
@@ -316,8 +345,10 @@ async def post_telemetry(payload: TelemetryPayload):
 
 @app.post("/status")
 async def post_status(payload: StatusPayload):
-    logger.info("status[%s]: %s", payload.level, payload.message)
-    await manager.broadcast({"type": "status", "message": payload.message, "level": payload.level})
+    logger.info("status[%s]: %s%s", payload.level, payload.message, " (popup)" if payload.popup else "")
+    await manager.broadcast({
+        "type": "status", "message": payload.message, "level": payload.level, "popup": payload.popup,
+    })
     return {"ok": True}
 
 

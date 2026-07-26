@@ -638,7 +638,11 @@
 
     if (isNewNode) {
       let sectionName = 'Main';
-      if (record.parent_state_hash) {
+      if (record.section) {
+        // Scripted journeys group their own steps (e.g. "Calculation 1: 7 + 5"); trust
+        // that over the keypad-label heuristic below, which can't infer test intent.
+        sectionName = record.section;
+      } else if (record.parent_state_hash) {
         const parentMeta = nodeMeta.get(record.parent_state_hash);
         const parentSection = (parentMeta && parentMeta.section) || 'Main';
         const actionLabel = record.executed_action ? record.executed_action.label : null;
@@ -651,14 +655,17 @@
       scheduleAutoSave();
     }
 
-    if (record.executed_action && record.parent_state_hash) {
+    // Journey steps chain even without a tap (verdict/checkpoint steps carry no action);
+    // without this the flow breaks into disconnected fragments at every checkpoint.
+    if (record.parent_state_hash && (record.executed_action || record.step_label)) {
+      const act = record.executed_action;
       const edgeId = record.parent_state_hash + '->' + record.state_hash + '->' +
-        (record.executed_action.x || 0) + ',' + (record.executed_action.y || 0);
+        (act ? (act.x || 0) + ',' + (act.y || 0) : 'step');
       if (!edgeMeta.has(edgeId)) {
         edgeMeta.set(edgeId, {
           from: record.parent_state_hash,
           to: record.state_hash,
-          fullLabel: 'click: ' + (record.executed_action.label || '?'),
+          fullLabel: act ? 'click: ' + (act.label || '?') : 'then',
         });
       }
     }
@@ -710,6 +717,36 @@
   function hideStatus() { statusBanner.classList.remove('visible'); }
 
   // ---------------------------------------------------------------------------
+  // Lock / alert popup — a blocking modal for conditions that need the user to
+  // go do something physical on the device (e.g. unlock it), not just glance at
+  // the thin status banner.
+  // ---------------------------------------------------------------------------
+  const lockPopupBackdrop = document.getElementById('lockPopupBackdrop');
+  const lockPopup = document.getElementById('lockPopup');
+  const lockPopupIcon = document.getElementById('lockPopupIcon');
+  const lockPopupMessage = document.getElementById('lockPopupMessage');
+  const lockPopupDismiss = document.getElementById('lockPopupDismiss');
+
+  function showLockPopup(message, level) {
+    lockPopup.className = 'lock-popup level-' + (level || 'warning');
+    lockPopupIcon.textContent = level === 'error' ? '⚠️' : '🔒';
+    lockPopupMessage.textContent = message;
+    lockPopupBackdrop.classList.add('open');
+    if (window.Notification && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    if (window.Notification && Notification.permission === 'granted' && document.hidden) {
+      new Notification('QA Tester AI', { body: message });
+    }
+  }
+  function hideLockPopup() { lockPopupBackdrop.classList.remove('open'); }
+
+  lockPopupDismiss.addEventListener('click', hideLockPopup);
+  lockPopupBackdrop.addEventListener('click', (evt) => {
+    if (evt.target === lockPopupBackdrop) hideLockPopup();
+  });
+
+  // ---------------------------------------------------------------------------
   // WebSocket
   // ---------------------------------------------------------------------------
   const connIndicator = document.getElementById('connIndicator');
@@ -746,6 +783,8 @@
         resetGraph();
       } else if (msg.type === 'status') {
         showStatus(msg.message, msg.level);
+        if (msg.popup) showLockPopup(msg.message, msg.level);
+        else if (msg.level === 'ok') hideLockPopup();
       }
     };
   }
