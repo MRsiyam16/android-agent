@@ -496,6 +496,7 @@
     textNotes.set(id, { id, cx: canvasPos.x, cy: canvasPos.y, text: 'Note', fontSize: 20 });
     setTool('pan');
     scheduleRenderOverlay();
+    scheduleAutoSave();
   }
 
   function renderTextNotes() {
@@ -516,8 +517,8 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </div>
       `;
-      el.querySelector('.text-note-content').addEventListener('blur', (e) => { note.text = e.target.innerText; });
-      el.querySelector('.text-note-delete').addEventListener('click', () => { textNotes.delete(note.id); scheduleRenderOverlay(); });
+      el.querySelector('.text-note-content').addEventListener('blur', (e) => { note.text = e.target.innerText; scheduleAutoSave(); });
+      el.querySelector('.text-note-delete').addEventListener('click', () => { textNotes.delete(note.id); scheduleRenderOverlay(); scheduleAutoSave(); });
       el.querySelector('.text-note-drag').addEventListener('mousedown', (e) => startNoteDrag(note, e));
       layer.appendChild(el);
     });
@@ -567,7 +568,7 @@
 
     popover.querySelector('[data-act="cancel"]').addEventListener('click', () => popover.remove());
     const deleteBtn = popover.querySelector('[data-act="delete"]');
-    if (deleteBtn) deleteBtn.addEventListener('click', () => { comments.delete(existingId); popover.remove(); scheduleRenderOverlay(); });
+    if (deleteBtn) deleteBtn.addEventListener('click', () => { comments.delete(existingId); popover.remove(); scheduleRenderOverlay(); scheduleAutoSave(); });
     popover.querySelector('[data-act="save"]').addEventListener('click', () => {
       const text = textarea.value.trim();
       if (!text) { popover.remove(); return; }
@@ -582,6 +583,7 @@
       }
       popover.remove();
       scheduleRenderOverlay();
+      scheduleAutoSave();
     });
   }
 
@@ -776,6 +778,7 @@
         if (currentSessionId) document.getElementById('statSession').textContent = 'Session — ' + currentSessionId;
         network.fit({ animation: false });
         scheduleRenderOverlay();
+        restoreSavedAnnotations();
       } else if (msg.type === 'telemetry') {
         ingest(msg.payload);
         if (currentSessionId) document.getElementById('statSession').textContent = 'Session — ' + currentSessionId;
@@ -1008,6 +1011,22 @@
     autoSaveTimer = setTimeout(persistProjectToServer, 2000);
   }
 
+  // A reload rebuilds the graph from telemetry history, which carries no annotations — and
+  // the ingest that follows schedules an autosave. Without this, that autosave writes a
+  // note-less blob over the saved project and silently destroys every text note and comment
+  // pin the user had added. Pull them back before the autosave fires.
+  async function restoreSavedAnnotations() {
+    if (!currentPackage || textNotes.size || comments.size) return;
+    try {
+      const resp = await fetch(`/projects/${encodeURIComponent(currentPackage)}/flow-graph`);
+      if (!resp.ok) return;
+      const saved = await resp.json();
+      (saved.notes || []).forEach((n) => textNotes.set(n.id, n));
+      (saved.comments || []).forEach((c) => comments.set(c.id, c));
+      if (textNotes.size || comments.size) scheduleRenderOverlay();
+    } catch { /* annotations are a nicety; never break the graph over them */ }
+  }
+
   async function persistProjectToServer() {
     if (!currentPackage) return;
     try {
@@ -1121,6 +1140,11 @@
     (project.notes || []).forEach((n) => textNotes.set(n.id, n));
     (project.comments || []).forEach((c) => comments.set(c.id, c));
     relayoutAll();
+    // vis hasn't drawn the new nodes yet on this frame, so comment pins (which need a
+    // node's DOM rect) and text notes render into nothing and stay invisible until the
+    // user happens to pan or resize. Re-render once the layout has actually settled.
+    network.once('afterDrawing', scheduleRenderOverlay);
+    setTimeout(scheduleRenderOverlay, 250);
     updateStats();
     if (nodesData.length) emptyState.classList.add('hidden');
     if (currentSessionId) document.getElementById('statSession').textContent = 'Session — ' + currentSessionId;

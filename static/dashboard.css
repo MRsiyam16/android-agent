@@ -297,8 +297,15 @@ input[type="range"]::-moz-range-thumb {
 }
 .text-note-content {
   color: var(--ink); font-family: var(--font-display); font-weight: 700; font-size: 20px;
-  letter-spacing: -0.02em; outline: none; min-width: 100px; padding: 2px 4px;
+  letter-spacing: -0.02em; outline: none; min-width: 100px; padding: 6px 9px;
   background: rgba(20, 20, 20, 0.6); border-radius: 6px;
+  /* Keep the line breaks the author typed — innerText preserves them, but the default
+     `white-space: normal` collapsed them back into one long line on every re-render.
+     max-width stops a long note sprawling across the canvas and covering the cards. */
+  white-space: pre-wrap;
+  max-width: 380px;
+  overflow-wrap: break-word;
+  line-height: 1.35;
 }
 .text-note-delete {
   position: absolute; right: -22px; top: 2px; width: 16px; height: 16px;
