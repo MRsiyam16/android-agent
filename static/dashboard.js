@@ -417,6 +417,7 @@
     if (e.key === 'v' || e.key === 'V') setTool('pan');
     if (e.key === 's' || e.key === 'S') setTool('select');
     if (e.key === 't' || e.key === 'T') setTool('text');
+    if (e.key === 'n' || e.key === 'N') setTool('sticky');
     if (e.key === 'c' || e.key === 'C') setTool('comment');
   });
 
@@ -442,7 +443,9 @@
         Object.assign(selectionBox.style, { left: x + 'px', top: y + 'px', width: '0px', height: '0px' });
       }
     } else if (currentTool === 'text') {
-      addTextNoteAt(x, y);
+      addTextNoteAt(x, y, 'text');
+    } else if (currentTool === 'sticky') {
+      addTextNoteAt(x, y, 'sticky');
     } else if (currentTool === 'comment') {
       const hitId = hitTestNode(x, y);
       if (hitId) openCommentComposer(hitId, x, y);
@@ -490,10 +493,18 @@
   // ---------------------------------------------------------------------------
   // Text notes
   // ---------------------------------------------------------------------------
-  function addTextNoteAt(domX, domY) {
+  // kind 'text' = a bare caption on the board (the T tool); kind 'sticky' = a note card
+  // sized to match a screen (the N tool). Legacy notes saved before stickies existed have
+  // no kind and were bare captions, so 'text' is the right default for them.
+  function addTextNoteAt(domX, domY, kind = 'text') {
     const canvasPos = network.DOMtoCanvas({ x: domX, y: domY });
     const id = 'note-' + Math.random().toString(36).slice(2, 10);
-    textNotes.set(id, { id, cx: canvasPos.x, cy: canvasPos.y, text: 'Note', fontSize: 16 });
+    const isSticky = kind === 'sticky';
+    textNotes.set(id, {
+      id, kind, cx: canvasPos.x, cy: canvasPos.y,
+      text: isSticky ? 'New note' : 'Note',
+      fontSize: isSticky ? 12 : 16,
+    });
     setTool('pan');
     scheduleRenderOverlay();
     scheduleAutoSave();
@@ -505,7 +516,7 @@
     textNotes.forEach((note) => {
       const pos = network.canvasToDOM({ x: note.cx, y: note.cy });
       const el = document.createElement('div');
-      el.className = 'text-note';
+      el.className = 'text-note kind-' + (note.kind === 'sticky' ? 'sticky' : 'text');
       el.style.left = pos.x + 'px';
       el.style.top = pos.y + 'px';
       el.innerHTML = `
