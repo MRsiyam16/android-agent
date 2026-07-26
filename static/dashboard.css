@@ -289,23 +289,33 @@ input[type="range"]::-moz-range-thumb {
 
 /* ---------------- TEXT NOTES ---------------- */
 .text-note {
-  position: absolute; z-index: 8; min-width: 120px; pointer-events: auto;
+  /* Fixed width, never responsive: notes keep the same on-screen size at any zoom level
+     so their text stays readable, and every sticky lines up at a consistent width.
+     Height is the only thing that varies, growing to fit the text so nothing is clipped. */
+  position: absolute; z-index: 8; width: 260px; pointer-events: auto;
 }
 .text-note-drag {
   position: absolute; left: -22px; top: 2px; width: 16px; height: 16px;
   cursor: grab; opacity: 0.45; color: var(--ink);
 }
 .text-note-content {
-  color: var(--ink); font-family: var(--font-display); font-weight: 700; font-size: 20px;
-  letter-spacing: -0.02em; outline: none; min-width: 100px; padding: 6px 9px;
-  background: rgba(20, 20, 20, 0.6); border-radius: 6px;
+  /* Sticky-note look: warm paper on the dark canvas, dark ink for contrast, a soft drop
+     shadow to lift it off the board and a lighter top edge to suggest a curled sheet. */
+  width: 100%; box-sizing: border-box;
+  color: #23201a; background: #f7d774;
+  background-image: linear-gradient(180deg, #fbe08c 0%, #f4cf62 100%);
+  font-family: var(--font-ui, inherit); font-weight: 500; font-size: 16px;
+  letter-spacing: 0; line-height: 1.45; outline: none;
+  padding: 14px 16px; border-radius: 3px;
+  box-shadow: 0 10px 18px -6px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.35),
+              inset 0 1px 0 rgba(255, 255, 255, 0.45);
   /* Keep the line breaks the author typed — innerText preserves them, but the default
-     `white-space: normal` collapsed them back into one long line on every re-render.
-     max-width stops a long note sprawling across the canvas and covering the cards. */
+     `white-space: normal` collapsed them back into one long line on every re-render. */
   white-space: pre-wrap;
-  max-width: 380px;
   overflow-wrap: break-word;
-  line-height: 1.35;
+}
+.text-note-content:focus {
+  box-shadow: 0 10px 18px -6px rgba(0, 0, 0, 0.55), 0 0 0 2px var(--accent-blue, #3b82f6);
 }
 .text-note-delete {
   position: absolute; right: -22px; top: 2px; width: 16px; height: 16px;

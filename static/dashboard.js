@@ -493,7 +493,7 @@
   function addTextNoteAt(domX, domY) {
     const canvasPos = network.DOMtoCanvas({ x: domX, y: domY });
     const id = 'note-' + Math.random().toString(36).slice(2, 10);
-    textNotes.set(id, { id, cx: canvasPos.x, cy: canvasPos.y, text: 'Note', fontSize: 20 });
+    textNotes.set(id, { id, cx: canvasPos.x, cy: canvasPos.y, text: 'Note', fontSize: 16 });
     setTool('pan');
     scheduleRenderOverlay();
     scheduleAutoSave();
