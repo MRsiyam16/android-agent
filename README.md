@@ -212,6 +212,39 @@ Open dashboard Settings → toggle "Tap markers" on (it's in the Display section
 ### "Screenshots are blurry"
 Increase `SCREENSHOT_QUALITY` in `config.py` (values 70–100, default 90).
 
+### "The dump says the screen changed, but the app is fine" (Flutter targets)
+`dump_hierarchy()` returns **only the topmost window**. While a dialog or a blocking
+progress overlay is up, the form underneath is absent from the dump — so a missing screen
+marker means *something is covering the screen*, not that navigation happened. Scripting a
+Flutter app against that assumption produces confident false defects:
+
+- An "Authentication Error" modal made a correct credential rejection read as
+  *"unknown credentials were accepted"*.
+- A "Creating your account…" spinner made a correct duplicate-email refusal read as
+  *"a second account was created with an address already in use"*. It flipped to PASS purely
+  by polling until the overlay cleared.
+
+Rules that follow:
+
+1. **Never judge a submit while a request is in flight.** Poll until the loading text is gone.
+2. Treat *dialog present* as still-on-form, and judge the dialog by its **wording** — the same
+   widget carries both confirmations and errors.
+3. **Wait for text, not for nodes.** A dump 5s after launch held only `com.android.systemui`;
+   a cold start after `pm clear` sits on a splash publishing ~15 nodes with no text.
+4. **Don't select by label alone.** One `content-desc` often serves both the app bar and the
+   primary button (`desc='Login'` matched the back header *and* the submit button), so a
+   first-match tap navigates back and looks like input rejection. Constrain body taps below
+   the app bar, and never use a button label as a screen-identity marker.
+5. **Forms validate reactively as you type**, so a before/after diff around the submit tap
+   misses errors that are already on screen. Baseline the pristine form on arrival and diff
+   against that, excluding `EditText` values.
+6. **A successful registration persists a session**, so later cases open on profile onboarding.
+   Reset with `pm clear --user 0 <pkg>` — the bare form fails *silently* on multi-user Samsung
+   ROMs. Expect a `com.android.permissioncontroller` permission prompt on the next launch,
+   which a package-filtered dump cannot see.
+
+Before reporting any negative finding from a dump, screenshot it.
+
 ---
 
 ## Best Practices for Fast & Effective Exploration
