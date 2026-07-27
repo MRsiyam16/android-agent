@@ -12,6 +12,10 @@
   const cardElements = new Map();  // state_hash -> persistent DOM card element
   const textNotes = new Map();     // id -> { id, cx, cy, text, fontSize }
   const comments = new Map();      // id -> { id, hash, fracX, fracY, text }
+  // state_hash -> { level: 'fail' | 'warn', badge, summary }. Written by a reporting run
+  // (see test_yt_report.py) and persisted alongside the annotations, because it is a
+  // judgement about the run rather than something telemetry can derive on its own.
+  const nodeStatus = new Map();
 
   let labelLength = 22;
   let connectorPct = 100;
@@ -235,6 +239,17 @@
       card.style.height = rect.height + 'px';
       card.classList.toggle('selected', selectedIds.has(n.id));
 
+      const status = nodeStatus.get(n.id);
+      card.classList.toggle('status-fail', status?.level === 'fail');
+      card.classList.toggle('status-warn', status?.level === 'warn');
+      if (status) {
+        card.dataset.statusBadge = status.badge || status.level.toUpperCase();
+        card.title = status.summary || '';
+      } else {
+        delete card.dataset.statusBadge;
+        card.removeAttribute('title');
+      }
+
       const meta = nodeMeta.get(n.id);
       const wantSrc = (meta && screenshotSrc(meta.screenshot)) || PLACEHOLDER_IMG;
       const img = card.querySelector('img');
@@ -326,12 +341,20 @@
         ? `M${start.x},${start.y} C${start.x},${start.y + 40} ${end.x},${end.y - 40} ${end.x},${end.y}`
         : `M${start.x},${start.y} C${start.x + 50},${start.y} ${end.x - 50},${end.y} ${end.x},${end.y}`;
 
+      // A connector inherits the status of the screen it lands on: the transition that
+      // reaches a defective screen is the one a reader wants to trace back.
+      const dstStatus = nodeStatus.get(meta.to);
+      const stroke = dstStatus?.level === 'fail' ? '#f43f5e'
+        : dstStatus?.level === 'warn' ? '#f59e0b' : '#0099ff';
+      const marker = dstStatus?.level === 'fail' ? 'arrowRed'
+        : dstStatus?.level === 'warn' ? 'arrowAmber' : 'arrowBlue';
+
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('d', d);
       path.setAttribute('fill', 'none');
-      path.setAttribute('stroke', '#0099ff');
-      path.setAttribute('stroke-width', '2');
-      path.setAttribute('marker-end', 'url(#arrowBlue)');
+      path.setAttribute('stroke', stroke);
+      path.setAttribute('stroke-width', dstStatus ? '3' : '2');
+      path.setAttribute('marker-end', `url(#${marker})`);
       svgPaths.appendChild(path);
 
       if (labelsVisible()) {
@@ -414,6 +437,21 @@
 
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+    // Delete removes the selected notes. Guarded by the check above, so it can never fire
+    // while a caption is being typed into. Graph screens are deliberately left alone —
+    // they come from telemetry and would simply reappear on the next run.
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      const doomed = [...selectedIds].filter((id) => textNotes.has(id));
+      if (doomed.length) {
+        e.preventDefault();
+        doomed.forEach((id) => textNotes.delete(id));
+        selectedIds = new Set([...selectedIds].filter((id) => !doomed.includes(id)));
+        closeTextFormatMenu();
+        scheduleRenderOverlay();
+        scheduleAutoSave();
+        return;
+      }
+    }
     if (e.key === 'v' || e.key === 'V') setTool('pan');
     if (e.key === 's' || e.key === 'S') setTool('select');
     if (e.key === 't' || e.key === 'T') setTool('text');
@@ -423,20 +461,69 @@
 
   let dragState = null;
 
+  // -- selection helpers, shared by graph nodes and notes ---------------------
+  // `selectedIds` holds both kinds; `textNotes.has(id)` is what tells them apart. A note's
+  // position lives on the note itself (cx/cy, canvas coords) rather than in vis.js, so a
+  // group drag has to move each kind through its own channel.
+  function noteDomRect(id) {
+    const el = document.querySelector(`.text-note[data-note-id="${CSS.escape(id)}"]`);
+    if (!el) return null;
+    const base = toolOverlay.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    return { left: r.left - base.left, top: r.top - base.top, width: r.width, height: r.height };
+  }
+
+  function hitTestNote(x, y) {
+    const els = Array.from(document.querySelectorAll('#textNotesLayer .text-note'));
+    // Last painted wins, matching what sits visually on top.
+    for (let i = els.length - 1; i >= 0; i--) {
+      const id = els[i].dataset.noteId;
+      const r = noteDomRect(id);
+      if (r && x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) return id;
+    }
+    return null;
+  }
+
+  function beginGroupDrag(x, y) {
+    const origins = new Map();
+    selectedIds.forEach((id) => {
+      const note = textNotes.get(id);
+      if (note) { origins.set(id, { x: note.cx, y: note.cy, isNote: true }); return; }
+      const pos = network.getPositions([id])[id];
+      if (pos) origins.set(id, { x: pos.x, y: pos.y, isNote: false });
+    });
+    dragState = { mode: 'group', startX: x, startY: y, origins, movedNote: false };
+  }
+
+  // Notes sit above the tool overlay (z-index 20 vs 15), so with the select tool active a
+  // mousedown on a note never reaches the overlay at all — which is why neither the
+  // marquee nor the move tool could pick a note up, and why grabbing a sticky's header
+  // dragged that one note instead of the selection. Intercept in the capture phase and
+  // route it through the same path the graph nodes use.
+  document.getElementById('textNotesLayer').addEventListener('mousedown', (e) => {
+    if (currentTool !== 'select') return;
+    const noteEl = e.target.closest('.text-note');
+    if (!noteEl) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const base = toolOverlay.getBoundingClientRect();
+    const x = e.clientX - base.left, y = e.clientY - base.top;
+    const id = noteEl.dataset.noteId;
+    if (!selectedIds.has(id)) { selectedIds = new Set([id]); scheduleRenderOverlay(); }
+    beginGroupDrag(x, y);
+  }, true);
+
   toolOverlay.addEventListener('mousedown', (e) => {
     const rect = toolOverlay.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
 
     if (currentTool === 'select') {
-      const hitId = hitTestNode(x, y);
+      // Notes are hit-tested first: they render above the graph, so at a point covering
+      // both, the note is what the user sees and is aiming at.
+      const hitId = hitTestNote(x, y) || hitTestNode(x, y);
       if (hitId) {
         if (!selectedIds.has(hitId)) { selectedIds = new Set([hitId]); scheduleRenderOverlay(); }
-        const origins = new Map();
-        selectedIds.forEach((id) => {
-          const pos = network.getPositions([id])[id];
-          if (pos) origins.set(id, { x: pos.x, y: pos.y });
-        });
-        dragState = { mode: 'group', startX: x, startY: y, origins };
+        beginGroupDrag(x, y);
       } else {
         dragState = { mode: 'marquee', startX: x, startY: y };
         selectionBox.classList.add('visible');
@@ -465,8 +552,15 @@
       const scale = network.getScale();
       const dx = (x - dragState.startX) / scale, dy = (y - dragState.startY) / scale;
       const updates = [];
-      dragState.origins.forEach((orig, id) => updates.push({ id, x: orig.x + dx, y: orig.y + dy }));
-      nodesData.update(updates);
+      dragState.origins.forEach((orig, id) => {
+        if (orig.isNote) {
+          const note = textNotes.get(id);
+          if (note) { note.cx = orig.x + dx; note.cy = orig.y + dy; dragState.movedNote = true; }
+        } else {
+          updates.push({ id, x: orig.x + dx, y: orig.y + dy });
+        }
+      });
+      if (updates.length) nodesData.update(updates);
       scheduleRenderOverlay();
     }
   });
@@ -478,15 +572,17 @@
       const bx1 = parseFloat(selectionBox.style.left), by1 = parseFloat(selectionBox.style.top);
       const bx2 = bx1 + parseFloat(selectionBox.style.width), by2 = by1 + parseFloat(selectionBox.style.height);
       const newSel = new Set();
-      nodesData.forEach((n) => {
-        const r = nodeDomRect(n.id);
-        if (!r) return;
-        const overlap = !(r.left > bx2 || r.left + r.width < bx1 || r.top > by2 || r.top + r.height < by1);
-        if (overlap) newSel.add(n.id);
-      });
+      const hits = (r) => r && !(r.left > bx2 || r.left + r.width < bx1
+                                 || r.top > by2 || r.top + r.height < by1);
+      nodesData.forEach((n) => { if (hits(nodeDomRect(n.id))) newSel.add(n.id); });
+      // Notes are part of the board, so a marquee has to sweep them up too.
+      textNotes.forEach((note) => { if (hits(noteDomRect(note.id))) newSel.add(note.id); });
       selectedIds = newSel;
       scheduleRenderOverlay();
     }
+    // A note's position is only in memory until something saves it; node positions are
+    // re-derived from the layout, so only a moved note needs persisting.
+    if (dragState.mode === 'group' && dragState.movedNote) scheduleAutoSave();
     dragState = null;
   });
 
@@ -502,38 +598,93 @@
     const isSticky = kind === 'sticky';
     textNotes.set(id, {
       id, kind, cx: canvasPos.x, cy: canvasPos.y,
-      text: isSticky ? 'Write in **Markdown**.' : 'Note',
-      fontSize: isSticky ? 12 : 16,
-      ...(isSticky ? { title: 'Note', color: 'slate', w: 150 } : {}),
+      text: isSticky ? 'Write in **Markdown**.' : 'Heading',
+      fontSize: isSticky ? 10 : 24,
+      ...(isSticky ? { title: 'Note', color: 'slate', w: 130 }
+                   : { color: 'white', weight: 700 }),
     });
     setTool('pan');
     scheduleRenderOverlay();
     scheduleAutoSave();
+    // Drop straight into typing with the formatting menu already open, so a new caption
+    // can be styled without hunting for a control first.
+    if (!isSticky) {
+      // The overlay render is debounced, so the element does not exist yet. Wait for it
+      // rather than firing one hopeful rAF — a single frame loses the race and the caption
+      // silently opens unfocused, with no menu.
+      let tries = 0;
+      const grabFocus = () => {
+        const el = document.querySelector(`.text-note[data-note-id="${CSS.escape(id)}"]`);
+        const content = el && el.querySelector('.text-note-content');
+        if (content) {
+          content.focus();
+          document.execCommand('selectAll', false, null);
+        } else if (++tries < 60) {
+          requestAnimationFrame(grabFocus);
+        }
+      };
+      requestAnimationFrame(grabFocus);
+    }
   }
 
   // Header colours are for triage at a glance — red for bugs, amber for flaky, and so on.
   // Values come from the design tokens so notes stay in the same palette as the rest of the UI.
   const STICKY_COLORS = [
-    { key: 'slate',  label: 'Neutral', css: 'var(--surface-3)', ink: 'var(--ink)' },
-    { key: 'red',    label: 'Bug',     css: 'var(--danger)',        ink: '#1a0207' },
-    { key: 'orange', label: 'Flaky',   css: 'var(--accent-orange)', ink: '#1c0c04' },
-    { key: 'green',  label: 'Passing', css: 'var(--success)',       ink: '#04140a' },
-    { key: 'blue',   label: 'Info',    css: 'var(--accent-blue)',   ink: '#001526' },
-    { key: 'purple', label: 'Idea',    css: '#a855f7',              ink: '#14042a' },
+    { key: 'slate',  label: 'Neutral', css: '#dedede',              ink: '#121214' },
+    { key: 'red',    label: 'Bug',     css: '#fef08a',              ink: '#713f12' },
+    { key: 'orange', label: 'Flaky',   css: '#fed7aa',              ink: '#431407' },
+    { key: 'green',  label: 'Passing', css: '#bbf7d0',              ink: '#14532d' },
+    { key: 'blue',   label: 'Info',    css: '#a5f3fc',              ink: '#164e63' },
+    { key: 'purple', label: 'Idea',    css: '#e9d5ff',              ink: '#581c87' },
   ];
-  // Sizes are canvas units, the same space the screen cards live in (CARD_W 150 x CARD_H
-  // 300), so a note holds its size relative to the flow and scales with zoom instead of
-  // ballooning when you zoom out.
+
+  // -- bare text captions (the T tool) ---------------------------------------
+  // Ink colours, not fills: a caption sits directly on the dark board, so these are
+  // chosen to stay legible against it rather than to tint a card.
+  const TEXT_COLORS = [
+    { key: 'white',  label: 'Default', css: '#f4f4f5' },
+    { key: 'muted',  label: 'Muted',   css: '#a1a1aa' },
+    { key: 'blue',   label: 'Blue',    css: '#38bdf8' },
+    { key: 'green',  label: 'Green',   css: '#4ade80' },
+    { key: 'amber',  label: 'Amber',   css: '#fbbf24' },
+    { key: 'red',    label: 'Red',     css: '#f87171' },
+    { key: 'purple', label: 'Purple',  css: '#c084fc' },
+  ];
+  const TEXT_WEIGHTS = [
+    { w: 400, label: 'Regular' }, { w: 600, label: 'Semi' },
+    { w: 700, label: 'Bold' }, { w: 800, label: 'Heavy' },
+  ];
+  // Captions double as board headings, so the range runs from footnote to poster.
+  const TEXT_SIZE_MIN = 6, TEXT_SIZE_MAX = 200;
+  const TEXT_SIZE_PRESETS = [12, 16, 24, 32, 48, 72, 120];
+
+  function textInk(key) {
+    return (TEXT_COLORS.find((c) => c.key === key) || TEXT_COLORS[0]).css;
+  }
+  function textSize(note) {
+    const n = parseInt(note.fontSize, 10);
+    return Math.min(TEXT_SIZE_MAX, Math.max(TEXT_SIZE_MIN, Number.isFinite(n) ? n : 24));
+  }
+  function textContentStyle(note) {
+    return `font-size:${textSize(note)}px;color:${textInk(note.color)};`
+         + `font-weight:${note.weight || 400};line-height:1.15;`;
+  }
+
+  // Notes are laid out at 2x and scaled back down.
+  const STICKY_DESIGN_SCALE = 2;
   const STICKY_WIDTHS = [
-    { key: 'screen', label: '1 screen', w: 150 },
-    { key: 'medium', label: '2 screens', w: 310 },
-    { key: 'wide',   label: '3 screens', w: 470 },
+    { key: 'mini',   label: 'Mini',   w: 110 },
+    { key: 'small',  label: 'Small',  w: 130 },
+    { key: 'medium', label: 'Medium', w: 160 },
+    { key: 'large',  label: 'Large',  w: 220 },
   ];
-  const STICKY_MIN_W = 110, STICKY_MIN_H = 90;
+  const STICKY_MIN_W = 80, STICKY_MIN_H = 60;
   const stickyColor = (key) => STICKY_COLORS.find((c) => c.key === key) || STICKY_COLORS[0];
-  // Older notes stored a width preset key rather than an explicit canvas width.
-  const stickyW = (note) => note.w
-    || (STICKY_WIDTHS.find((w) => w.key === note.width) || STICKY_WIDTHS[1]).w;
+  const stickyW = (note) => {
+    if (typeof note.w === 'number') return note.w;
+    const found = STICKY_WIDTHS.find((w) => w.key === note.width);
+    return found ? found.w : 130;
+  };
 
   // Small Markdown subset, rendered locally rather than pulling in a library: the dashboard
   // is used against devices on isolated networks, so a CDN script would simply fail there.
@@ -692,16 +843,31 @@
         const pos = network.canvasToDOM({ x: note.cx, y: note.cy });
         el.style.left = pos.x + 'px';
         el.style.top = pos.y + 'px';
+        // Restyle in place as well as reposition. The formatting menu lives inside this
+        // layer, so dragging its size slider puts focus *here* and takes this branch —
+        // without this the caption would not change until focus left the slider, which
+        // reads as a dead control.
+        const content = note.kind !== 'sticky' && el.querySelector('.text-note-content');
+        if (content) {
+          content.setAttribute('style', textContentStyle(note));
+          el.style.transformOrigin = 'top left';
+          el.style.transform = `scale(${network.getScale()})`;
+        }
       });
       return;
     }
 
+    // A full rebuild only happens when focus is outside this layer — i.e. nothing is being
+    // edited — so any open formatting menu is about to be destroyed with the rest of the
+    // layer. Close it properly instead of leaving `textMenuState` pointing at a dead node.
+    closeTextFormatMenu();
     layer.innerHTML = '';
     textNotes.forEach((note) => {
       const pos = network.canvasToDOM({ x: note.cx, y: note.cy });
       const el = document.createElement('div');
       const isSticky = note.kind === 'sticky';
-      el.className = 'text-note kind-' + (isSticky ? 'sticky' : 'text');
+      el.className = 'text-note kind-' + (isSticky ? 'sticky' : 'text')
+        + (selectedIds.has(note.id) ? ' selected' : '');
       el.dataset.noteId = note.id;
       el.style.left = pos.x + 'px';
       el.style.top = pos.y + 'px';
@@ -711,21 +877,24 @@
         // Lay the note out at its canvas size, then scale the whole element by the current
         // zoom. Everything inside — text, padding, header, buttons — scales together, so a
         // note keeps its proportion to the screens instead of being a fixed screen size.
-        el.style.width = stickyW(note) + 'px';
-        if (note.h) el.style.height = note.h + 'px';
+        el.style.width = (stickyW(note) * STICKY_DESIGN_SCALE) + 'px';
+        if (note.h) el.style.height = (note.h * STICKY_DESIGN_SCALE) + 'px';
         el.style.transformOrigin = 'top left';
-        el.style.transform = `scale(${network.getScale()})`;
+        el.style.transform = `scale(${network.getScale() / STICKY_DESIGN_SCALE})`;
         el.innerHTML = `
           <div class="sticky-head" style="background:${color.css};color:${color.ink};">
-            <div class="sticky-title" contenteditable="true" spellcheck="false">${escapeHtml(note.title || 'Note')}</div>
-            <div class="sticky-btn sticky-menu-btn" title="Note settings">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="17" x2="20" y2="17"></line></svg>
-            </div>
-            <div class="sticky-btn sticky-close" title="Delete note">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            <div class="sticky-title" contenteditable="true" spellcheck="false"
+                 style="font-size:${(note.fontSize || 12) * STICKY_DESIGN_SCALE}px;">${escapeHtml(note.title || 'Note Title')}</div>
+            <div class="sticky-actions">
+              <div class="sticky-btn sticky-menu-btn" title="Note settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="17" x2="20" y2="17"></line></svg>
+              </div>
+              <div class="sticky-btn sticky-close" title="Delete note">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              </div>
             </div>
           </div>
-          <div class="sticky-body markdown" contenteditable="true" style="font-size:${note.fontSize}px;">${renderMarkdown(note.text)}</div>
+          <div class="sticky-body markdown" contenteditable="false" style="font-size:${(note.fontSize || 12) * STICKY_DESIGN_SCALE}px;">${renderMarkdown(note.text)}</div>
           <div class="sticky-resize" title="Drag to resize"></div>
         `;
 
@@ -734,10 +903,28 @@
         title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
 
         const body = el.querySelector('.sticky-body');
-        // Swap the rendered HTML for the raw Markdown while editing, then render on the way out.
-        body.addEventListener('focus', () => { body.textContent = note.text; });
+        // Editing is opt-in via double-click. A single click has to stay harmless: the
+        // body is what you click to read, select or drag a note past, and when a single
+        // click armed the editor every stray click swapped rendered Markdown for raw
+        // source — and then round-tripped it back through the save.
+        body.addEventListener('dblclick', () => {
+          if (body.isContentEditable) return;
+          body.setAttribute('contenteditable', 'true');
+          body.classList.add('editing');   // explicit class, not :focus — see dashboard.css
+          body.textContent = note.text;
+          body.focus();
+        });
         body.addEventListener('blur', () => {
-          note.text = body.innerText;
+          if (!body.isContentEditable) return;
+          // textContent, NEVER innerText. innerText is computed from the *rendered*
+          // layout, so it returns whatever the current white-space setting produced —
+          // by blur time the editing style is already going away, and every newline in
+          // the note came back collapsed to a space. One click in and out permanently
+          // flattened a note's Markdown and auto-saved the damage. textContent returns
+          // the literal characters and is immune to all of that.
+          note.text = body.textContent;
+          body.setAttribute('contenteditable', 'false');
+          body.classList.remove('editing');
           body.innerHTML = renderMarkdown(note.text);
           scheduleAutoSave();
         });
@@ -748,26 +935,39 @@
         el.querySelector('.sticky-menu-btn').addEventListener('mousedown', (e) => {
           e.stopPropagation(); e.preventDefault(); openNoteMenu(note, e.currentTarget);
         });
-        // The header doubles as the title bar you drag the note by.
+        // The header doubles as the tab bar you drag the note by (holding mouse down anywhere on tab bar).
         el.querySelector('.sticky-head').addEventListener('mousedown', (e) => {
-          if (e.target.closest('.sticky-btn') || e.target.closest('.sticky-title')) return;
-          startNoteDrag(note, e);
+          if (e.target.closest('.sticky-btn')) return;
+          const title = e.target.closest('.sticky-title');
+          startNoteDrag(note, e, title);
         });
         el.querySelector('.sticky-resize').addEventListener('mousedown', (e) => {
           startNoteResize(note, el, e);
         });
       } else {
+        // Font size is a *canvas* measurement, like a sticky's width: the element is laid
+        // out at its true size and then scaled by the zoom. Without this a 120px heading
+        // would still be 120 screen pixels at 13% zoom, dwarfing the whole board.
+        el.style.transformOrigin = 'top left';
+        el.style.transform = `scale(${network.getScale()})`;
         el.innerHTML = `
           <div class="text-note-drag">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="6" r="1.6"></circle><circle cx="8" cy="12" r="1.6"></circle><circle cx="8" cy="18" r="1.6"></circle><circle cx="16" cy="6" r="1.6"></circle><circle cx="16" cy="12" r="1.6"></circle><circle cx="16" cy="18" r="1.6"></circle></svg>
           </div>
-          <div class="text-note-content" contenteditable="true" style="font-size:${note.fontSize}px;">${escapeHtml(note.text)}</div>
+          <div class="text-note-content" contenteditable="true" spellcheck="false"
+               style="${textContentStyle(note)}">${escapeHtml(note.text)}</div>
           <div class="text-note-delete">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </div>
         `;
-        el.querySelector('.text-note-content').addEventListener('blur', (e) => { note.text = e.target.innerText; scheduleAutoSave(); });
-        el.querySelector('.text-note-delete').addEventListener('click', () => { textNotes.delete(note.id); scheduleRenderOverlay(); scheduleAutoSave(); });
+        const content = el.querySelector('.text-note-content');
+        content.addEventListener('blur', (e) => { note.text = e.target.innerText; scheduleAutoSave(); });
+        // Entering the box is what opens the formatting menu — no extra affordance to find.
+        content.addEventListener('focus', () => openTextFormatMenu(note, el));
+        content.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') { e.preventDefault(); closeTextFormatMenu(); content.blur(); }
+        });
+        el.querySelector('.text-note-delete').addEventListener('click', () => { textNotes.delete(note.id); closeTextFormatMenu(); scheduleRenderOverlay(); scheduleAutoSave(); });
         el.querySelector('.text-note-drag').addEventListener('mousedown', (e) => startNoteDrag(note, e));
       }
 
@@ -775,10 +975,128 @@
     });
   }
 
+  // -- caption formatting menu -----------------------------------------------
+  // Opens on focus of a text note. It must survive the note being re-rendered and must
+  // not steal focus from the caption, so every control commits on `input`/`click` and
+  // the menu closes only on a mousedown that lands outside both it and its note.
+  let textMenuState = null;
+
+  function closeTextFormatMenu() {
+    if (!textMenuState) return;
+    document.removeEventListener('mousedown', textMenuState.onDocDown, true);
+    textMenuState.menu.remove();
+    textMenuState = null;
+  }
+
+  function openTextFormatMenu(note, noteEl) {
+    if (textMenuState && textMenuState.noteId === note.id) return;   // already open
+    closeTextFormatMenu();
+
+    const layer = document.getElementById('textNotesLayer');
+    const layerRect = layer.getBoundingClientRect();
+    const r = noteEl.getBoundingClientRect();
+
+    const menu = document.createElement('div');
+    menu.className = 'note-menu text-format-menu';
+    menu.style.left = Math.max(4, r.left - layerRect.left) + 'px';
+    menu.style.top = (r.bottom - layerRect.top + 8) + 'px';
+    const size = textSize(note);
+    menu.innerHTML = `
+      <div class="note-menu-label">Colour</div>
+      <div class="note-menu-swatches">
+        ${TEXT_COLORS.map((c) => `
+          <div class="note-swatch${(note.color || 'white') === c.key ? ' active' : ''}"
+               data-tcolor="${c.key}" title="${c.label}" style="background:${c.css}"></div>`).join('')}
+      </div>
+
+      <div class="note-menu-label">Weight</div>
+      <div class="note-menu-row">
+        ${TEXT_WEIGHTS.map((w) => `
+          <div class="note-menu-chip${(note.weight || 400) === w.w ? ' active' : ''}"
+               data-tweight="${w.w}" style="font-weight:${w.w};">${w.label}</div>`).join('')}
+      </div>
+
+      <div class="note-menu-label" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Text size</span>
+        <span class="note-val-label" id="textSizeVal">${size}px</span>
+      </div>
+      <div class="note-menu-row">
+        ${TEXT_SIZE_PRESETS.map((s) => `
+          <div class="note-menu-chip${size === s ? ' active' : ''}" data-tsize="${s}">${s}</div>`).join('')}
+      </div>
+      <div class="note-slider-container">
+        <input type="range" class="note-slider" id="textSizeSlider"
+               min="${TEXT_SIZE_MIN}" max="${TEXT_SIZE_MAX}" step="1" value="${size}">
+      </div>
+      <div class="note-menu-hint">Esc to finish · Del removes the selected note</div>
+    `;
+
+    // Keep the caret in the caption when the menu is clicked, so typing can continue.
+    menu.addEventListener('mousedown', (e) => {
+      if (e.target.tagName !== 'INPUT') e.preventDefault();
+      e.stopPropagation();
+    });
+
+    const sizeVal = menu.querySelector('#textSizeVal');
+    const slider = menu.querySelector('#textSizeSlider');
+
+    const applySize = (val) => {
+      note.fontSize = Math.min(TEXT_SIZE_MAX, Math.max(TEXT_SIZE_MIN, val));
+      sizeVal.textContent = note.fontSize + 'px';
+      menu.querySelectorAll('[data-tsize]').forEach((c) =>
+        c.classList.toggle('active', parseInt(c.dataset.tsize, 10) === note.fontSize));
+      restyleNote(note);
+      scheduleAutoSave();
+    };
+
+    slider.addEventListener('input', (e) => applySize(parseInt(e.target.value, 10)));
+
+    menu.addEventListener('click', (e) => {
+      const sw = e.target.closest('[data-tcolor]');
+      const wt = e.target.closest('[data-tweight]');
+      const sz = e.target.closest('[data-tsize]');
+      if (sw) {
+        note.color = sw.dataset.tcolor;
+        menu.querySelectorAll('[data-tcolor]').forEach((s) =>
+          s.classList.toggle('active', s.dataset.tcolor === note.color));
+        restyleNote(note); scheduleAutoSave();
+      } else if (wt) {
+        note.weight = parseInt(wt.dataset.tweight, 10);
+        menu.querySelectorAll('[data-tweight]').forEach((c) =>
+          c.classList.toggle('active', parseInt(c.dataset.tweight, 10) === note.weight));
+        restyleNote(note); scheduleAutoSave();
+      } else if (sz) {
+        slider.value = sz.dataset.tsize;
+        applySize(parseInt(sz.dataset.tsize, 10));
+      }
+    });
+
+    const onDocDown = (ev) => {
+      const el = document.querySelector(`.text-note[data-note-id="${CSS.escape(note.id)}"]`);
+      if (menu.contains(ev.target) || (el && el.contains(ev.target))) return;
+      closeTextFormatMenu();
+    };
+    document.addEventListener('mousedown', onDocDown, true);
+
+    layer.appendChild(menu);
+    textMenuState = { noteId: note.id, menu, onDocDown };
+  }
+
+  // Apply style to the live element without a full re-render, which would blow away the
+  // caret mid-edit.
+  function restyleNote(note) {
+    const el = document.querySelector(`.text-note[data-note-id="${CSS.escape(note.id)}"]`);
+    const content = el && el.querySelector('.text-note-content');
+    if (content) content.setAttribute('style', textContentStyle(note));
+  }
+
   function openNoteMenu(note, anchorEl) {
     document.querySelectorAll('.note-menu').forEach((m) => m.remove());
     const rect = anchorEl.getBoundingClientRect();
     const layerRect = document.getElementById('textNotesLayer').getBoundingClientRect();
+
+    const currentW = Math.round(stickyW(note));
+    const currentSize = note.fontSize || 10;
 
     const menu = document.createElement('div');
     menu.className = 'note-menu';
@@ -791,36 +1109,88 @@
           <div class="note-swatch${(note.color || 'slate') === c.key ? ' active' : ''}"
                data-color="${c.key}" title="${c.label}" style="background:${c.css}"></div>`).join('')}
       </div>
-      <div class="note-menu-label">Width</div>
+
+      <div class="note-menu-label" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Width</span>
+        <span class="note-val-label" id="noteWidthVal">${currentW}px</span>
+      </div>
       <div class="note-menu-row">
         ${STICKY_WIDTHS.map((w) => `
-          <div class="note-menu-chip${Math.round(stickyW(note)) === w.w ? ' active' : ''}"
+          <div class="note-menu-chip${currentW === w.w ? ' active' : ''}"
                data-width="${w.key}">${w.label}</div>`).join('')}
       </div>
-      <div class="note-menu-label">Text size</div>
+      <div class="note-slider-container">
+        <input type="range" class="note-slider" id="noteWidthSlider" min="80" max="260" step="5" value="${currentW}">
+      </div>
+
+      <div class="note-menu-label" style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+        <span>Text size</span>
+        <span class="note-val-label" id="noteSizeVal">${currentSize}px</span>
+      </div>
       <div class="note-menu-row">
-        ${[12, 14, 16].map((s) => `
-          <div class="note-menu-chip${(note.fontSize || 12) === s ? ' active' : ''}"
+        ${[6, 8, 9, 10, 11, 12, 14].map((s) => `
+          <div class="note-menu-chip${currentSize === s ? ' active' : ''}"
                data-size="${s}">${s}px</div>`).join('')}
+      </div>
+      <div class="note-slider-container">
+        <input type="range" class="note-slider" id="noteSizeSlider" min="6" max="16" step="1" value="${currentSize}">
       </div>
     `;
 
     menu.addEventListener('mousedown', (e) => e.stopPropagation());
-    menu.addEventListener('click', (e) => {
-      const swatch = e.target.closest('[data-color]');
-      const width = e.target.closest('[data-width]');
-      const size = e.target.closest('[data-size]');
-      if (swatch) note.color = swatch.dataset.color;
-      else if (width) {
-        const preset = STICKY_WIDTHS.find((w) => w.key === width.dataset.width);
-        note.w = preset.w;
-        delete note.width;
-        delete note.h;       // let height fall back to fitting the text at the new width
-      } else if (size) note.fontSize = parseInt(size.dataset.size, 10);
-      else return;
-      menu.remove();
+
+    const widthSlider = menu.querySelector('#noteWidthSlider');
+    const widthVal = menu.querySelector('#noteWidthVal');
+    const sizeSlider = menu.querySelector('#noteSizeSlider');
+    const sizeVal = menu.querySelector('#noteSizeVal');
+
+    widthSlider.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      note.w = val;
+      delete note.width;
+      delete note.h;
+      widthVal.textContent = val + 'px';
       scheduleRenderOverlay();
       scheduleAutoSave();
+    });
+
+    sizeSlider.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      note.fontSize = val;
+      sizeVal.textContent = val + 'px';
+      scheduleRenderOverlay();
+      scheduleAutoSave();
+    });
+
+    menu.addEventListener('click', (e) => {
+      const swatch = e.target.closest('[data-color]');
+      const widthChip = e.target.closest('[data-width]');
+      const sizeChip = e.target.closest('[data-size]');
+
+      if (swatch) {
+        note.color = swatch.dataset.color;
+        menu.remove();
+        scheduleRenderOverlay();
+        scheduleAutoSave();
+      } else if (widthChip) {
+        const preset = STICKY_WIDTHS.find((w) => w.key === widthChip.dataset.width);
+        if (preset) {
+          note.w = preset.w;
+          delete note.width;
+          delete note.h;
+          widthSlider.value = preset.w;
+          widthVal.textContent = preset.w + 'px';
+          scheduleRenderOverlay();
+          scheduleAutoSave();
+        }
+      } else if (sizeChip) {
+        const sz = parseInt(sizeChip.dataset.size, 10);
+        note.fontSize = sz;
+        sizeSlider.value = sz;
+        sizeVal.textContent = sz + 'px';
+        scheduleRenderOverlay();
+        scheduleAutoSave();
+      }
     });
 
     document.getElementById('textNotesLayer').appendChild(menu);
@@ -856,20 +1226,33 @@
     window.addEventListener('mouseup', onUp);
   }
 
-  function startNoteDrag(note, e) {
-    e.preventDefault();
+  function startNoteDrag(note, e, targetTitle = null) {
     e.stopPropagation();
     const startClientX = e.clientX, startClientY = e.clientY;
     const startCx = note.cx, startCy = note.cy;
+    let moved = false;
+
     function onMove(ev) {
-      const scale = network.getScale();
-      note.cx = startCx + (ev.clientX - startClientX) / scale;
-      note.cy = startCy + (ev.clientY - startClientY) / scale;
-      scheduleRenderOverlay();
+      const dx = ev.clientX - startClientX;
+      const dy = ev.clientY - startClientY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        moved = true;
+        if (targetTitle && document.activeElement === targetTitle) {
+          targetTitle.blur();
+        }
+      }
+      if (moved) {
+        ev.preventDefault();
+        const scale = network.getScale();
+        note.cx = startCx + dx / scale;
+        note.cy = startCy + dy / scale;
+        scheduleRenderOverlay();
+      }
     }
     function onUp() {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      if (moved) scheduleAutoSave();
     }
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -1025,6 +1408,7 @@
     cardElements.clear();
     textNotes.clear();
     comments.clear();
+    nodeStatus.clear();
     selectedIds = new Set();
     currentSessionId = null;
     ['connectorPaths', 'connectorLabels', 'connectorMarkers', 'nodeHeaders', 'sectionHeadings', 'commentsLayer', 'textNotesLayer']
@@ -1322,7 +1706,41 @@
       sections: Array.from(sections.entries()).map(([name, list]) => ({ name, list })),
       notes: Array.from(textNotes.values()),
       comments: Array.from(comments.values()),
+      nodeStatus: Array.from(nodeStatus.entries()).map(([hash, s]) => ({ hash, ...s })),
+      // Screen positions are the arrangement itself: sections dragged into parallel
+      // columns are a hand-made layout that `relayoutAll` cannot reproduce, so without
+      // this a reload silently collapses the board back into one column.
+      nodePositions: buildNodePositions(),
     };
+  }
+
+  function buildNodePositions() {
+    const out = [];
+    try {
+      const ids = [];
+      nodesData.forEach((n) => ids.push(n.id));
+      if (!ids.length) return out;
+      const pos = network.getPositions(ids);
+      ids.forEach((id) => {
+        const p = pos[id];
+        if (p) out.push({ hash: id, x: Math.round(p.x), y: Math.round(p.y) });
+      });
+    } catch { /* a layout we cannot read must not block the save */ }
+    return out;
+  }
+
+  // Put saved screen positions back. Returns how many were applied so callers can tell
+  // whether to fall back to the automatic layout.
+  function applyNodePositions(list) {
+    if (!Array.isArray(list) || !list.length) return 0;
+    const updates = [];
+    list.forEach((p) => {
+      if (!p || typeof p.x !== 'number' || typeof p.y !== 'number') return;
+      if (!nodesData.get(p.hash)) return;
+      updates.push({ id: p.hash, x: p.x, y: p.y, fixed: { x: true, y: true } });
+    });
+    if (updates.length) { nodesData.update(updates); scheduleRenderOverlay(); }
+    return updates.length;
   }
 
   document.getElementById('saveBtn').addEventListener('click', () => {
@@ -1348,14 +1766,21 @@
   // note-less blob over the saved project and silently destroys every text note and comment
   // pin the user had added. Pull them back before the autosave fires.
   async function restoreSavedAnnotations() {
-    if (!currentPackage || textNotes.size || comments.size) return;
+    if (!currentPackage || textNotes.size || comments.size || nodeStatus.size) return;
     try {
       const resp = await fetch(`/projects/${encodeURIComponent(currentPackage)}/flow-graph`);
       if (!resp.ok) return;
       const saved = await resp.json();
       (saved.notes || []).forEach((n) => textNotes.set(n.id, n));
       (saved.comments || []).forEach((c) => comments.set(c.id, c));
-      if (textNotes.size || comments.size) scheduleRenderOverlay();
+      // Defect markings are rebuilt from the same saved blob as the annotations —
+      // telemetry alone cannot say which screens a reviewer judged broken.
+      (saved.nodeStatus || []).forEach((s) => nodeStatus.set(s.hash, s));
+      // Telemetry replay lays the graph out automatically; a saved arrangement must win
+      // over that, or every reload throws away however the board was actually organised.
+      const placed = applyNodePositions(saved.nodePositions);
+      if (placed) network.fit({ animation: false });
+      if (textNotes.size || comments.size || nodeStatus.size) scheduleRenderOverlay();
     } catch { /* annotations are a nicety; never break the graph over them */ }
   }
 
@@ -1374,6 +1799,7 @@
   }
 
   async function fetchProjects() {
+    refreshSaveProjectBtn();
     const list = document.getElementById('projectsList');
     const empty = document.getElementById('projectsEmpty');
     let projects = [];
@@ -1419,6 +1845,53 @@
     } catch (err) {
       showStatus('Could not open project: ' + err.message, 'error');
     }
+  }
+
+  // Explicit save of the open board. Autosave already runs on a 2s debounce, but it is
+  // invisible and easy to distrust — and it does not fire at all if the last change was
+  // a pan or zoom. This is the button you press before closing the laptop.
+  const saveProjectBtn = document.getElementById('saveProjectBtn');
+  const saveProjectHint = document.getElementById('saveProjectHint');
+
+  // Looks the element up rather than closing over the const above: this is called from
+  // fetchProjects, which is declared earlier in the file, so a closure would risk a
+  // temporal-dead-zone throw if the projects view ever renders during startup.
+  function refreshSaveProjectBtn() {
+    const btn = document.getElementById('saveProjectBtn');
+    if (!btn) return;
+    const ready = Boolean(currentPackage) && nodesData.length > 0;
+    btn.disabled = !ready;
+    btn.textContent = ready ? `Save "${currentPackage}"` : 'Save current project';
+  }
+
+  if (saveProjectBtn) {
+    saveProjectBtn.addEventListener('click', async () => {
+      if (!currentPackage) return;
+      const original = saveProjectBtn.textContent;
+      saveProjectBtn.disabled = true;
+      saveProjectBtn.textContent = 'Saving…';
+      try {
+        const blob = buildProjectBlob();
+        const resp = await fetch(`/projects/${encodeURIComponent(currentPackage)}/flow-graph`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(blob),
+        });
+        if (!resp.ok) throw new Error(`server said ${resp.status}`);
+        saveProjectBtn.textContent = 'Saved ✓';
+        if (saveProjectHint) {
+          saveProjectHint.textContent =
+            `Saved ${blob.nodePositions.length} screen positions, ${blob.notes.length} notes `
+            + `and ${blob.comments.length} comment pins at ${new Date().toLocaleTimeString()}.`;
+        }
+        fetchProjects();
+        setTimeout(() => { saveProjectBtn.textContent = original; refreshSaveProjectBtn(); }, 2000);
+      } catch (err) {
+        saveProjectBtn.textContent = 'Save failed';
+        showStatus('Could not save project: ' + err.message, 'error');
+        setTimeout(() => { saveProjectBtn.textContent = original; refreshSaveProjectBtn(); }, 2500);
+      }
+    });
   }
 
   document.getElementById('newProjectBtn').addEventListener('click', async () => {
@@ -1471,7 +1944,11 @@
     (project.edges || []).forEach((e) => edgeMeta.set(e.id, { from: e.from, to: e.to, fullLabel: e.fullLabel }));
     (project.notes || []).forEach((n) => textNotes.set(n.id, n));
     (project.comments || []).forEach((c) => comments.set(c.id, c));
+    (project.nodeStatus || []).forEach((s) => nodeStatus.set(s.hash, s));
+    // Lay out first so anything the save predates still lands somewhere sensible, then
+    // let the saved arrangement overwrite it.
     relayoutAll();
+    applyNodePositions(project.nodePositions);
     // vis hasn't drawn the new nodes yet on this frame, so comment pins (which need a
     // node's DOM rect) and text notes render into nothing and stay invisible until the
     // user happens to pan or resize. Re-render once the layout has actually settled.

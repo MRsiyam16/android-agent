@@ -205,6 +205,21 @@ input[type="range"]::-moz-range-thumb {
 .node-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .node-card.selected { outline: 2px solid var(--accent-blue); outline-offset: 3px; border-radius: 18px; }
 
+/* Screens carrying a verified defect. Only confirmed findings mark a screen — an
+   informational note or a retracted false positive leaves the card clean, so a coloured
+   outline always means "something is actually wrong here". */
+.node-card.status-fail { outline: 3px solid #f43f5e; outline-offset: 2px; border-radius: 18px; }
+.node-card.status-warn { outline: 3px solid #f59e0b; outline-offset: 2px; border-radius: 18px; }
+.node-card.status-fail::after,
+.node-card.status-warn::after {
+  content: attr(data-status-badge);
+  position: absolute; top: 6px; left: 6px; z-index: 4;
+  font: 600 10px/1 var(--font-body); letter-spacing: 0.04em;
+  padding: 4px 6px; border-radius: 6px; color: #18181b;
+}
+.node-card.status-fail::after { background: #f43f5e; }
+.node-card.status-warn::after { background: #f59e0b; }
+
 /* ---------------- BOTTOM PILL DOCK ---------------- */
 .dock {
   position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
@@ -296,89 +311,95 @@ input[type="range"]::-moz-range-thumb {
 .text-note.kind-sticky {
   display: flex;
   flex-direction: column;
-  background: var(--surface-2);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-md);
-  box-shadow: var(--elevation-float);
+  background: #18181b;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.4);
   overflow: hidden;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
-/* The plain T-tool note is a bare caption on the board, so it sizes to its own text. */
-.text-note.kind-text { max-width: 320px; }
-.text-note-drag {
-  position: absolute; left: -22px; top: 2px; width: 16px; height: 16px;
-  cursor: grab; opacity: 0.45; color: var(--ink);
-}
-.text-note-content {
-  width: 100%; outline: none;
-  color: var(--ink); font-family: var(--font-display); font-weight: 700; font-size: 16px;
-  letter-spacing: -0.02em; line-height: 1.35; padding: 2px 4px;
-  background: rgba(20, 20, 20, 0.6); border-radius: var(--radius-sm);
-  /* Keep the line breaks the author typed — innerText preserves them, but the default
-     `white-space: normal` collapsed them back into one long line on every re-render. */
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-}
-.text-note-content:focus {
-  box-shadow: var(--elevation-float), 0 0 0 2px var(--accent-blue);
+
+.text-note.kind-sticky:focus-within {
+  border-color: rgba(0, 153, 255, 0.7);
+  box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.85), 0 0 0 3px rgba(0, 153, 255, 0.25);
 }
 
 /* ---------------- STICKY NOTE (titled card) ---------------- */
-/* Colour-coded title bar; the colour is chosen per note so a board can be read at a
-   glance (red = bug, orange = flaky, green = passing...). Doubles as the drag handle. */
 .sticky-head {
-  display: flex; align-items: center; gap: 2px;
-  padding: 3px 4px 3px 7px;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 6px 10px 6px 12px;
   cursor: grab; user-select: none;
+  border-top-left-radius: 11px;
+  border-top-right-radius: 11px;
 }
 .sticky-head:active { cursor: grabbing; }
+
 .sticky-title {
   flex: 1 1 auto; min-width: 0;
-  /* 12px is the floor: Chrome's "minimum font size" setting clamps anything smaller, so
-     specifying less here silently renders at 12px anyway and only misleads the next reader.
-     Make notes smaller with width and padding instead. */
-  font-family: var(--font-display); font-weight: 700; font-size: 12px;
-  letter-spacing: -0.01em; outline: none;
+  font-family: var(--font-body); font-weight: 600;
+  letter-spacing: -0.01em; outline: none; line-height: 1.25;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   cursor: text;
+  padding: 1px 3px; border-radius: 3px;
 }
-.sticky-title:focus { text-overflow: clip; }
+.sticky-title:focus {
+  background: rgba(0, 0, 0, 0.08);
+  text-overflow: clip;
+}
+
+.sticky-actions {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+
 .sticky-btn {
-  flex: 0 0 auto; width: 14px; height: 14px;
+  flex: 0 0 auto; width: 18px; height: 18px;
   display: flex; align-items: center; justify-content: center;
-  border-radius: var(--radius-sm); opacity: 0.65; cursor: pointer;
+  border-radius: 4px; opacity: 0.85; cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
-.sticky-btn:hover { opacity: 1; background: rgba(0, 0, 0, 0.18); }
-/* The icons are authored at 16px; scale them down to fit the smaller button box. */
+.sticky-btn:hover { opacity: 1; background: rgba(0, 0, 0, 0.14); }
 .sticky-btn svg { width: 12px; height: 12px; }
 
 .sticky-body {
   flex: 1 1 auto; min-height: 0;
-  color: var(--ink); font-family: var(--font-body); line-height: 1.35;
-  padding: 5px 7px; outline: none;
+  color: #e4e4e7; font-family: var(--font-body); line-height: 1.45;
+  padding: 10px 12px 12px 12px; outline: none;
+  background: #18181b;
   overflow-y: auto;
   overflow-wrap: break-word; word-break: break-word;
 }
 /* Corner grip — drag to set the note's canvas size. */
 .sticky-resize {
-  position: absolute; right: 0; bottom: 0; width: 12px; height: 12px;
-  cursor: nwse-resize; opacity: 0.5;
+  position: absolute; right: 0; bottom: 0; width: 14px; height: 14px;
+  cursor: nwse-resize; opacity: 0.4;
   background:
     linear-gradient(135deg, transparent 0 52%, var(--ink-faint) 52% 62%, transparent 62% 74%,
                     var(--ink-faint) 74% 84%, transparent 84%);
 }
-.text-note.kind-sticky:hover .sticky-resize { opacity: 0.9; }
+.text-note.kind-sticky:hover .sticky-resize { opacity: 0.8; }
+
+/* Matches .node-card.selected so a mixed selection of screens and notes reads as one. */
+.text-note.selected { outline: 2px solid var(--accent-blue); outline-offset: 3px; }
+/* Raw Markdown is shown while editing, so keep the author's line breaks visible.
+   Driven by an explicit .editing class rather than :focus — the note body sits inside a
+   transformed, absolutely-positioned overlay where :focus proved not to apply reliably,
+   which is how raw source ended up displayed as one collapsed blob. */
+.sticky-body.editing,
 .sticky-body:focus {
-  /* Raw Markdown is shown while editing, so keep the author's line breaks visible. */
   white-space: pre-wrap;
   box-shadow: inset 0 0 0 2px var(--accent-blue);
 }
+/* Reading is the default state, so the body must not look or behave like an input. */
+.sticky-body[contenteditable="false"] { cursor: default; }
 
 /* Rendered Markdown — tuned tight, these cards are small. */
 .markdown > *:first-child { margin-top: 0; }
 .markdown > *:last-child { margin-bottom: 0; }
-.markdown p { margin: 0 0 0.6em; }
+.markdown p { margin: 0 0 0.4em; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
-  font-family: var(--font-display); font-weight: 700; line-height: 1.25;
+  font-family: var(--font-body); font-weight: 600; line-height: 1.25;
+  letter-spacing: 0.04em; text-transform: uppercase; color: #a1a1aa; margin: 0 0 6px 0; font-size: 14px;
+}
   margin: 0.9em 0 0.4em; letter-spacing: -0.01em;
 }
 .markdown h1 { font-size: 1.35em; }
@@ -434,11 +455,41 @@ input[type="range"]::-moz-range-thumb {
 .note-menu-chip.active {
   background: var(--accent-blue); border-color: var(--accent-blue); color: #fff;
 }
+/* ---------------- BARE TEXT CAPTION (T tool) ---------------- */
+/* Colour, weight and size are authored per note and applied inline; the whole element is
+   then scaled by the zoom, so the size is a canvas measurement like everything else. */
+.text-note.kind-text .text-note-content {
+  outline: none;
+  white-space: pre-wrap;
+  min-width: 24px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  letter-spacing: -0.01em;
+}
+.text-note.kind-text .text-note-content:focus {
+  box-shadow: 0 0 0 1.5px rgba(0, 153, 255, 0.75);
+  background: rgba(0, 153, 255, 0.07);
+}
+.text-note-drag {
+  position: absolute; left: -22px; top: 2px; width: 16px; height: 16px;
+  cursor: grab; opacity: 0.35; color: var(--ink-muted);
+}
+.text-note-drag:hover { opacity: 0.8; }
+.text-note-drag:active { cursor: grabbing; }
+.text-note:hover .text-note-drag, .text-note:hover .text-note-delete { opacity: 0.7; }
+
 .text-note-delete {
   position: absolute; right: -22px; top: 2px; width: 16px; height: 16px;
   cursor: pointer; opacity: 0.45; color: var(--ink-muted);
 }
 .text-note-delete:hover { opacity: 0.85; }
+
+/* The caption scales with zoom; its menu must not, or it becomes unusable when zoomed
+   out. Sizing is therefore fixed and independent of the note it is anchored to. */
+.text-format-menu { width: 218px; }
+.note-menu-hint {
+  margin-top: 8px; font-size: 10px; color: var(--ink-muted); opacity: 0.75;
+}
 
 /* ---------------- COMMENT PINS ---------------- */
 .comment-pin {
@@ -567,6 +618,18 @@ div.vis-tooltip {
   font-size: 13px; padding: 11px 14px; border-radius: var(--radius-md); outline: none;
 }
 .projects-header input:focus { border-color: var(--accent-blue); }
+.chip-btn.primary {
+  background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; font-weight: 600;
+}
+.chip-btn.primary:hover { filter: brightness(1.08); background: var(--accent-blue); }
+.chip-btn.primary:disabled,
+.chip-btn:disabled {
+  opacity: 0.45; cursor: not-allowed; filter: none;
+}
+.projects-save-hint {
+  color: var(--ink-faint); font-size: 12px; line-height: 1.5;
+  margin: -12px 0 20px; max-width: 620px;
+}
 .projects-list { display: flex; flex-direction: column; gap: 10px; }
 .projects-empty { color: var(--ink-faint); font-size: 13px; padding: 24px; text-align: center; }
 .projects-empty.hidden { display: none; }
@@ -646,3 +709,20 @@ div.vis-tooltip {
 }
 .modal-element-row .lbl { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-element-row .coord { color: var(--ink-faint); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+/* ---------------- NOTE MENU SLIDERS & CHIPS ---------------- */
+.note-val-label {
+  font-size: 11px;
+  color: var(--accent-blue);
+  font-weight: 600;
+  text-transform: none;
+}
+.note-slider-container {
+  padding: 2px 0 4px 0;
+}
+.note-slider {
+  width: 100%;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+  height: 4px;
+}

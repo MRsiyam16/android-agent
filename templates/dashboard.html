@@ -6,7 +6,7 @@
 <title>Android Agent — Live Telemetry</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-<link rel="stylesheet" href="/static/dashboard.css?v=9">
+<link rel="stylesheet" href="/static/dashboard.css?v=10">
 </head>
 <body>
 
@@ -54,6 +54,14 @@
           <defs>
             <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
               <path d="M0,0 L10,5 L0,10 z" fill="#0099ff"></path>
+            </marker>
+            <!-- Transitions that land on a screen with a confirmed defect, so the path
+                 that reaches a problem is visible without opening any note. -->
+            <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#f43f5e"></path>
+            </marker>
+            <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b"></path>
             </marker>
           </defs>
           <g id="connectorPaths"></g>
@@ -224,6 +232,11 @@
       <div class="projects-header">
         <input type="text" id="newProjectPackage" placeholder="Package name, e.g. com.example.app" autocomplete="off">
         <button class="chip-btn" id="newProjectBtn">+ New Project</button>
+        <button class="chip-btn primary" id="saveProjectBtn" disabled>Save current project</button>
+      </div>
+      <div class="projects-save-hint" id="saveProjectHint">
+        Saves the open board exactly as it looks — screen positions, section order, notes
+        and defect markings — so reopening it restores the same layout.
       </div>
       <div class="projects-list" id="projectsList">
         <div class="projects-empty" id="projectsEmpty">No projects yet — create one above, or one will appear automatically the first time you run <code>run_agent.py --package &lt;pkg&gt;</code>.</div>
@@ -262,6 +275,6 @@
   </div>
 </div>
 
-<script src="/static/dashboard.js?v=10"></script>
+<script src="/static/dashboard.js?v=11"></script>
 </body>
 </html>
