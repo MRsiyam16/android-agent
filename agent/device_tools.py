@@ -278,6 +278,10 @@ class DeviceSession:
         await asyncio.to_thread(
             lambda: raw.convert("RGB").save(path, format="JPEG",
                                             quality=config.SCREENSHOT_QUALITY, optimize=True))
+        # Recorded in the transcript as well as broadcast, so reopening the module still shows
+        # the evidence inline instead of a conversation referring to images that aren't there.
+        await asyncio.to_thread(store.append_chat, self.package, self.slug,
+                                {"role": "shot", "path": str(path), "note": note})
         await self._emit({"type": "agent_screenshot", "path": str(path), "note": note})
         return path
 

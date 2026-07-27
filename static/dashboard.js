@@ -2288,6 +2288,7 @@
       else if (m.role === 'agent') appendChat('agent', m.text || '');
       else if (m.role === 'error') appendChat('error', m.text || '');
       else if (m.role === 'tool') appendChat('tool', m.summary || m.tool || '');
+      else if (m.role === 'shot' && m.path) appendShot(m.path, m.note);
     });
     if (!(data.messages || []).length) {
       appendChat('agent', 'Tell me what to test in this module and I will plan the cases, run '
