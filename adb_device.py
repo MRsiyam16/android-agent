@@ -4,11 +4,38 @@ from __future__ import annotations
 import logging
 import subprocess
 
+import re
+import time
+
 import uiautomator2 as u2
 
 import config
+import system_memory as sysmem
 
 logger = logging.getLogger("adb_device")
+
+
+def detect_toolkit(xml: str) -> str:
+    """Classify the UI toolkit from a dump, so learned waits generalise across apps.
+
+    Timings are keyed by toolkit rather than by package on purpose: "Flutter's first frame
+    takes ~12s on this machine" is knowledge that transfers to the next Flutter app;
+    "com.example takes 12s" is a fact about one test target and belongs nowhere near
+    system memory.
+    """
+    if not xml:
+        return "unknown"
+    ids = len(re.findall(r'resource-id="[^"]+"', xml))
+    descs = len(re.findall(r'content-desc="[^"]+"', xml))
+    webviews = len(re.findall(r'class="android\.webkit\.WebView"', xml))
+    nodes = xml.count("<node")
+    if webviews:
+        return "webview"
+    # Flutter publishes a semantics tree: plenty of labelled ViewGroups, almost no
+    # resource-ids (native Android layouts are the other way round).
+    if nodes > 5 and descs > 2 and ids <= max(1, nodes // 20):
+        return "flutter"
+    return "native"
 
 
 class DeviceError(RuntimeError):
@@ -160,6 +187,93 @@ class AdbDevice:
             self.d.app_stop(package)
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(f"app_stop({package!r}) failed: {exc}") from exc
+
+    def clear_app_data(self, package: str) -> bool:
+        """Wipe app data, dropping any persisted session.
+
+        Learns which `pm clear` form this ROM needs. On multi-user ROMs the bare form
+        reports success while doing nothing, so the plain result is verified rather than
+        trusted, and the working variant is remembered for next time.
+        """
+        preferred = sysmem.environment("pm_clear_variant")
+        variants = [["pm", "clear", "--user", "0", package], ["pm", "clear", package]]
+        if preferred == "plain":
+            variants.reverse()
+
+        for argv in variants:
+            try:
+                out = (self.d.shell(argv).output or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("clear_app_data via %s failed: %s", " ".join(argv), exc)
+                continue
+            if "Success" in out:
+                variant = "user0" if "--user" in argv else "plain"
+                sysmem.observe_environment(
+                    "pm_clear_variant", variant,
+                    evidence=f"`{' '.join(argv)}` returned Success on this ROM",
+                )
+                return True
+        sysmem.learn(
+            "pm-clear-unavailable",
+            "`pm clear` did not succeed in any form; a persisted session cannot be dropped "
+            "automatically on this device.",
+            evidence="both the --user 0 and bare forms failed",
+        )
+        return False
+
+    def wait_for_ui(self, package: str, timeout: float | None = None,
+                    poll: float = 1.0) -> tuple[str, float]:
+        """Block until `package` actually owns the screen with rendered content.
+
+        Returns (xml, seconds_waited). This exists because an empty or foreign UI dump is
+        the single most misleading signal the harness produces: right after a launch it
+        means "not ready yet", and code that treats it as "the app is broken" invents
+        defects. A splash screen publishes nodes with no text, so *text* is the readiness
+        test, not node count.
+
+        The wait budget and the observed duration both feed system memory, so the timeout
+        converges on what this machine really needs instead of a hardcoded guess.
+        """
+        toolkit_guess = sysmem.environment("last_toolkit", "unknown")
+        budget = timeout if timeout is not None else max(
+            8.0, sysmem.suggest_launch_settle(toolkit_guess, default=8.0) * 1.5)
+
+        started = time.monotonic()
+        deadline = started + budget
+        last_xml = ""
+        while True:
+            try:
+                last_xml = self.dump_xml()
+            except DeviceError:
+                last_xml = ""
+            if last_xml:
+                owns = f'package="{package}"' in last_xml
+                has_text = bool(re.search(r'\stext="[^"]+"', last_xml)
+                                or re.search(r'content-desc="[^"]+"', last_xml))
+                if owns and has_text:
+                    elapsed = time.monotonic() - started
+                    toolkit = detect_toolkit(last_xml)
+                    sysmem.observe_launch(toolkit, elapsed)
+                    sysmem.observe_environment("last_toolkit", toolkit)
+                    if elapsed > 6.0:
+                        sysmem.learn(
+                            "slow-first-frame",
+                            f"A {toolkit} UI can take {elapsed:.0f}s to publish its first "
+                            "usable dump; treat an empty dump after launch as 'not ready', "
+                            "not as a broken app.",
+                            evidence=f"measured {elapsed:.1f}s waiting for first content",
+                        )
+                    return last_xml, round(elapsed, 2)
+            if time.monotonic() >= deadline:
+                elapsed = time.monotonic() - started
+                sysmem.learn(
+                    "ui-never-settled",
+                    "The UI did not publish readable content within the learned budget — "
+                    "screenshot the device before concluding anything about the app.",
+                    evidence=f"waited {elapsed:.0f}s for {package} with no readable dump",
+                )
+                return last_xml, round(elapsed, 2)
+            time.sleep(poll)
 
     # -- crash / ANR detection -----------------------------------------------------------
     def clear_logs(self) -> None:

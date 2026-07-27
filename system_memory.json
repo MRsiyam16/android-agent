@@ -1,0 +1,103 @@
+{
+  "environment": {
+    "adb_path_source": {
+      "evidence": "adb is not on PATH in the Bash tool on this machine; resolve via config or drive it from Python",
+      "updated_at": "2026-07-27T08:37:09+00:00",
+      "value": "config.ADB_PATH"
+    },
+    "console_encoding": {
+      "evidence": "the Windows console is cp1252; app labels with non-Latin text raise UnicodeEncodeError without it",
+      "updated_at": "2026-07-27T08:37:09+00:00",
+      "value": "PYTHONIOENCODING=utf-8"
+    },
+    "pm_clear_variant": {
+      "evidence": "on a multi-user Samsung ROM the bare form returns Success but leaves the session intact",
+      "updated_at": "2026-07-27T08:37:09+00:00",
+      "value": "user0"
+    }
+  },
+  "lessons": {
+    "appbar-shares-label-with-primary-button": {
+      "evidence": "desc=Login matched both the back header and the submit button on the same screen",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "The app bar often carries the same accessibility label as the screen primary button, so a first-match label lookup taps the back header and navigates away. Constrain body taps below the app-bar band, and never use a button label as a screen-identity marker."
+    },
+    "back-up-the-project-blob-before-ui-work": {
+      "evidence": "a 5.9MB blob with 23 notes was backed up before UI changes and made the work reversible",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "The project blob carries the whole board (screens, notes, layout) and is several MB. Snapshot it to disk before doing anything that opens a second dashboard tab or rewrites notes."
+    },
+    "dashboard-hidden-tab-freezes-overlay": {
+      "evidence": "notes and selection state were correct on the server while the hidden tab showed none",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "requestAnimationFrame is throttled in a hidden browser tab, so the dashboard overlay (cards, notes, selection) stops repainting while the underlying data stays correct. A board that looks empty in a background tab is a rendering artefact -- verify against the server before debugging the UI."
+    },
+    "dashboard-stale-tab-clobbers-project": {
+      "evidence": "a second tab autosaved an empty note set over a populated board",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "Two dashboard tabs open on one project is data loss: a tab that loaded before annotations restored will autosave a note-less blob over the good one, and the stale tab wins. Keep one tab per project."
+    },
+    "dump-shows-top-window-only": {
+      "evidence": "an auth-error modal and a progress overlay each made a correct rejection look like the input had been accepted",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "dump_hierarchy() returns only the topmost window, so a dialog or a blocking progress overlay hides the screen underneath. A missing screen marker therefore means something is covering the screen, not that navigation happened. Never judge the result of a submit while a request is still in flight."
+    },
+    "empty-dump-means-wait": {
+      "evidence": "a dump 5s after launch contained only com.android.systemui while a screenshot showed a fully rendered app",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "An empty or status-bar-only UI dump right after launch means the UI has not rendered yet, not that the app is broken. Wait for text, not for node count -- a splash screen publishes nodes with no text."
+    },
+    "hard-reload-after-editing-static-assets": {
+      "evidence": "a verified-correct fix appeared to do nothing until a hard reload",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "dashboard.js and dashboard.css are served with a cache-busting query and still get served from cache. After editing either, hard-reload (ctrl+shift+R) before concluding a change did not work."
+    },
+    "reactive-validation-defeats-diffs": {
+      "evidence": "five validation checks reported blocked-but-silent against a screen that was showing a specific message",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "Forms that validate while you type already show their error before the submit tap, so a before/after text diff around the tap finds nothing. Baseline the pristine screen on arrival and diff against that, excluding input field values."
+    },
+    "screenshot-before-believing-a-dump": {
+      "evidence": "four separate dump misreads each presented as a confident defect",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "Before reporting anything negative derived from a UI dump, capture a screenshot. Every false defect this harness has produced was a dump misread, not an app fault."
+    },
+    "server-needs-a-real-restart": {
+      "evidence": "documented in the repo troubleshooting notes and re-confirmed in use",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "server.py runs with reload=False, and a stale process keeps holding port 8000 while the new one fails to bind -- so edits appear to have no effect. Check who owns the port before debugging the code."
+    },
+    "system-dialogs-are-invisible-to-package-filters": {
+      "evidence": "a notification-permission prompt after a data wipe made the app dump look empty",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing."
+    }
+  },
+  "run_count": 0,
+  "runs": [],
+  "schema": 1,
+  "timings": {},
+  "updated_at": "2026-07-27T08:37:09+00:00"
+}

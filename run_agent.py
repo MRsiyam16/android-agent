@@ -14,6 +14,7 @@ import config
 import llm_explorer
 import memory
 import report
+import system_memory as sysmem
 from adb_device import AdbDevice, DeviceError, list_serials
 from extractor import compute_state_hash, extract_actions
 from graph import ExplorationGraph
@@ -103,6 +104,16 @@ def ensure_device_ready(device: AdbDevice, telemetry: TelemetryClient, timeout: 
                 "🔒 Phone is locked. Please unlock your device to start testing.",
                 level="warning", popup=True,
             )
+            # An operational fact worth carrying forward: this device locks between runs,
+            # so a long unattended run needs the screen timeout raised beforehand rather
+            # than a human on standby to unlock it mid-run.
+            sysmem.learn(
+                "device-locks-between-runs",
+                "This device was found locked at preflight. The harness cannot enter a "
+                "credential, so a run stalls until a human unlocks it — raise the screen "
+                "timeout before starting an unattended run.",
+                evidence="preflight found the keyguard up and had to wait",
+            )
             warned = True
 
         if time.monotonic() >= deadline:
@@ -150,7 +161,11 @@ def run(
     logger.info("Starting app: %s", package)
     telemetry.post_status(f"Launching {package}...", level="info")
     device.start_app(package)
-    time.sleep(1.5)
+    # A learned wait, not a fixed 1.5s: the old constant was fine for a native activity and
+    # far too short for a toolkit that renders its first frame asynchronously, where the
+    # first dump came back empty and every downstream check read it as a broken app.
+    _, launch_wait = device.wait_for_ui(package)
+    logger.info("First usable UI after %.1fs", launch_wait)
     device.clear_logs()  # baseline so read_new_crashes() only sees crashes from here on
 
     prev_state_hash: str | None = None
@@ -414,10 +429,15 @@ def run(
 
 def main() -> None:
     args = parse_args()
-    run(
-        args.package, args.steps, args.serial, args.server,
-        llm_explore=args.llm_explore, memory_flag=args.memory,
-    )
+    # Every run is bracketed so it both *reads* what earlier runs learned and *writes*
+    # back what it discovered. That loop is what makes run N+1 start smarter than run N.
+    logger.info("%s", sysmem.briefing())
+    with sysmem.run_session(tool="run_agent") as session:
+        session.note(steps_requested=args.steps)
+        run(
+            args.package, args.steps, args.serial, args.server,
+            llm_explore=args.llm_explore, memory_flag=args.memory,
+        )
 
 
 if __name__ == "__main__":

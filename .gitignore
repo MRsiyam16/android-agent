@@ -48,6 +48,8 @@ test_*.py
 .session_*
 
 # Project-specific
+# Board snapshots are multi-MB blobs of screenshots — local safety nets, not source.
+project_backups/
 flow-graph*.json
 *.adb_log
 server.log
