@@ -17,6 +17,13 @@
     }
   },
   "lessons": {
+    "agent-ask-user-parks-until-answered": {
+      "evidence": "a locked-device run sat with 0.8s CPU and an empty output file; the transcript showed it had correctly asked the user to unlock the phone",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "The chat agent's ask_user tool parks the run on a future until the browser answers. Driving the agent from a bare script therefore looks exactly like a hang, and with block-buffered stdout there is no output at all. Run such scripts with python -u, and read the chat.jsonl transcript to see what the agent actually did."
+    },
     "appbar-shares-label-with-primary-button": {
       "evidence": "desc=Login matched both the back header and the submit button on the same screen",
       "first_seen_run": 0,
@@ -59,12 +66,26 @@
       "last_seen_run": 0,
       "text": "An empty or status-bar-only UI dump right after launch means the UI has not rendered yet, not that the app is broken. Wait for text, not for node count -- a splash screen publishes nodes with no text."
     },
+    "exploration-edge-exclusion-hides-real-controls": {
+      "evidence": "the calculator's = key was missing from the agent's element list and had to be located by eye from a screenshot",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "EXCLUDE_BOTTOM_PCT (0.08) exists so autonomous exploration does not mash the gesture nav bar, but on a 1080x2400 phone it blanks the bottom 192px and with it a whole keypad row. Any reader used for scripted or agent-driven testing needs its own, much tighter band, or real controls are simply absent from the element list."
+    },
     "hard-reload-after-editing-static-assets": {
       "evidence": "a verified-correct fix appeared to do nothing until a hard reload",
       "first_seen_run": 0,
       "hits": 1,
       "last_seen_run": 0,
       "text": "dashboard.js and dashboard.css are served with a cache-busting query and still get served from cache. After editing either, hard-reload (ctrl+shift+R) before concluding a change did not work."
+    },
+    "launch-succeeded-but-launcher-still-showing": {
+      "evidence": "two launches of com.google.android.calculator reported success on a Samsung S21 where only com.sec.android.app.popupcalculator is installed",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "A launch that reports success but leaves the launcher on screen usually means the package is not installed, not that the app refused to start. Check `pm list packages <pkg>` before suspecting the app; on OEM ROMs the vendor app often owns the name you expect."
     },
     "reactive-validation-defeats-diffs": {
       "evidence": "five validation checks reported blocked-but-silent against a screen that was showing a specific message",
@@ -93,11 +114,18 @@
       "hits": 1,
       "last_seen_run": 0,
       "text": "Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing."
+    },
+    "ui-never-settled": {
+      "evidence": "waited 13s for com.google.android.calculator with no readable dump",
+      "first_seen_run": 0,
+      "hits": 2,
+      "last_seen_run": 0,
+      "text": "The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app."
     }
   },
   "run_count": 0,
   "runs": [],
   "schema": 1,
   "timings": {},
-  "updated_at": "2026-07-27T08:37:09+00:00"
+  "updated_at": "2026-07-27T13:23:31+00:00"
 }

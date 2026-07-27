@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **0** · last updated: 2026-07-27T08:37:09+00:00
+Runs recorded: **0** · last updated: 2026-07-27T13:23:31+00:00
 
 ## Environment
 
@@ -19,6 +19,10 @@ Runs recorded: **0** · last updated: 2026-07-27T08:37:09+00:00
 
 ## Operating lessons
 
+- **ui-never-settled** (seen twice) — The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app.
+  - _evidence:_ waited 13s for com.google.android.calculator with no readable dump
+- **agent-ask-user-parks-until-answered** (seen once) — The chat agent's ask_user tool parks the run on a future until the browser answers. Driving the agent from a bare script therefore looks exactly like a hang, and with block-buffered stdout there is no output at all. Run such scripts with python -u, and read the chat.jsonl transcript to see what the agent actually did.
+  - _evidence:_ a locked-device run sat with 0.8s CPU and an empty output file; the transcript showed it had correctly asked the user to unlock the phone
 - **appbar-shares-label-with-primary-button** (seen once) — The app bar often carries the same accessibility label as the screen primary button, so a first-match label lookup taps the back header and navigates away. Constrain body taps below the app-bar band, and never use a button label as a screen-identity marker.
   - _evidence:_ desc=Login matched both the back header and the submit button on the same screen
 - **back-up-the-project-blob-before-ui-work** (seen once) — The project blob carries the whole board (screens, notes, layout) and is several MB. Snapshot it to disk before doing anything that opens a second dashboard tab or rewrites notes.
@@ -31,8 +35,12 @@ Runs recorded: **0** · last updated: 2026-07-27T08:37:09+00:00
   - _evidence:_ an auth-error modal and a progress overlay each made a correct rejection look like the input had been accepted
 - **empty-dump-means-wait** (seen once) — An empty or status-bar-only UI dump right after launch means the UI has not rendered yet, not that the app is broken. Wait for text, not for node count -- a splash screen publishes nodes with no text.
   - _evidence:_ a dump 5s after launch contained only com.android.systemui while a screenshot showed a fully rendered app
+- **exploration-edge-exclusion-hides-real-controls** (seen once) — EXCLUDE_BOTTOM_PCT (0.08) exists so autonomous exploration does not mash the gesture nav bar, but on a 1080x2400 phone it blanks the bottom 192px and with it a whole keypad row. Any reader used for scripted or agent-driven testing needs its own, much tighter band, or real controls are simply absent from the element list.
+  - _evidence:_ the calculator's = key was missing from the agent's element list and had to be located by eye from a screenshot
 - **hard-reload-after-editing-static-assets** (seen once) — dashboard.js and dashboard.css are served with a cache-busting query and still get served from cache. After editing either, hard-reload (ctrl+shift+R) before concluding a change did not work.
   - _evidence:_ a verified-correct fix appeared to do nothing until a hard reload
+- **launch-succeeded-but-launcher-still-showing** (seen once) — A launch that reports success but leaves the launcher on screen usually means the package is not installed, not that the app refused to start. Check `pm list packages <pkg>` before suspecting the app; on OEM ROMs the vendor app often owns the name you expect.
+  - _evidence:_ two launches of com.google.android.calculator reported success on a Samsung S21 where only com.sec.android.app.popupcalculator is installed
 - **reactive-validation-defeats-diffs** (seen once) — Forms that validate while you type already show their error before the submit tap, so a before/after text diff around the tap finds nothing. Baseline the pristine screen on arrival and diff against that, excluding input field values.
   - _evidence:_ five validation checks reported blocked-but-silent against a screen that was showing a specific message
 - **screenshot-before-believing-a-dump** (seen once) — Before reporting anything negative derived from a UI dump, capture a screenshot. Every false defect this harness has produced was a dump misread, not an app fault.

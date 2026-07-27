@@ -6,7 +6,7 @@
 <title>Android Agent — Live Telemetry</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-<link rel="stylesheet" href="/static/dashboard.css?v=10">
+<link rel="stylesheet" href="/static/dashboard.css?v=11">
 </head>
 <body>
 
@@ -22,7 +22,7 @@
       <div class="divider"></div>
       <div class="tabs" id="tabs">
         <button class="tab active" data-tab="graph">Flow Graph</button>
-        <button class="tab" data-tab="remote">Remote Control</button>
+        <button class="tab" data-tab="agent">Agent</button>
         <button class="tab" data-tab="projects">Projects</button>
       </div>
     </div>
@@ -193,36 +193,97 @@
     </div>
   </section>
 
-  <!-- REMOTE CONTROL VIEW -->
-  <section class="view" id="view-remote">
-    <div class="remote-layout">
-      <div class="remote-phone-col">
+  <!-- AGENT VIEW -->
+  <section class="view" id="view-agent">
+    <div class="agent-layout">
+
+      <!-- LEFT: the phone -->
+      <div class="agent-phone-col">
         <div class="phone-frame">
           <div class="phone-screen-wrap" id="phoneScreenWrap">
             <img id="phoneScreen" alt="Live device screen" draggable="false">
             <div class="overlay-layer" id="overlayLayer"></div>
-            <div class="phone-placeholder" id="phonePlaceholder">No live frame yet — send a command to fetch one.</div>
+            <div class="phone-placeholder" id="phonePlaceholder">No frame yet — press Refresh, or start the agent.</div>
           </div>
         </div>
         <div class="phone-actions">
           <button class="chip-btn" data-cmd="back">← Back</button>
           <button class="chip-btn" data-cmd="home">● Home</button>
           <button class="chip-btn" id="refreshFrameBtn">⟳ Refresh</button>
+        </div>
+        <div class="phone-actions">
           <label class="chip-toggle">
             <input type="checkbox" id="overlayToggle" checked>
-            Show element bounds
+            Element bounds
           </label>
+          <label class="chip-toggle">
+            <input type="checkbox" id="liveFrameToggle">
+            Follow live
+          </label>
+        </div>
+        <div class="agent-meter" id="agentMeter">
+          <div class="agent-meter-row"><span>Planner</span><span id="meterPlanner">subscription</span></div>
+          <div class="agent-meter-row"><span>Cheap tier</span><span id="meterStepper">—</span></div>
+          <div class="agent-meter-row"><span>Taps · shots</span><span id="meterActions">0 · 0</span></div>
         </div>
       </div>
 
-      <div class="remote-chat-col">
+      <!-- CENTRE: the conversation -->
+      <div class="agent-chat-col">
+        <div class="agent-head">
+          <div class="agent-head-left">
+            <select id="agentProject" class="agent-select" title="App under test"></select>
+            <select id="agentSubproject" class="agent-select" title="Module being tested"></select>
+          </div>
+          <div class="agent-head-right">
+            <span class="agent-state" id="agentState">idle</span>
+            <button class="chip-btn danger" id="agentStopBtn" disabled>■ Stop</button>
+          </div>
+        </div>
+
         <div class="chat-log" id="chatLog"></div>
+
+        <!-- Shown only while a tool is parked waiting on the user -->
+        <div class="agent-blocked" id="agentBlocked">
+          <div class="agent-blocked-label" id="agentBlockedLabel">The agent needs an answer</div>
+          <div class="agent-blocked-question" id="agentBlockedQuestion"></div>
+        </div>
+
         <form class="chat-input-row" id="chatForm">
-          <input type="text" id="chatInput" placeholder='e.g. click Sign in · tap 400 800 · type hello · launch com.example.app' autocomplete="off">
-          <button type="submit">Send</button>
+          <textarea id="chatInput" rows="2" placeholder="Tell the agent what to test — e.g. “test the login module: empty submit, wrong password, valid login, session persistence”" autocomplete="off"></textarea>
+          <button type="submit" id="chatSend">Send</button>
         </form>
-        <div class="chat-hint">Commands: <code>click [text]</code>, <code>tap [x] [y]</code>, <code>type [text]</code>, <code>back</code>, <code>home</code>, <code>launch [package]</code></div>
+        <div class="chat-hint">
+          Enter sends · Shift+Enter for a new line · prefix with <code>/</code> to drive the phone by hand
+          (<code>/tap 400 800</code>, <code>/back</code>, <code>/launch com.example.app</code>)
+        </div>
       </div>
+
+      <!-- RIGHT: modules and findings -->
+      <div class="agent-modules-col">
+        <div class="agent-side-head">
+          <span>Modules</span>
+          <button class="chip-btn" id="agentReconBtn" title="Explore the app and propose a module breakdown">Recon</button>
+        </div>
+        <div class="agent-module-list" id="agentModuleList"></div>
+        <form class="agent-newmodule" id="agentNewModuleForm">
+          <input type="text" id="agentNewModuleTitle" placeholder="New module, e.g. Checkout" autocomplete="off">
+          <input type="text" id="agentNewModuleScope" placeholder="Scope (optional)" autocomplete="off">
+          <button type="submit" class="chip-btn">+ Add module</button>
+        </form>
+
+        <div class="agent-side-head"><span>Findings</span><span id="agentFindingCount" class="agent-count">0</span></div>
+        <div class="agent-findings" id="agentFindings"></div>
+
+        <div class="agent-side-head"><span>Test credentials</span></div>
+        <form class="agent-newmodule" id="agentSecretForm">
+          <input type="text" id="agentSecretName" placeholder="Name, e.g. test_email" autocomplete="off">
+          <input type="password" id="agentSecretValue" placeholder="Value — stored locally, gitignored" autocomplete="new-password">
+          <button type="submit" class="chip-btn">Save credential</button>
+        </form>
+        <div class="agent-secret-names" id="agentSecretNames"></div>
+      </div>
+
     </div>
   </section>
 
@@ -275,6 +336,6 @@
   </div>
 </div>
 
-<script src="/static/dashboard.js?v=11"></script>
+<script src="/static/dashboard.js?v=12"></script>
 </body>
 </html>

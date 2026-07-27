@@ -2,6 +2,13 @@
 import os
 import shutil
 
+try:  # Local secrets (OPENROUTER_API_KEY) live in .env, which is gitignored.
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except ImportError:  # python-dotenv is optional; env vars still work if set by hand.
+    pass
+
 
 def _discover_adb_path() -> str:
     """Resolve an adb executable: explicit env var > PATH > common Windows SDK locations."""
@@ -98,6 +105,47 @@ LLM_FAST_MODEL: str = os.environ.get("LLM_FAST_MODEL", "claude-haiku-4-5")
 LLM_SMART_MODEL: str = os.environ.get("LLM_SMART_MODEL", "claude-opus-4-8")
 LLM_SMART_ANALYSIS_INTERVAL: int = int(os.environ.get("LLM_SMART_ANALYSIS_INTERVAL", 5))
 LLM_MAX_ACTIONS_TO_MODEL: int = int(os.environ.get("LLM_MAX_ACTIONS_TO_MODEL", 40))
+
+# --- Chat agent (Agent tab) ---------------------------------------------------------
+# Two tiers on purpose, because they are metered differently:
+#
+#   planner  — the Claude Code CLI, driven in-process via claude-agent-sdk. It authenticates
+#              with the local Max subscription profile, so its cost is a *rate limit* (rolling
+#              5-hour + weekly windows), not a per-token charge. Used for planning, verdicts,
+#              defect write-ups and the module breakdown: a handful of calls per test case.
+#   stepper  — a cheap vision model over OpenRouter, billed per token but at ~$0.10/M. Used for
+#              the high-volume mechanical calls (which element to tap, has the screen settled,
+#              does this text match) — roughly one per tap, which would otherwise burn the
+#              subscription window long before a module finished.
+#
+# CRITICAL: never set ANTHROPIC_API_KEY in this process's environment. It takes precedence over
+# the subscription profile, silently moving planner calls onto metered API billing.
+AGENT_PLANNER_MODEL: str = os.environ.get("AGENT_PLANNER_MODEL", "")  # "" = CLI default (subscription)
+AGENT_PLANNER_EFFORT: str = os.environ.get("AGENT_PLANNER_EFFORT", "high")
+
+OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL: str = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+# Vision-capable and cheap. Alternatives worth trying: qwen/qwen3-vl-8b-instruct, or
+# bytedance/ui-tars-1.5-7b (trained specifically for GUI grounding).
+AGENT_STEPPER_MODEL: str = os.environ.get("AGENT_STEPPER_MODEL", "google/gemini-2.5-flash-lite")
+# Passed to the CLI as --fallback-model: a *Claude* model to retry on when the default one is
+# overloaded. Empty by default. Note this does not rescue an exhausted subscription window —
+# that parks the run instead (see runtime.AgentSession._handle_result), because finishing a
+# test case on a different tier and reporting it as equivalent would be dishonest.
+AGENT_PLANNER_FALLBACK: str = os.environ.get("AGENT_PLANNER_FALLBACK", "")
+
+# The chat agent reads the screen with a much tighter edge exclusion than exploration does.
+# EXCLUDE_BOTTOM_PCT of 0.08 exists to stop autonomous exploration from mashing the gesture
+# nav bar, but on a 2400px phone it hides the bottom 192px — which is where a calculator's
+# entire bottom keypad row lives, `=` included. A tester needs to reach those; it only has to
+# clear the nav bar itself, so 2% is enough.
+AGENT_EXCLUDE_TOP_PCT: float = float(os.environ.get("AGENT_EXCLUDE_TOP_PCT", 0.0))
+AGENT_EXCLUDE_BOTTOM_PCT: float = float(os.environ.get("AGENT_EXCLUDE_BOTTOM_PCT", 0.02))
+
+# Hard ceiling on agent turns per instruction, so a confused loop can't run forever.
+AGENT_MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", 300))
+# How long a single device tool call may block before it's reported as failed.
+AGENT_TOOL_TIMEOUT_SECONDS: float = float(os.environ.get("AGENT_TOOL_TIMEOUT_SECONDS", 90))
 
 # --- Persistent per-app memory (optional) ---------------------------------------------------------
 # Off by default — enable with --memory or USE_MEMORY=true. Purely local (memory/<package>.json);

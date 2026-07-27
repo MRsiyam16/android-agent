@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -97,6 +99,33 @@ def check_device() -> None:
         print(f"  device : {serial}  {model}  [{state}]{note}")
 
 
+def check_agent() -> None:
+    """Print whether the Agent tab can actually work. Never fatal — the dashboard and the
+    autonomous explorer are both useful without it."""
+    cli = shutil.which("claude")
+    if not cli:
+        print("  agent  : Claude Code CLI not found — install it with "
+              "`npm i -g @anthropic-ai/claude-code`, then run `claude` once to sign in")
+    else:
+        try:
+            version = subprocess.run([cli, "--version"], capture_output=True, text=True,
+                                     timeout=30).stdout.strip().splitlines()[0]
+        except (OSError, subprocess.SubprocessError, IndexError):
+            version = "version unknown"
+        print(f"  agent  : Claude Code {version}")
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        # Silent money: everything works, and the subscription is bypassed.
+        print("           WARNING: ANTHROPIC_API_KEY is set. It overrides the Claude Code "
+              "subscription, so the agent will be billed per token. Unset it unless intended.")
+
+    if config.OPENROUTER_API_KEY:
+        print(f"           cheap tier: {config.AGENT_STEPPER_MODEL}")
+    else:
+        print("           cheap tier: no OPENROUTER_API_KEY in .env — the agent still works, "
+              "but every screen check costs subscription quota instead of ~$0.0001")
+
+
 def list_projects() -> None:
     try:
         with urllib.request.urlopen(f"{URL}/projects", timeout=10) as resp:
@@ -155,6 +184,7 @@ def main() -> int:
 
     print(f"\n  server : {URL}  (pid {proc.pid})")
     check_device()
+    check_agent()
     list_projects()
     print("\nCtrl+C to stop.\n")
 

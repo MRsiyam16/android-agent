@@ -153,6 +153,40 @@ class AdbDevice:
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(f"click({x},{y}) failed: {exc}") from exc
 
+    def long_click(self, x: int, y: int, duration: float = 0.8) -> None:
+        try:
+            self.d.long_click(x, y, duration)
+        except Exception as exc:  # noqa: BLE001
+            raise DeviceError(f"long_click({x},{y}) failed: {exc}") from exc
+
+    def swipe(self, fx: int, fy: int, tx: int, ty: int, duration: float = 0.2) -> None:
+        try:
+            self.d.swipe(fx, fy, tx, ty, duration)
+        except Exception as exc:  # noqa: BLE001
+            raise DeviceError(f"swipe({fx},{fy}->{tx},{ty}) failed: {exc}") from exc
+
+    def scroll(self, direction: str = "down", scale: float = 0.6) -> None:
+        """Swipe within the safe middle band of the screen.
+
+        Starting a swipe near the very top or bottom edge gets intercepted by the status bar
+        pull-down or the gesture nav bar, which reads afterwards as "the app navigated
+        somewhere unexpected". `scale` is the fraction of screen height travelled.
+        """
+        w, h = self.window_size
+        mid_x = w // 2
+        span = int(h * max(0.1, min(scale, 0.7)) / 2)
+        centre = h // 2
+        if direction == "down":      # reveal content further down: drag upward
+            self.swipe(mid_x, centre + span, mid_x, centre - span)
+        elif direction == "up":
+            self.swipe(mid_x, centre - span, mid_x, centre + span)
+        elif direction == "left":
+            self.swipe(int(w * 0.8), centre, int(w * 0.2), centre)
+        elif direction == "right":
+            self.swipe(int(w * 0.2), centre, int(w * 0.8), centre)
+        else:
+            raise DeviceError(f"scroll(direction={direction!r}) — expected up/down/left/right")
+
     def send_keys(self, text: str, clear: bool = False) -> None:
         try:
             if clear:
@@ -181,6 +215,31 @@ class AdbDevice:
             self.d.shell(["monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"])
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(f"start_app({package!r}) via monkey failed: {exc}") from exc
+
+    def is_installed(self, package: str) -> bool:
+        """Whether `package` is installed at all.
+
+        Worth checking before blaming a failed launch on the app: `monkey -p` on a package
+        that isn't there fails quietly and leaves you on the launcher, which reads exactly
+        like "the app refused to start".
+        """
+        try:
+            out = (self.d.shell(["pm", "list", "packages", package]).output or "")
+        except Exception as exc:  # noqa: BLE001
+            raise DeviceError(f"is_installed({package!r}) failed: {exc}") from exc
+        return any(line.strip() == f"package:{package}" for line in out.splitlines())
+
+    def similar_packages(self, hint: str) -> list[str]:
+        """Installed packages whose name contains `hint` — so a wrong id can be corrected
+        rather than merely reported (com.google.android.calculator vs the Samsung one)."""
+        token = hint.split(".")[-1] or hint
+        try:
+            out = (self.d.shell(["pm", "list", "packages"]).output or "")
+        except Exception:  # noqa: BLE001
+            return []
+        names = [l.strip()[len("package:"):] for l in out.splitlines()
+                 if l.strip().startswith("package:")]
+        return [n for n in names if token.lower() in n.lower()][:8]
 
     def stop_app(self, package: str) -> None:
         try:

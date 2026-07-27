@@ -1,0 +1,367 @@
+"""One live Claude Code session per sub-project, streamed to the dashboard.
+
+The planner is the Claude Code CLI, driven in-process through `claude-agent-sdk`. It picks up
+the machine's subscription credentials, so planning and verdicts cost rate-limit window
+rather than per-token spend. The device is reached through the SDK-MCP tools in
+`device_tools`, which run in this same process.
+
+Sessions are kept alive between chat messages on purpose. Re-spawning the CLI per message
+would pay ~1-2s of startup each time and, worse, throw away the conversation — the agent
+would forget which case it was on. `AgentSession` therefore holds one connected client per
+(package, module) and feeds messages into it.
+
+What this module refuses to do: silently degrade. If the subscription window is exhausted
+mid-run, the run is parked with its session id preserved and the user is told, rather than
+quietly finishing the test case on a different model and reporting the results as equivalent.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from typing import Any, Awaitable, Callable, Optional
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    CLINotFoundError,
+    HookMatcher,
+    ResultMessage,
+    SystemMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
+
+import config
+from agent import device_tools, prompts, store
+from agent.device_tools import DeviceSession, build_device_server
+from agent.stepper import Stepper, build_stepper_server
+
+logger = logging.getLogger("agent.runtime")
+
+Emit = Callable[[dict[str, Any]], Awaitable[None]]
+
+# File tools the agent legitimately needs: reading its own screenshots, and keeping its
+# memory file and report up to date. Bash, web access and subagents are withheld — this agent
+# tests a phone, and a shell would be an unnecessary blast radius inside a server process.
+FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"]
+BLOCKED_TOOLS = ["Bash", "WebSearch", "WebFetch", "Task", "NotebookEdit", "KillShell",
+                 "BashOutput", "SlashCommand"]
+
+
+def _tool_summary(name: str, payload: dict[str, Any]) -> str:
+    """A one-line, human-readable version of a tool call for the chat log."""
+    short = name.replace("mcp__device__", "").replace("mcp__cheap__", "")
+    if short in ("read_screen", "list_findings", "list_credentials", "check_crash"):
+        return short
+    for key in ("id", "text", "label", "expectation", "goal", "question", "note", "key",
+                "direction", "name", "title", "package"):
+        if key in payload and isinstance(payload[key], (str, int)):
+            value = str(payload[key])
+            return f"{short}: {value[:90]}"
+    if short == "propose_subprojects":
+        mods = payload.get("modules") or []
+        return f"{short}: {len(mods)} modules"
+    return short
+
+
+class AgentSession:
+    """A conversation with one module's tester."""
+
+    def __init__(self, package: str, slug: str, emit: Emit,
+                 serial: Optional[str] = None):
+        self.package = package
+        self.slug = slug
+        self.emit = emit
+        self.stepper = Stepper()
+        self.device = DeviceSession(package, slug, serial=serial, emit=emit)
+
+        self._client: Optional[ClaudeSDKClient] = None
+        self._lock = asyncio.Lock()
+        self._resume_failed = False
+        self.busy = False
+        self.session_id: Optional[str] = None
+        self.turns = 0
+        self.parked_reason: Optional[str] = None
+
+    # -- lifecycle ---------------------------------------------------------------
+    def _options(self) -> ClaudeAgentOptions:
+        entry = store.get_subproject(self.package, self.slug) or {}
+        title = entry.get("title", self.slug)
+        scope = entry.get("scope", "")
+        store.ensure_memory(self.package, self.slug, title)
+        workdir = store.subproject_dir(self.package, self.slug)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+        allowed = device_tools.DEVICE_TOOL_NAMES + [
+            "mcp__cheap__check_screen", "mcp__cheap__pick_next_element"] + FILE_TOOLS
+
+        async def gate(payload: dict[str, Any], _tool_use_id: Optional[str],
+                       _ctx: Any) -> dict[str, Any]:
+            """Hard allow-list, enforced as a PreToolUse hook.
+
+            It has to be a hook rather than `can_use_tool`: under `bypassPermissions` the SDK
+            auto-approves before that callback is ever consulted, so a gate written there is
+            silently dead code (the SDK warns about exactly this). `bypassPermissions` is
+            still needed — there is no human at the CLI to answer a prompt, so anything that
+            waits for approval would simply hang.
+            """
+            name = str(payload.get("tool_name") or "")
+            if name in allowed:
+                return {}
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    f"{name} is not available to the testing agent. Drive the phone with the "
+                    f"device tools; use Read/Write only for screenshots, memory and the report.",
+            }}
+
+        options = ClaudeAgentOptions(
+            system_prompt=prompts.build_system_prompt(self.package, self.slug, title, scope),
+            mcp_servers={
+                "device": build_device_server(self.device),
+                "cheap": build_stepper_server(self.stepper, self.device),
+            },
+            allowed_tools=allowed,
+            disallowed_tools=BLOCKED_TOOLS,
+            hooks={"PreToolUse": [HookMatcher(hooks=[gate])]},
+            permission_mode="bypassPermissions",
+            cwd=str(workdir),
+            # Don't inherit the repo's CLAUDE.md or settings: those describe how to *develop*
+            # this harness, which would only distract an agent whose job is to test a phone.
+            setting_sources=None,
+            max_turns=config.AGENT_MAX_TURNS,
+            effort=config.AGENT_PLANNER_EFFORT,  # type: ignore[arg-type]
+        )
+        if config.AGENT_PLANNER_MODEL:
+            options.model = config.AGENT_PLANNER_MODEL
+        if config.AGENT_PLANNER_FALLBACK:
+            options.fallback_model = config.AGENT_PLANNER_FALLBACK
+
+        # Pick the conversation back up across a server restart. Without this, the chat log on
+        # disk would still display but the agent itself would have forgotten which case it was
+        # on — and "say continue once the window resets" would be an empty promise.
+        prior = entry.get("cli_session_id")
+        if prior and not self._resume_failed:
+            options.resume = prior
+        return options
+
+    async def connect(self) -> None:
+        if self._client is not None:
+            return
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            # Loud, because the failure is invisible otherwise: everything works, and the
+            # subscription the user is paying for is bypassed in favour of metered billing.
+            logger.warning(
+                "ANTHROPIC_API_KEY is set in this process. It overrides the Claude Code "
+                "subscription profile, so agent calls will be billed per token. Unset it "
+                "unless that is what you want.")
+        try:
+            client = ClaudeSDKClient(options=self._options())
+            await client.connect()
+        except CLINotFoundError as exc:
+            raise RuntimeError(
+                "The Claude Code CLI was not found. Install it with "
+                "`npm i -g @anthropic-ai/claude-code`, then run `claude` once to sign in "
+                f"with your subscription. ({exc})") from exc
+        except Exception as exc:  # noqa: BLE001
+            # A stored session id can go stale (transcript pruned, different machine). Losing
+            # the history is a nuisance; refusing to start at all would be worse.
+            if self._resume_failed:
+                raise
+            logger.warning("Could not resume the previous conversation (%s) — starting a fresh "
+                           "one for %s/%s", exc, self.package, self.slug)
+            self._resume_failed = True
+            client = ClaudeSDKClient(options=self._options())
+            await client.connect()
+        self._client = client
+        logger.info("agent session connected for %s/%s", self.package, self.slug)
+
+    async def close(self) -> None:
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("disconnect failed: %s", exc)
+            self._client = None
+
+    async def interrupt(self) -> bool:
+        """Stop button. The CLI finishes the tool in flight, then ends the turn."""
+        if self._client is None or not self.busy:
+            return False
+        try:
+            await self._client.interrupt()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("interrupt failed: %s", exc)
+            return False
+
+    # -- the turn ----------------------------------------------------------------
+    async def send(self, text: str) -> None:
+        """Feed one user message in and stream everything that comes back."""
+        if self.busy:
+            await self.emit({"slug": self.slug, "type": "agent_error",
+                             "message": "The agent is still working. Press Stop first if you "
+                                        "want to redirect it."})
+            return
+
+        # A reply to a blocked question resolves the waiting tool instead of starting a turn.
+        if self.device.pending_question is not None:
+            if self.device.answer(text):
+                store.append_chat(self.package, self.slug, {"role": "user", "text": text})
+                await self.emit({"slug": self.slug, "type": "agent_unblocked"})
+                return
+
+        store.append_chat(self.package, self.slug, {"role": "user", "text": text})
+        async with self._lock:
+            self.busy = True
+            await self.emit({"slug": self.slug, "type": "agent_busy", "busy": True})
+            try:
+                await self.connect()
+                assert self._client is not None
+                await self._client.query(text)
+                await self._pump()
+            except Exception as exc:  # noqa: BLE001 - surface everything in the chat
+                logger.exception("agent turn failed")
+                store.append_chat(self.package, self.slug,
+                                  {"role": "error", "text": str(exc)})
+                await self.emit({"slug": self.slug, "type": "agent_error", "message": str(exc)})
+            finally:
+                self.busy = False
+                await self.emit({"slug": self.slug, "type": "agent_busy", "busy": False})
+
+    async def _pump(self) -> None:
+        """Translate the SDK's message stream into browser events + transcript entries."""
+        assert self._client is not None
+        async for message in self._client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        store.append_chat(self.package, self.slug,
+                                          {"role": "agent", "text": block.text})
+                        await self.emit({"slug": self.slug, "type": "agent_text",
+                                         "text": block.text})
+                    elif isinstance(block, ThinkingBlock):
+                        await self.emit({"slug": self.slug, "type": "agent_thinking"})
+                    elif isinstance(block, ToolUseBlock):
+                        summary = _tool_summary(block.name, block.input or {})
+                        store.append_chat(self.package, self.slug,
+                                          {"role": "tool", "tool": block.name,
+                                           "summary": summary})
+                        await self.emit({"slug": self.slug, "type": "agent_tool",
+                                         "tool": block.name, "summary": summary})
+
+            elif isinstance(message, UserMessage):
+                # Tool results come back as user-role content; surface only failures, since
+                # the successful ones are already implied by the agent's own narration.
+                for block in message.content if isinstance(message.content, list) else []:
+                    if isinstance(block, ToolResultBlock) and block.is_error:
+                        detail = block.content
+                        if isinstance(detail, list):
+                            detail = " ".join(
+                                b.get("text", "") for b in detail if isinstance(b, dict))
+                        await self.emit({"slug": self.slug, "type": "agent_tool_error",
+                                         "text": str(detail)[:400]})
+
+            elif isinstance(message, SystemMessage):
+                await self._handle_system(message)
+
+            elif isinstance(message, ResultMessage):
+                self._remember_session(message.session_id)
+                self.turns += message.num_turns or 0
+                await self._handle_result(message)
+
+    def _remember_session(self, session_id: Optional[str]) -> None:
+        if not session_id or session_id == self.session_id:
+            return
+        self.session_id = session_id
+        store.update_subproject(self.package, self.slug, cli_session_id=session_id)
+
+    async def _handle_system(self, message: SystemMessage) -> None:
+        data = message.data if isinstance(message.data, dict) else {}
+        if message.subtype == "init":
+            self._remember_session(data.get("session_id"))
+            return
+        # Rate-limit notices arrive as system messages; shape varies by CLI version, so match
+        # loosely rather than depend on one key.
+        blob = str(data).lower()
+        if "rate" in blob and "limit" in blob:
+            await self.emit({"slug": self.slug, "type": "agent_notice",
+                             "text": "Claude subscription rate-limit notice: "
+                                     f"{str(data)[:300]}"})
+
+    async def _handle_result(self, message: ResultMessage) -> None:
+        reason = (message.stop_reason or "") + " " + (message.terminal_reason or "")
+        blob = (reason + " " + str(message.errors or "") + " " +
+                str(message.api_error_status or "")).lower()
+
+        if "rate" in blob and "limit" in blob:
+            self.parked_reason = "rate_limit"
+            note = (
+                "The Claude subscription window is exhausted, so I have stopped mid-run "
+                "rather than finishing this on a different model and presenting the results "
+                "as equivalent. The conversation is saved — say 'continue' once the window "
+                "resets and I will pick up from here.")
+            store.append_chat(self.package, self.slug, {"role": "error", "text": note})
+            await self.emit({"slug": self.slug, "type": "agent_parked", "reason": "rate_limit",
+                             "text": note})
+            return
+
+        if message.is_error:
+            detail = str(message.errors or message.result or reason).strip() or "unknown error"
+            store.append_chat(self.package, self.slug, {"role": "error", "text": detail})
+            await self.emit({"slug": self.slug, "type": "agent_error", "message": detail[:500]})
+            return
+
+        store.update_subproject(self.package, self.slug,
+                                last_run_at=store.now(), status="tested")
+        await self.emit({
+            "slug": self.slug,
+            "type": "agent_done",
+            "turns": message.num_turns,
+            "duration_ms": message.duration_ms,
+            "taps": self.device.tap_count,
+            "shots": self.device.shot_count,
+            "stepper_calls": self.stepper.calls,
+            "stepper_cost_usd": round(self.stepper.cost_usd, 4),
+            "findings": len(store.list_findings(self.package, self.slug)),
+        })
+
+
+class SessionRegistry:
+    """All live agent sessions, keyed by package + module."""
+
+    def __init__(self, emit: Emit):
+        self.emit = emit
+        self._sessions: dict[tuple[str, str], AgentSession] = {}
+
+    def get(self, package: str, slug: str, serial: Optional[str] = None) -> AgentSession:
+        key = (package, slug)
+        if key not in self._sessions:
+            self._sessions[key] = AgentSession(package, slug, self.emit, serial=serial)
+        return self._sessions[key]
+
+    def peek(self, package: str, slug: str) -> Optional[AgentSession]:
+        return self._sessions.get((package, slug))
+
+    async def close(self, package: str, slug: str) -> None:
+        session = self._sessions.pop((package, slug), None)
+        if session is not None:
+            await session.close()
+
+    async def close_all(self) -> None:
+        for session in list(self._sessions.values()):
+            await session.close()
+        self._sessions.clear()
+
+    def status(self) -> list[dict[str, Any]]:
+        return [{"package": p, "slug": s, "busy": sess.busy,
+                 "blocked": sess.device.pending_question,
+                 "parked": sess.parked_reason,
+                 "stepper_cost_usd": round(sess.stepper.cost_usd, 4)}
+                for (p, s), sess in self._sessions.items()]

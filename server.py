@@ -1,6 +1,7 @@
 """FastAPI telemetry + remote-control server for the Android App Testing Agent dashboard."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -18,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
+from agent import runtime as agent_runtime
+from agent import store as agent_store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("server")
@@ -281,6 +284,39 @@ manager = ConnectionManager()
 
 
 # --------------------------------------------------------------------------------------
+# Chat agent (Agent tab). Sessions live in this process: the planner is the Claude Code CLI
+# driven through claude-agent-sdk, and the device tools are in-process MCP tools, so an
+# agent's every step can be pushed straight out over the WebSocket above.
+# --------------------------------------------------------------------------------------
+async def _agent_emit(event: dict[str, Any]) -> None:
+    await manager.broadcast(event)
+
+
+agent_sessions = agent_runtime.SessionRegistry(_agent_emit)
+
+
+class AgentMessagePayload(BaseModel):
+    text: str
+    device_serial: Optional[str] = None
+
+
+class SubprojectPayload(BaseModel):
+    title: str
+    scope: str = ""
+
+
+class SubprojectUpdatePayload(BaseModel):
+    title: Optional[str] = None
+    scope: Optional[str] = None
+    status: Optional[str] = None
+
+
+class SecretPayload(BaseModel):
+    name: str
+    value: str
+
+
+# --------------------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------------------
 @app.get("/")
@@ -538,6 +574,173 @@ async def run_command(payload: CommandPayload):
         screenshot_b64 = ""
 
     return {"ok": True, "command": raw, "screenshot_b64": screenshot_b64}
+
+
+# --------------------------------------------------------------------------------------
+# Agent routes
+# --------------------------------------------------------------------------------------
+@app.get("/agent/status")
+async def agent_status():
+    """Which sessions are live, busy, blocked on a question, or parked on a rate limit."""
+    return {
+        "sessions": agent_sessions.status(),
+        "planner": "claude-code-cli (subscription)",
+        "stepper_model": config.AGENT_STEPPER_MODEL,
+        "stepper_configured": bool(config.OPENROUTER_API_KEY),
+    }
+
+
+@app.get("/agent/{package}/subprojects")
+async def list_subprojects(package: str):
+    return agent_store.list_subprojects(package)
+
+
+@app.post("/agent/{package}/subprojects")
+async def create_subproject(package: str, payload: SubprojectPayload):
+    if not payload.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    _ensure_project(package)
+    return agent_store.create_subproject(package, payload.title, payload.scope,
+                                         status="approved")
+
+
+@app.patch("/agent/{package}/subprojects/{slug}")
+async def patch_subproject(package: str, slug: str, payload: SubprojectUpdatePayload):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    entry = agent_store.update_subproject(package, slug, **updates)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown sub-project")
+    await manager.broadcast({"type": "agent_subproject_updated", "package": package,
+                             "subproject": entry})
+    return entry
+
+
+@app.delete("/agent/{package}/subprojects/{slug}")
+async def remove_subproject(package: str, slug: str):
+    """Removes it from the list only. The transcript, findings and evidence stay on disk —
+    a mis-click should not be able to destroy a test history."""
+    if not agent_store.delete_subproject(package, slug):
+        raise HTTPException(status_code=404, detail="Unknown sub-project")
+    await agent_sessions.close(package, slug)
+    return {"ok": True, "note": "Folder kept on disk; only the listing entry was removed."}
+
+
+@app.get("/agent/{package}/{slug}/chat")
+async def get_chat(package: str, slug: str, limit: int = 400):
+    session = agent_sessions.peek(package, slug)
+    return {
+        "messages": agent_store.read_chat(package, slug, limit=limit),
+        "findings": agent_store.list_findings(package, slug),
+        "busy": bool(session and session.busy),
+        "blocked": session.device.pending_question if session else None,
+        "parked": session.parked_reason if session else None,
+    }
+
+
+@app.post("/agent/{package}/{slug}/message")
+async def post_message(package: str, slug: str, payload: AgentMessagePayload):
+    """Hand a message to the agent and return immediately.
+
+    The turn runs as a background task because it can last many minutes; everything it does
+    arrives over the WebSocket. Holding the HTTP request open for the whole run would hit
+    proxy timeouts and give the browser nothing to show in the meantime.
+    """
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    if agent_store.get_subproject(package, slug) is None:
+        raise HTTPException(status_code=404, detail="Unknown sub-project — create it first")
+    serial = payload.device_serial or (latest_state or {}).get("device_serial")
+    session = agent_sessions.get(package, slug, serial=serial)
+    asyncio.create_task(session.send(payload.text))
+    return {"ok": True, "accepted": True}
+
+
+@app.post("/agent/{package}/recon")
+async def start_recon(package: str, payload: AgentMessagePayload | None = None):
+    """Kick off the recon pass that proposes the module breakdown for a new project."""
+    from agent.prompts import RECON_PROMPT
+
+    agent_store.create_subproject(package, "Recon", "map the app and propose modules",
+                                  status="approved")
+    _ensure_project(package)
+    serial = (payload.device_serial if payload else None) or \
+        (latest_state or {}).get("device_serial")
+    session = agent_sessions.get(package, "recon", serial=serial)
+    asyncio.create_task(session.send(RECON_PROMPT))
+    return {"ok": True, "slug": "recon"}
+
+
+@app.post("/agent/{package}/{slug}/stop")
+async def stop_agent(package: str, slug: str):
+    session = agent_sessions.peek(package, slug)
+    if session is None:
+        raise HTTPException(status_code=404, detail="No live session for this sub-project")
+    stopped = await session.interrupt()
+    return {"ok": True, "stopped": stopped}
+
+
+@app.get("/agent/{package}/{slug}/findings")
+async def get_findings(package: str, slug: str):
+    return agent_store.list_findings(package, slug)
+
+
+@app.post("/agent/{package}/secrets")
+async def put_secret(package: str, payload: SecretPayload):
+    """Store a test credential. Values are write-only over the API: the response lists names
+    only, and the agent enters one via a tool without it ever entering the transcript."""
+    if not payload.name.strip() or not payload.value:
+        raise HTTPException(status_code=400, detail="name and value are required")
+    agent_store.set_secret(package, payload.name.strip(), payload.value)
+    return {"ok": True, "names": agent_store.secret_keys(package)}
+
+
+@app.get("/agent/{package}/secrets")
+async def list_secrets(package: str):
+    return {"names": agent_store.secret_keys(package)}
+
+
+@app.get("/agent/shot")
+async def get_shot(path: str):
+    """Serve a screenshot the agent captured, for the chat thumbnails.
+
+    Confined to the projects/ tree: `path` arrives from the browser, so it is resolved and
+    checked before being opened rather than trusted.
+    """
+    try:
+        resolved = Path(path).resolve()
+        root = agent_store.PROJECTS_DIR.resolve()
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Not an agent screenshot")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Bad path: {exc}") from exc
+    return FileResponse(resolved, media_type="image/jpeg")
+
+
+@app.get("/device/frame")
+async def device_frame(package: str | None = None, slug: str | None = None):
+    """A single frame of the phone for the Agent tab's live view.
+
+    Reuses the agent's own device session when one exists, so watching the screen does not
+    open a second uiautomator2 connection to the same phone while the agent is mid-tap.
+    """
+    session = agent_sessions.peek(package, slug) if package and slug else None
+    try:
+        if session is not None:
+            device = await session.device.device()
+            b64 = await session.device.run(device.screenshot_b64)
+        else:
+            d = _resolve_device(None)
+            b64 = await asyncio.to_thread(_screenshot_b64, d)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not grab a frame: {exc}") from exc
+    return {"screenshot_b64": b64}
+
+
+@app.on_event("shutdown")
+async def _close_agent_sessions() -> None:
+    await agent_sessions.close_all()
 
 
 @app.websocket("/ws")

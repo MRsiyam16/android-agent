@@ -1504,6 +1504,8 @@
         showStatus(msg.message, msg.level);
         if (msg.popup) showLockPopup(msg.message, msg.level);
         else if (msg.level === 'ok') hideLockPopup();
+      } else if (msg.type && msg.type.startsWith('agent_')) {
+        handleAgentEvent(msg);
       }
     };
   }
@@ -1971,6 +1973,7 @@
       document.getElementById('view-' + tab.dataset.tab).classList.add('active');
       if (tab.dataset.tab === 'graph') { network.redraw(); scheduleRenderOverlay(); }
       if (tab.dataset.tab === 'projects') fetchProjects();
+      if (tab.dataset.tab === 'agent') initAgentTab();
     });
   });
 
@@ -2056,48 +2059,545 @@
     setTimeout(() => dot.remove(), 650);
   }
 
+  function scrollChatToEnd() {
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
   function appendChat(kind, text) {
     const row = document.createElement('div');
     row.className = 'chat-entry ' + kind;
     row.textContent = text;
     chatLog.appendChild(row);
-    chatLog.scrollTop = chatLog.scrollHeight;
+    scrollChatToEnd();
+    return row;
   }
 
-  async function sendCommand(command) {
-    appendChat('cmd', command);
+  // ---------------------------------------------------------------------------
+  // Agent tab
+  //
+  // The agent runs server-side and can work for many minutes, so POSTing a message
+  // returns immediately and everything it does arrives over the WebSocket. The chat is
+  // therefore rendered from events, and reloaded from the transcript on disk when you
+  // switch modules — the browser is a view, never the source of truth.
+  // ---------------------------------------------------------------------------
+  const agentEl = {
+    project: document.getElementById('agentProject'),
+    subproject: document.getElementById('agentSubproject'),
+    state: document.getElementById('agentState'),
+    stop: document.getElementById('agentStopBtn'),
+    blocked: document.getElementById('agentBlocked'),
+    blockedLabel: document.getElementById('agentBlockedLabel'),
+    blockedQuestion: document.getElementById('agentBlockedQuestion'),
+    moduleList: document.getElementById('agentModuleList'),
+    findings: document.getElementById('agentFindings'),
+    findingCount: document.getElementById('agentFindingCount'),
+    secretNames: document.getElementById('agentSecretNames'),
+    meterStepper: document.getElementById('meterStepper'),
+    meterActions: document.getElementById('meterActions'),
+    liveToggle: document.getElementById('liveFrameToggle'),
+    input: document.getElementById('chatInput'),
+    send: document.getElementById('chatSend'),
+  };
+
+  const agent = {
+    ready: false,
+    package: null,
+    slug: null,
+    busy: false,
+    taps: 0,
+    shots: 0,
+    liveTimer: null,
+  };
+
+  function setAgentState(label, cls) {
+    agentEl.state.textContent = label;
+    agentEl.state.className = 'agent-state' + (cls ? ' ' + cls : '');
+  }
+
+  function setAgentBusy(busy) {
+    agent.busy = busy;
+    agentEl.stop.disabled = !busy;
+    if (busy) setAgentState('working', 'busy');
+    else if (!agentEl.blocked.classList.contains('open')) setAgentState('idle', '');
+  }
+
+  async function agentFetch(url, options) {
+    const resp = await fetch(url, options);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error((data && data.detail) || (resp.status + ' from ' + url));
+    return data;
+  }
+
+  async function loadAgentProjects() {
+    let projects = [];
     try {
-      const resp = await fetch('/command', {
+      projects = await agentFetch('/projects');
+    } catch (err) {
+      appendChat('error', 'Could not list projects: ' + err.message);
+      return;
+    }
+    agentEl.project.innerHTML = '';
+    if (!projects.length) {
+      const opt = document.createElement('option');
+      opt.textContent = 'No projects yet — create one in the Projects tab';
+      opt.value = '';
+      agentEl.project.appendChild(opt);
+      return;
+    }
+    projects.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p.package;
+      opt.textContent = p.package;
+      agentEl.project.appendChild(opt);
+    });
+    agent.package = agent.package && projects.some((p) => p.package === agent.package)
+      ? agent.package
+      : projects[0].package;
+    agentEl.project.value = agent.package;
+    await loadModules();
+  }
+
+  function moduleBadges(mod) {
+    const badges = [`<span class="agent-badge ${mod.status}">${mod.status}</span>`];
+    if (mod.finding_count) {
+      badges.push(`<span class="agent-badge defects">${mod.finding_count} finding${mod.finding_count === 1 ? '' : 's'}</span>`);
+    }
+    return badges.join(' ');
+  }
+
+  async function loadModules() {
+    if (!agent.package) return;
+    let modules = [];
+    try {
+      modules = await agentFetch('/agent/' + encodeURIComponent(agent.package) + '/subprojects');
+    } catch (err) {
+      appendChat('error', 'Could not load modules: ' + err.message);
+      return;
+    }
+
+    // Module dropdown in the chat header
+    agentEl.subproject.innerHTML = '';
+    modules.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.slug;
+      opt.textContent = m.title;
+      agentEl.subproject.appendChild(opt);
+    });
+
+    // Right-rail list
+    agentEl.moduleList.innerHTML = '';
+    if (!modules.length) {
+      const empty = document.createElement('div');
+      empty.className = 'agent-empty';
+      empty.textContent = 'No modules yet. Press Recon and the agent will explore the app and '
+        + 'propose a breakdown for you to approve — or add one by hand below.';
+      agentEl.moduleList.appendChild(empty);
+    }
+    modules.forEach((m) => {
+      const card = document.createElement('div');
+      card.className = 'agent-module' + (m.slug === agent.slug ? ' active' : '');
+      card.innerHTML =
+        `<div class="agent-module-title"></div>`
+        + (m.scope ? `<div class="agent-module-scope"></div>` : '')
+        + `<div class="agent-module-meta">${moduleBadges(m)}</div>`;
+      card.querySelector('.agent-module-title').textContent = m.title;
+      if (m.scope) card.querySelector('.agent-module-scope').textContent = m.scope;
+      card.addEventListener('click', () => selectModule(m.slug));
+
+      if (m.status === 'proposed') {
+        const approve = document.createElement('button');
+        approve.className = 'agent-module-approve';
+        approve.textContent = '✓ Approve module';
+        approve.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          try {
+            await agentFetch(`/agent/${encodeURIComponent(agent.package)}/subprojects/${m.slug}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'approved' }),
+            });
+            await loadModules();
+          } catch (err) {
+            appendChat('error', 'Could not approve: ' + err.message);
+          }
+        });
+        card.appendChild(approve);
+      }
+      agentEl.moduleList.appendChild(card);
+    });
+
+    if (modules.length) {
+      const stillThere = modules.some((m) => m.slug === agent.slug);
+      await selectModule(stillThere ? agent.slug : modules[0].slug);
+    } else {
+      agent.slug = null;
+    }
+    loadSecretNames();
+  }
+
+  async function selectModule(slug) {
+    if (!slug) return;
+    const changed = agent.slug !== slug;
+    agent.slug = slug;
+    agentEl.subproject.value = slug;
+    document.querySelectorAll('.agent-module').forEach((el) => el.classList.remove('active'));
+    if (changed) await loadTranscript();
+    else renderModuleHighlight();
+  }
+
+  function renderModuleHighlight() {
+    const titles = Array.from(agentEl.subproject.options).map((o) => o.value);
+    const index = titles.indexOf(agent.slug);
+    const cards = document.querySelectorAll('.agent-module');
+    if (index >= 0 && cards[index]) cards[index].classList.add('active');
+  }
+
+  function renderFindings(findings) {
+    agentEl.findings.innerHTML = '';
+    agentEl.findingCount.textContent = findings.length;
+    if (!findings.length) {
+      const empty = document.createElement('div');
+      empty.className = 'agent-empty';
+      empty.textContent = 'Nothing filed for this module yet.';
+      agentEl.findings.appendChild(empty);
+      return;
+    }
+    findings.forEach((f) => {
+      const row = document.createElement('div');
+      row.className = 'agent-finding-row';
+      row.innerHTML = `<b>${f.id} · ${f.severity}</b><br>`;
+      const title = document.createElement('span');
+      title.textContent = f.title;
+      row.appendChild(title);
+      agentEl.findings.appendChild(row);
+    });
+  }
+
+  async function loadTranscript() {
+    if (!agent.package || !agent.slug) return;
+    chatLog.innerHTML = '';
+    let data;
+    try {
+      data = await agentFetch(`/agent/${encodeURIComponent(agent.package)}/${agent.slug}/chat`);
+    } catch (err) {
+      appendChat('error', 'Could not load the transcript: ' + err.message);
+      return;
+    }
+    (data.messages || []).forEach((m) => {
+      if (m.role === 'user') appendChat('user', m.text || '');
+      else if (m.role === 'agent') appendChat('agent', m.text || '');
+      else if (m.role === 'error') appendChat('error', m.text || '');
+      else if (m.role === 'tool') appendChat('tool', m.summary || m.tool || '');
+    });
+    if (!(data.messages || []).length) {
+      appendChat('agent', 'Tell me what to test in this module and I will plan the cases, run '
+        + 'them on the phone, and report what I actually observe. I will stop and ask only if '
+        + 'I hit something I cannot get past on my own.');
+    }
+    renderFindings(data.findings || []);
+    setAgentBusy(!!data.busy);
+    if (data.blocked) showBlocked(data.blocked);
+    else hideBlocked();
+    if (data.parked) setAgentState('parked', 'parked');
+    renderModuleHighlight();
+    scrollChatToEnd();
+  }
+
+  function showBlocked(question) {
+    agentEl.blocked.classList.add('open');
+    agentEl.blockedLabel.textContent = question.kind === 'credential'
+      ? 'The agent needs a credential'
+      : question.kind === 'approval'
+        ? 'The agent is waiting for your approval'
+        : 'The agent needs an answer';
+    agentEl.blockedQuestion.textContent = question.question || '';
+    setAgentState('blocked', 'blocked');
+    agentEl.input.focus();
+  }
+
+  function hideBlocked() {
+    agentEl.blocked.classList.remove('open');
+  }
+
+  function appendShot(path, note) {
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-shot';
+    const img = document.createElement('img');
+    img.src = '/agent/shot?path=' + encodeURIComponent(path);
+    img.alt = note || 'screenshot';
+    img.addEventListener('click', () => window.open(img.src, '_blank'));
+    wrap.appendChild(img);
+    if (note) {
+      const cap = document.createElement('div');
+      cap.className = 'chat-shot-note';
+      cap.textContent = note;
+      wrap.appendChild(cap);
+    }
+    chatLog.appendChild(wrap);
+    scrollChatToEnd();
+  }
+
+  function appendFinding(f) {
+    const box = document.createElement('div');
+    box.className = 'chat-finding';
+    const head = document.createElement('div');
+    head.className = 'chat-finding-head';
+    head.textContent = `${f.id} · ${f.severity} · ${f.title}`;
+    box.appendChild(head);
+    [['Expected', f.expected], ['Actual', f.actual]].forEach(([label, value]) => {
+      if (!value) return;
+      const row = document.createElement('div');
+      row.className = 'chat-finding-row';
+      const b = document.createElement('b');
+      b.textContent = label + ': ';
+      row.appendChild(b);
+      row.appendChild(document.createTextNode(value));
+      box.appendChild(row);
+    });
+    chatLog.appendChild(box);
+    scrollChatToEnd();
+  }
+
+  function handleAgentEvent(msg) {
+    // Events carry their module, so a background run cannot scribble into the chat you
+    // are currently reading.
+    if (msg.slug && agent.slug && msg.slug !== agent.slug) {
+      if (msg.type === 'agent_finding' || msg.type === 'agent_subprojects_proposed') loadModules();
+      return;
+    }
+    switch (msg.type) {
+      case 'agent_text': appendChat('agent', msg.text); break;
+      case 'agent_tool': appendChat('tool', msg.summary || msg.tool); break;
+      case 'agent_tool_error': {
+        const row = appendChat('tool failed', msg.text);
+        row.classList.add('failed');
+        break;
+      }
+      case 'agent_busy': setAgentBusy(msg.busy); break;
+      case 'agent_thinking': setAgentState('thinking', 'busy'); break;
+      case 'agent_screenshot':
+        agent.shots += 1;
+        appendShot(msg.path, msg.note);
+        updateMeters();
+        break;
+      case 'agent_tap':
+        agent.taps += 1;
+        updateMeters();
+        if (agentEl.liveToggle.checked) refreshFrame();
+        break;
+      case 'agent_journey_step':
+        appendChat('tool', `flow graph · ${msg.section} · ${msg.label}`);
+        break;
+      case 'agent_finding':
+        appendFinding(msg.finding);
+        loadModules();
+        break;
+      case 'agent_blocked': showBlocked(msg); break;
+      case 'agent_unblocked': hideBlocked(); break;
+      case 'agent_notice': appendChat('notice', msg.text); break;
+      case 'agent_parked':
+        appendChat('notice', msg.text);
+        setAgentState('parked', 'parked');
+        break;
+      case 'agent_error': appendChat('error', msg.message); break;
+      case 'agent_subprojects_proposed': loadModules(); break;
+      case 'agent_subproject_updated': loadModules(); break;
+      case 'agent_done': {
+        const bits = [`${msg.turns} turns`, `${Math.round((msg.duration_ms || 0) / 1000)}s`,
+          `${msg.taps} taps`, `${msg.findings} finding${msg.findings === 1 ? '' : 's'}`];
+        if (msg.stepper_calls) bits.push(`${msg.stepper_calls} cheap calls ($${msg.stepper_cost_usd})`);
+        const row = document.createElement('div');
+        row.className = 'chat-done';
+        row.textContent = bits.join(' · ');
+        chatLog.appendChild(row);
+        agent.taps = msg.taps || agent.taps;
+        agent.shots = msg.shots || agent.shots;
+        if (msg.stepper_cost_usd !== undefined) {
+          agentEl.meterStepper.textContent = `${msg.stepper_calls} calls · $${msg.stepper_cost_usd}`;
+        }
+        updateMeters();
+        hideBlocked();
+        scrollChatToEnd();
+        break;
+      }
+      default: break;
+    }
+  }
+
+  function updateMeters() {
+    agentEl.meterActions.textContent = `${agent.taps} · ${agent.shots}`;
+  }
+
+  async function sendToAgent(text) {
+    if (!agent.package || !agent.slug) {
+      appendChat('error', 'Pick a project and a module first.');
+      return;
+    }
+    appendChat('user', text);
+    hideBlocked();
+    try {
+      await agentFetch(`/agent/${encodeURIComponent(agent.package)}/${agent.slug}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  }
+
+  // The old manual command parser survives behind a `/` prefix, so the phone can still be
+  // driven by hand without going through the agent.
+  async function sendCommand(command) {
+    appendChat('cmd', '/' + command);
+    try {
+      const data = await agentFetch('/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command }),
       });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        appendChat('error', (data && data.detail) || ('Command failed (' + resp.status + ')'));
-        return;
-      }
       appendChat('ok', 'Executed: ' + data.command);
       if (data.screenshot_b64) setPhoneFrame(data.screenshot_b64);
     } catch (err) {
-      appendChat('error', 'Network error: ' + err.message);
+      appendChat('error', err.message);
     }
   }
 
+  async function refreshFrame() {
+    const query = (agent.package && agent.slug)
+      ? `?package=${encodeURIComponent(agent.package)}&slug=${encodeURIComponent(agent.slug)}`
+      : '';
+    try {
+      const data = await agentFetch('/device/frame' + query);
+      if (data.screenshot_b64) setPhoneFrame(data.screenshot_b64);
+    } catch (err) {
+      phonePlaceholder.textContent = err.message;
+    }
+  }
+
+  async function loadSecretNames() {
+    if (!agent.package) return;
+    try {
+      const data = await agentFetch('/agent/' + encodeURIComponent(agent.package) + '/secrets');
+      agentEl.secretNames.textContent = (data.names || []).length
+        ? 'Stored: ' + data.names.join(', ')
+        : 'None stored. The agent will ask when it needs one.';
+    } catch {
+      agentEl.secretNames.textContent = '';
+    }
+  }
+
+  function initAgentTab() {
+    if (agent.ready) { refreshFrame(); return; }
+    agent.ready = true;
+    loadAgentProjects().then(refreshFrame);
+
+    fetch('/agent/status').then((r) => r.json()).then((s) => {
+      document.getElementById('meterPlanner').textContent = 'Claude Code (subscription)';
+      agentEl.meterStepper.textContent = s.stepper_configured
+        ? s.stepper_model.split('/').pop()
+        : 'not configured';
+    }).catch(() => {});
+  }
+
+  agentEl.project.addEventListener('change', () => {
+    agent.package = agentEl.project.value;
+    agent.slug = null;
+    loadModules();
+  });
+  agentEl.subproject.addEventListener('change', () => selectModule(agentEl.subproject.value));
+
+  agentEl.stop.addEventListener('click', async () => {
+    try {
+      await agentFetch(`/agent/${encodeURIComponent(agent.package)}/${agent.slug}/stop`,
+        { method: 'POST' });
+      appendChat('notice', 'Stop requested — the agent will finish the step it is on and halt.');
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  });
+
+  document.getElementById('agentReconBtn').addEventListener('click', async () => {
+    if (!agent.package) { appendChat('error', 'Pick a project first.'); return; }
+    try {
+      await agentFetch(`/agent/${encodeURIComponent(agent.package)}/recon`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      await loadModules();
+      await selectModule('recon');
+      appendChat('notice', 'Recon started — the agent will explore the app and propose modules.');
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  });
+
+  document.getElementById('agentNewModuleForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('agentNewModuleTitle');
+    const scope = document.getElementById('agentNewModuleScope');
+    if (!title.value.trim() || !agent.package) return;
+    try {
+      await agentFetch('/agent/' + encodeURIComponent(agent.package) + '/subprojects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.value.trim(), scope: scope.value.trim() }),
+      });
+      title.value = '';
+      scope.value = '';
+      await loadModules();
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  });
+
+  document.getElementById('agentSecretForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('agentSecretName');
+    const value = document.getElementById('agentSecretValue');
+    if (!name.value.trim() || !value.value || !agent.package) return;
+    try {
+      await agentFetch('/agent/' + encodeURIComponent(agent.package) + '/secrets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.value.trim(), value: value.value }),
+      });
+      name.value = '';
+      value.value = '';
+      loadSecretNames();
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  });
+
   document.getElementById('chatForm').addEventListener('submit', (e) => {
     e.preventDefault();
-    const input = document.getElementById('chatInput');
-    const value = input.value.trim();
+    const value = agentEl.input.value.trim();
     if (!value) return;
-    input.value = '';
-    sendCommand(value);
+    agentEl.input.value = '';
+    if (value.startsWith('/')) sendCommand(value.slice(1).trim());
+    else sendToAgent(value);
+  });
+
+  agentEl.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById('chatForm').requestSubmit();
+    }
+  });
+
+  agentEl.liveToggle.addEventListener('change', () => {
+    if (agent.liveTimer) { clearInterval(agent.liveTimer); agent.liveTimer = null; }
+    // Only poll while the agent is actually working; a fixed interval on an idle phone is
+    // just wasted ADB round trips.
+    if (agentEl.liveToggle.checked) agent.liveTimer = setInterval(() => {
+      if (agent.busy) refreshFrame();
+    }, 2500);
   });
 
   document.querySelectorAll('.chip-btn[data-cmd]').forEach((btn) => {
     btn.addEventListener('click', () => sendCommand(btn.dataset.cmd));
   });
 
-  document.getElementById('refreshFrameBtn').addEventListener('click', () => sendCommand('screenshot'));
+  document.getElementById('refreshFrameBtn').addEventListener('click', refreshFrame);
 
   phoneScreen.addEventListener('click', (evt) => {
     const rect = phoneScreen.getBoundingClientRect();

@@ -106,6 +106,83 @@ Navigate to `http://localhost:8000` to see:
 
 ---
 
+## The Agent Tab — testing by conversation
+
+Everything above describes *autonomous exploration*: point `run_agent.py` at a package and it
+maps the state space. The **Agent** tab does something different — you tell an agent in plain
+English what to test, and it plans the cases, drives the phone, and reports what it observed.
+
+```bash
+python start.py      # one command: server, device check, agent readiness, browser
+```
+
+Then open the **Agent** tab: the phone's live screen is on the left, the chat in the middle,
+the module list on the right.
+
+```
+you › test the login module: empty submit, wrong password, valid login, session persistence
+
+agent › Plan: 4 cases. Starting with empty submit.
+  ▸ launch com.example.app                        ✓
+  ▸ tap_element id=540_612  'Login'               ✓
+  ▸ submit empty → expect inline validation
+      ✓ "Email is required" is on screen
+  ▸ wrong password → expect rejection
+      ⚠ "Signing in…" still up, waiting
+      ✓ "Invalid credentials", still on the form
+  ▸ needs a valid test account
+  ⏸ blocked — which credentials should I use?
+```
+
+### Setup
+
+1. **Claude Code CLI**, installed and signed in once. This is the planner, and signing in with
+   a Pro/Max subscription is what keeps it off metered API billing:
+   ```bash
+   npm i -g @anthropic-ai/claude-code
+   claude          # once, to authenticate
+   ```
+2. **`OPENROUTER_API_KEY`** in `android-agent/.env` (gitignored) for the cheap tier. Optional —
+   without it the agent still works, but every routine screen check spends subscription quota
+   instead of a fraction of a cent.
+3. `pip install -r requirements.txt`
+
+**Do not set `ANTHROPIC_API_KEY`.** It overrides the subscription profile and silently bills
+planner calls per token. `start.py` warns if it finds one.
+
+### Modules
+
+A project is an app package; a module is a test suite for one part of it. On a new project,
+press **Recon**: the agent explores the app and proposes a breakdown (Auth, Catalog, Cart,
+Checkout…) for you to approve, rename or merge. It does not test anything until you approve.
+Each module keeps its own chat transcript, memory file, findings and screenshots under
+`projects/<package>/agent/<module>/`.
+
+Each test case also draws itself onto the **Flow Graph** as an ordered chain of named steps,
+grouped by module — so the graph shows the path a test walked, not just which screens exist.
+
+### What it will and will not do
+
+- It runs an instruction to completion rather than asking after each step, and streams every
+  action into the chat. **Stop** halts it after the step in flight.
+- It pauses only when genuinely blocked — a credential it does not have, an OTP, a paywall, or
+  a spec ambiguity where the two readings imply different tests.
+- It **cannot file a defect without a screenshot**, and is told to look at the image itself
+  before doing so. Every false defect this harness has produced was a dump misread.
+- It has no shell, no web access and no subagents; the phone plus its own notes are the whole
+  of its world.
+- If the subscription window runs out mid-run it **stops and says so**, keeping the session so
+  you can say "continue" later — rather than finishing on a different model and presenting the
+  results as equivalent.
+
+### Cost, in practice
+
+A ~40-tap module test is roughly 40 cheap-tier calls (a fraction of a cent, shown live in the
+UI) plus a handful of planner turns against the subscription window. The constraint is the
+window, not money — which is exactly why the mechanical work is delegated.
+
+---
+
 ## How the Agent Explores (What's Happening Under the Hood)
 
 ### State Identification
@@ -364,18 +441,28 @@ Each needs its own server port (edit `config.py` `SERVER_PORT`).
 ## File Structure
 ```
 android-agent/
-├── run_agent.py          # Main exploration loop
-├── server.py             # FastAPI telemetry server
-├── config.py             # Configuration (ADB, server, limits)
+├── start.py              # One command to bring the whole system up
+├── run_agent.py          # Autonomous exploration loop
+├── server.py             # FastAPI telemetry + agent server
+├── config.py             # Configuration (ADB, server, limits, agent tiers)
 ├── extractor.py          # XML parsing, state hashing, action extraction
 ├── adb_device.py         # uiautomator2 wrapper
 ├── graph.py              # Graph data structures
+├── journey.py            # Scripted-flow mapping (one node per step)
 ├── telemetry.py          # HTTP client for posting results
+├── system_memory.py      # Self-updating briefing on how to drive this harness
+├── agent/                # The chat agent behind the Agent tab
+│   ├── runtime.py        #   one live Claude Code session per module
+│   ├── device_tools.py   #   in-process MCP tools that drive the phone
+│   ├── stepper.py        #   cheap OpenRouter tier for high-volume calls
+│   ├── prompts.py        #   the QA system prompt + learned lessons
+│   └── store.py          #   modules, transcripts, memory, findings, credentials
 ├── templates/
-│   └── dashboard.html    # Frontend (vis.js, interactive graph)
+│   └── dashboard.html    # Frontend (vis.js graph, agent chat)
 ├── static/
-│   ├── dashboard.js      # Graph interaction logic
+│   ├── dashboard.js      # Graph + agent UI logic
 │   └── dashboard.css     # Styling
+├── .env                  # OPENROUTER_API_KEY — gitignored, never committed
 ├── requirements.txt      # Python dependencies
 └── README.md             # This file
 ```
