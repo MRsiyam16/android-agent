@@ -88,6 +88,23 @@ def _secrets_path(package: str) -> Path:
     return project_dir(package) / "secrets.json"
 
 
+def _last_opened_path() -> Path:
+    return PROJECTS_DIR / "last-opened.json"
+
+
+def set_last_opened(package: str, slug: str) -> None:
+    """Remember which module was last in use, so the server can pre-warm its Claude Code
+    session at startup and the first message of the day is instant."""
+    _write_json_atomic(_last_opened_path(), {"package": package, "slug": slug, "at": now()})
+
+
+def get_last_opened() -> Optional[dict[str, str]]:
+    data = _read_json(_last_opened_path(), None)
+    if isinstance(data, dict) and data.get("package") and data.get("slug"):
+        return {"package": str(data["package"]), "slug": str(data["slug"])}
+    return None
+
+
 def _read_json(path: Path, default: Any) -> Any:
     if not path.is_file():
         return default

@@ -585,9 +585,28 @@ async def agent_status():
     return {
         "sessions": agent_sessions.status(),
         "planner": "claude-code-cli (subscription)",
-        "stepper_model": config.AGENT_STEPPER_MODEL,
-        "stepper_configured": bool(config.OPENROUTER_API_KEY),
+        "cheap_tier": config.AGENT_USE_CHEAP_TIER,
+        "stepper_model": config.AGENT_STEPPER_MODEL if config.AGENT_USE_CHEAP_TIER else None,
+        "last_opened": agent_store.get_last_opened(),
     }
+
+
+@app.post("/agent/{package}/{slug}/warm")
+async def warm_agent(package: str, slug: str, payload: AgentMessagePayload | None = None):
+    """Spawn the module's Claude Code session now, without sending it anything.
+
+    Called on startup for the last-used module and again whenever you select one in the UI, so
+    the CLI's spawn cost is paid while you are still typing rather than after you hit send.
+    """
+    if agent_store.get_subproject(package, slug) is None:
+        raise HTTPException(status_code=404, detail="Unknown sub-project")
+    agent_store.set_last_opened(package, slug)
+    serial = (payload.device_serial if payload else None) or \
+        (latest_state or {}).get("device_serial")
+    try:
+        return await agent_sessions.warm(package, slug, serial=serial)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/agent/{package}/subprojects")
@@ -736,6 +755,28 @@ async def device_frame(package: str | None = None, slug: str | None = None):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not grab a frame: {exc}") from exc
     return {"screenshot_b64": b64}
+
+
+@app.on_event("startup")
+async def _prewarm_agent() -> None:
+    """Bring up a Claude Code session for the last-used module in the background.
+
+    Deliberately fire-and-forget: a slow or failed CLI spawn must not delay the server
+    binding its port, and the dashboard is perfectly usable without the agent.
+    """
+    target = agent_store.get_last_opened()
+    if not target:
+        return
+
+    async def _warm() -> None:
+        try:
+            result = await agent_sessions.warm(target["package"], target["slug"])
+            logger.info("pre-warmed agent session for %s/%s (model=%s)",
+                        target["package"], target["slug"], result.get("model"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not pre-warm the agent session: %s", exc)
+
+    asyncio.create_task(_warm())
 
 
 @app.on_event("shutdown")

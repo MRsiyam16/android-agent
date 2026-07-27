@@ -107,19 +107,21 @@ LLM_SMART_ANALYSIS_INTERVAL: int = int(os.environ.get("LLM_SMART_ANALYSIS_INTERV
 LLM_MAX_ACTIONS_TO_MODEL: int = int(os.environ.get("LLM_MAX_ACTIONS_TO_MODEL", 40))
 
 # --- Chat agent (Agent tab) ---------------------------------------------------------
-# Two tiers on purpose, because they are metered differently:
+# One model runs everything: the Claude Code CLI, driven in-process via claude-agent-sdk. It
+# authenticates with the local Max subscription profile, so the cost is a *rate limit* (rolling
+# 5-hour + weekly windows) rather than a per-token charge — and it reads screenshots itself, so
+# no second vision model is needed.
 #
-#   planner  — the Claude Code CLI, driven in-process via claude-agent-sdk. It authenticates
-#              with the local Max subscription profile, so its cost is a *rate limit* (rolling
-#              5-hour + weekly windows), not a per-token charge. Used for planning, verdicts,
-#              defect write-ups and the module breakdown: a handful of calls per test case.
-#   stepper  — a cheap vision model over OpenRouter, billed per token but at ~$0.10/M. Used for
-#              the high-volume mechanical calls (which element to tap, has the screen settled,
-#              does this text match) — roughly one per tap, which would otherwise burn the
-#              subscription window long before a module finished.
+# An optional cheap OpenRouter tier can take over the high-volume mechanical calls (which
+# element to tap, has the screen settled) to spend less of the subscription window. It is OFF
+# by default: one model means one set of judgement, no second opinion to reconcile, and nothing
+# billed per token. Turn it on with AGENT_USE_CHEAP_TIER=true if a long run starts hitting the
+# rate-limit window.
 #
 # CRITICAL: never set ANTHROPIC_API_KEY in this process's environment. It takes precedence over
-# the subscription profile, silently moving planner calls onto metered API billing.
+# the subscription profile, silently moving every call onto metered API billing.
+AGENT_USE_CHEAP_TIER: bool = os.environ.get(
+    "AGENT_USE_CHEAP_TIER", "false").lower() in ("1", "true", "yes")
 AGENT_PLANNER_MODEL: str = os.environ.get("AGENT_PLANNER_MODEL", "")  # "" = CLI default (subscription)
 AGENT_PLANNER_EFFORT: str = os.environ.get("AGENT_PLANNER_EFFORT", "high")
 

@@ -6,7 +6,7 @@
 <title>Android Agent — Live Telemetry</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-<link rel="stylesheet" href="/static/dashboard.css?v=11">
+<link rel="stylesheet" href="/static/dashboard.css?v=13">
 </head>
 <body>
 
@@ -217,13 +217,18 @@
             Element bounds
           </label>
           <label class="chip-toggle">
-            <input type="checkbox" id="liveFrameToggle">
+            <input type="checkbox" id="liveFrameToggle" checked>
             Follow live
+          </label>
+          <label class="chip-toggle">
+            <input type="checkbox" id="traceToggle" checked>
+            Tool trace
           </label>
         </div>
         <div class="agent-meter" id="agentMeter">
-          <div class="agent-meter-row"><span>Planner</span><span id="meterPlanner">subscription</span></div>
-          <div class="agent-meter-row"><span>Cheap tier</span><span id="meterStepper">—</span></div>
+          <div class="agent-meter-row"><span>Model</span><span id="meterModel">—</span></div>
+          <div class="agent-meter-row"><span>Auth</span><span id="meterPlanner">subscription</span></div>
+          <div class="agent-meter-row" id="meterStepperRow" hidden><span>Cheap tier</span><span id="meterStepper">off</span></div>
           <div class="agent-meter-row"><span>Taps · shots</span><span id="meterActions">0 · 0</span></div>
         </div>
       </div>
@@ -236,12 +241,23 @@
             <select id="agentSubproject" class="agent-select" title="Module being tested"></select>
           </div>
           <div class="agent-head-right">
+            <span class="agent-model" id="agentModel" title="Claude model reported by the CLI">connecting…</span>
             <span class="agent-state" id="agentState">idle</span>
             <button class="chip-btn danger" id="agentStopBtn" disabled>■ Stop</button>
           </div>
         </div>
 
-        <div class="chat-log" id="chatLog"></div>
+        <div class="chat-log-wrap">
+          <div class="chat-log" id="chatLog"></div>
+          <button class="chat-jump" id="chatJump" hidden>↓ Jump to latest</button>
+        </div>
+
+        <!-- Shown while the agent is working, so a long silent step never looks like a hang -->
+        <div class="agent-working" id="agentWorking">
+          <span class="agent-dots"><i></i><i></i><i></i></span>
+          <span class="agent-working-text" id="agentWorkingText">Thinking…</span>
+          <span class="agent-working-timer" id="agentWorkingTimer">0:00</span>
+        </div>
 
         <!-- Shown only while a tool is parked waiting on the user -->
         <div class="agent-blocked" id="agentBlocked">
@@ -327,6 +343,9 @@
   </div>
 </div>
 
+<!-- SCREENSHOT LIGHTBOX -->
+<div class="shot-lightbox" id="shotLightbox"><img id="shotLightboxImg" alt="Screenshot"></div>
+
 <!-- LOCK / ALERT POPUP -->
 <div class="lock-popup-backdrop" id="lockPopupBackdrop">
   <div class="lock-popup" id="lockPopup">
@@ -336,6 +355,6 @@
   </div>
 </div>
 
-<script src="/static/dashboard.js?v=13"></script>
+<script src="/static/dashboard.js?v=17"></script>
 </body>
 </html>

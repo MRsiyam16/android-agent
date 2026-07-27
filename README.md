@@ -112,12 +112,13 @@ Everything above describes *autonomous exploration*: point `run_agent.py` at a p
 maps the state space. The **Agent** tab does something different — you tell an agent in plain
 English what to test, and it plans the cases, drives the phone, and reports what it observed.
 
-```bash
-python start.py      # one command: server, device check, agent readiness, browser
-```
+**Double-click `Start QA Tester AI.bat`** in the project root — it starts the server, opens the
+browser, and pre-warms a Claude Code session for the module you used last, so your first
+message does not wait for the CLI to spawn. From a terminal, `python start.py` does the same.
 
 Then open the **Agent** tab: the phone's live screen is on the left, the chat in the middle,
-the module list on the right.
+the module list on the right. The header shows the Claude model and subscription actually in
+use, read from the CLI rather than assumed.
 
 ```
 you › test the login module: empty submit, wrong password, valid login, session persistence
@@ -142,10 +143,13 @@ agent › Plan: 4 cases. Starting with empty submit.
    npm i -g @anthropic-ai/claude-code
    claude          # once, to authenticate
    ```
-2. **`OPENROUTER_API_KEY`** in `android-agent/.env` (gitignored) for the cheap tier. Optional —
-   without it the agent still works, but every routine screen check spends subscription quota
-   instead of a fraction of a cent.
-3. `pip install -r requirements.txt`
+2. `pip install -r requirements.txt`
+
+That is the whole setup. One model does everything — it reads its own screenshots, so there is
+no second vision model to configure. If long runs start hitting the subscription's rate-limit
+window, `AGENT_USE_CHEAP_TIER=true` plus an `OPENROUTER_API_KEY` in `android-agent/.env`
+(gitignored) hands the high-volume mechanical calls to a cheap vision model instead. Off by
+default.
 
 **Do not set `ANTHROPIC_API_KEY`.** It overrides the subscription profile and silently bills
 planner calls per token. `start.py` warns if it finds one.
@@ -177,9 +181,9 @@ grouped by module — so the graph shows the path a test walked, not just which 
 
 ### Cost, in practice
 
-A ~40-tap module test is roughly 40 cheap-tier calls (a fraction of a cent, shown live in the
-UI) plus a handful of planner turns against the subscription window. The constraint is the
-window, not money — which is exactly why the mechanical work is delegated.
+Nothing is billed per token: the run spends the subscription's rate-limit window. The Agent tab
+shows the model, the subscription type, and the taps and screenshots so far, so what a run is
+costing you is visible rather than assumed.
 
 ---
 

@@ -39,7 +39,7 @@ from claude_agent_sdk import (
 import config
 from agent import device_tools, prompts, store
 from agent.device_tools import DeviceSession, build_device_server
-from agent.stepper import Stepper, build_stepper_server
+from agent.stepper import Stepper, build_stepper_server, stepper_tool_names
 
 logger = logging.getLogger("agent.runtime")
 
@@ -87,6 +87,12 @@ class AgentSession:
         self.session_id: Optional[str] = None
         self.turns = 0
         self.parked_reason: Optional[str] = None
+        # Reported by the CLI rather than assumed: the subscription's default model changes
+        # over time, and a hardcoded label in the UI would quietly start lying.
+        self.model: Optional[str] = None
+        self.model_label: Optional[str] = None
+        self.subscription: Optional[str] = None
+        self.activity: Optional[str] = None
 
     # -- lifecycle ---------------------------------------------------------------
     def _options(self) -> ClaudeAgentOptions:
@@ -97,8 +103,11 @@ class AgentSession:
         workdir = store.subproject_dir(self.package, self.slug)
         workdir.mkdir(parents=True, exist_ok=True)
 
-        allowed = device_tools.DEVICE_TOOL_NAMES + [
-            "mcp__cheap__check_screen", "mcp__cheap__pick_next_element"] + FILE_TOOLS
+        allowed = device_tools.DEVICE_TOOL_NAMES + FILE_TOOLS
+        mcp_servers: dict[str, Any] = {"device": build_device_server(self.device)}
+        if config.AGENT_USE_CHEAP_TIER:
+            mcp_servers["cheap"] = build_stepper_server(self.stepper, self.device)
+            allowed += stepper_tool_names()
 
         async def gate(payload: dict[str, Any], _tool_use_id: Optional[str],
                        _ctx: Any) -> dict[str, Any]:
@@ -123,10 +132,7 @@ class AgentSession:
 
         options = ClaudeAgentOptions(
             system_prompt=prompts.build_system_prompt(self.package, self.slug, title, scope),
-            mcp_servers={
-                "device": build_device_server(self.device),
-                "cheap": build_stepper_server(self.stepper, self.device),
-            },
+            mcp_servers=mcp_servers,
             allowed_tools=allowed,
             disallowed_tools=BLOCKED_TOOLS,
             hooks={"PreToolUse": [HookMatcher(hooks=[gate])]},
@@ -180,7 +186,56 @@ class AgentSession:
             client = ClaudeSDKClient(options=self._options())
             await client.connect()
         self._client = client
-        logger.info("agent session connected for %s/%s", self.package, self.slug)
+        await self._read_server_info(client)
+        logger.info("agent session connected for %s/%s (model=%s, %s)",
+                    self.package, self.slug, self.model, self.subscription or "auth unknown")
+        await self.emit({"slug": self.slug, "package": self.package, "type": "agent_ready",
+                         "model": self.model, "model_label": self.model_label,
+                         "subscription": self.subscription, "warm": True})
+
+    async def _read_server_info(self, client: ClaudeSDKClient) -> None:
+        """Ask the CLI what model it will actually use, and how it is authenticated.
+
+        Worth doing at connect time because the alternative is waiting for the first turn to
+        report a model — the UI would sit on "connecting…" until you spoke to it. It also
+        surfaces the subscription type, so the claim that this runs on the subscription rather
+        than a metered key is something the UI can show rather than something I assert.
+        """
+        try:
+            info = await client.get_server_info()
+        except Exception as exc:  # noqa: BLE001 - informational only
+            logger.debug("get_server_info failed: %s", exc)
+            return
+        if not isinstance(info, dict):
+            return
+
+        models = [m for m in (info.get("models") or []) if isinstance(m, dict)]
+        wanted = config.AGENT_PLANNER_MODEL or "default"
+        entry = next((m for m in models if m.get("value") == wanted), None) \
+            or next((m for m in models if m.get("value") == "default"), None) \
+            or (models[0] if models else None)
+        if entry:
+            self.model = entry.get("resolvedModel") or entry.get("value")
+            self.model_label = entry.get("description") or entry.get("displayName")
+
+        account = info.get("account") if isinstance(info.get("account"), dict) else {}
+        sub = account.get("subscriptionType")
+        provider = account.get("apiProvider")
+        if sub:
+            self.subscription = f"{sub}" + (" (API key)" if provider and provider != "firstParty"
+                                            else "")
+
+    async def warm(self) -> dict[str, Any]:
+        """Connect the CLI without sending anything.
+
+        Startup and module-selection both call this so the first message does not pay the
+        CLI's spawn cost. It is only worth doing per (package, module), because the system
+        prompt, working directory and MCP servers are all fixed when the session connects —
+        a generic pre-warmed session could not be re-pointed at a module afterwards.
+        """
+        await self.connect()
+        return {"ready": True, "model": self.model, "model_label": self.model_label,
+                "subscription": self.subscription, "session_id": self.session_id}
 
     async def close(self) -> None:
         if self._client is not None:
@@ -240,6 +295,10 @@ class AgentSession:
         assert self._client is not None
         async for message in self._client.receive_response():
             if isinstance(message, AssistantMessage):
+                if message.model and message.model != self.model:
+                    self.model = message.model
+                    await self.emit({"slug": self.slug, "type": "agent_model",
+                                     "model": self.model})
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():
                         store.append_chat(self.package, self.slug,
@@ -250,6 +309,7 @@ class AgentSession:
                         await self.emit({"slug": self.slug, "type": "agent_thinking"})
                     elif isinstance(block, ToolUseBlock):
                         summary = _tool_summary(block.name, block.input or {})
+                        self.activity = summary
                         store.append_chat(self.package, self.slug,
                                           {"role": "tool", "tool": block.name,
                                            "summary": summary})
@@ -286,6 +346,10 @@ class AgentSession:
         data = message.data if isinstance(message.data, dict) else {}
         if message.subtype == "init":
             self._remember_session(data.get("session_id"))
+            model = data.get("model")
+            if model and model != self.model:
+                self.model = model
+                await self.emit({"slug": self.slug, "type": "agent_model", "model": self.model})
             return
         # Rate-limit notices arrive as system messages; shape varies by CLI version, so match
         # loosely rather than depend on one key.
@@ -363,5 +427,13 @@ class SessionRegistry:
         return [{"package": p, "slug": s, "busy": sess.busy,
                  "blocked": sess.device.pending_question,
                  "parked": sess.parked_reason,
+                 "model": sess.model,
+                 "model_label": sess.model_label,
+                 "subscription": sess.subscription,
+                 "activity": sess.activity,
                  "stepper_cost_usd": round(sess.stepper.cost_usd, 4)}
                 for (p, s), sess in self._sessions.items()]
+
+    async def warm(self, package: str, slug: str,
+                   serial: Optional[str] = None) -> dict[str, Any]:
+        return await self.get(package, slug, serial=serial).warm()

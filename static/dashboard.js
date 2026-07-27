@@ -2059,14 +2059,66 @@
     setTimeout(() => dot.remove(), 650);
   }
 
-  function scrollChatToEnd() {
-    chatLog.scrollTop = chatLog.scrollHeight;
+  // Looks its own elements up rather than closing over `agentEl` / `agent`: this runs from
+  // appendChat, which is reachable before those consts are initialised.
+  let chatPinned = true;
+  function scrollChatToEnd(force) {
+    const jump = document.getElementById('chatJump');
+    // Only auto-scroll when the reader is already at the bottom, so scrolling back through a
+    // run is not yanked away every time the agent speaks.
+    if (force || chatPinned) {
+      chatLog.scrollTop = chatLog.scrollHeight;
+      if (jump) jump.hidden = true;
+    } else if (jump) {
+      jump.hidden = false;
+    }
+  }
+
+  chatLog.addEventListener('scroll', () => {
+    const atBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 40;
+    chatPinned = atBottom;
+    const jump = document.getElementById('chatJump');
+    if (jump && atBottom) jump.hidden = true;
+  });
+
+  // The agent writes markdown. Render the subset it uses — bold, italics, inline code and
+  // bullets — after escaping, so agent-authored text can never inject markup.
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function renderInline(s) {
+    return s
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  }
+
+  function renderMarkdown(text) {
+    const lines = escapeHtml(text).split('\n');
+    let html = '';
+    let inList = false;
+    lines.forEach((raw) => {
+      const line = raw.trimEnd();
+      const bullet = /^\s*(?:[-*]|&#39;?•)\s+(.*)$/.exec(line);
+      if (bullet) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += '<li>' + renderInline(bullet[1]) + '</li>';
+        return;
+      }
+      if (inList) { html += '</ul>'; inList = false; }
+      if (line.trim()) html += '<p>' + renderInline(line) + '</p>';
+    });
+    if (inList) html += '</ul>';
+    return html || '<p></p>';
   }
 
   function appendChat(kind, text) {
     const row = document.createElement('div');
     row.className = 'chat-entry ' + kind;
-    row.textContent = text;
+    if (kind === 'agent') row.innerHTML = renderMarkdown(text);
+    else row.textContent = text;
     chatLog.appendChild(row);
     scrollChatToEnd();
     return row;
@@ -2095,8 +2147,15 @@
     meterStepper: document.getElementById('meterStepper'),
     meterActions: document.getElementById('meterActions'),
     liveToggle: document.getElementById('liveFrameToggle'),
+    traceToggle: document.getElementById('traceToggle'),
     input: document.getElementById('chatInput'),
     send: document.getElementById('chatSend'),
+    model: document.getElementById('agentModel'),
+    meterModel: document.getElementById('meterModel'),
+    working: document.getElementById('agentWorking'),
+    workingText: document.getElementById('agentWorkingText'),
+    workingTimer: document.getElementById('agentWorkingTimer'),
+    jump: document.getElementById('chatJump'),
   };
 
   const agent = {
@@ -2107,6 +2166,9 @@
     taps: 0,
     shots: 0,
     liveTimer: null,
+    workTimer: null,
+    workStarted: 0,
+    loadedKey: null,   // "<package>/<slug>" currently rendered in the chat log
   };
 
   function setAgentState(label, cls) {
@@ -2114,11 +2176,69 @@
     agentEl.state.className = 'agent-state' + (cls ? ' ' + cls : '');
   }
 
+  function prettyModel(id) {
+    if (!id) return null;
+    // "claude-opus-5[1m]" → "Opus 5 · 1M"; "claude-sonnet-4-6" → "Sonnet 4.6".
+    // The exact id always stays in the tooltip, so the short form can never mislead.
+    const ctx = /\[(\d+m)\]/i.exec(id);
+    const m = /claude-([a-z]+)-?(\d+)?-?(\d+)?/.exec(id);
+    if (!m) return id;
+    const name = m[1].charAt(0).toUpperCase() + m[1].slice(1);
+    const version = [m[2], m[3]].filter(Boolean).join('.');
+    return `${name}${version ? ' ' + version : ''}${ctx ? ' · ' + ctx[1].toUpperCase() : ''}`;
+  }
+
+  function setAgentModel(id, label, subscription) {
+    const short = prettyModel(id);
+    if (short) {
+      agentEl.model.textContent = short;
+      agentEl.meterModel.textContent = short;
+      agentEl.model.title = [id && 'Model: ' + id, label, subscription && 'Auth: ' + subscription]
+        .filter(Boolean).join('\n');
+    }
+    if (subscription) {
+      // Shown because it is the difference between spending the subscription and being billed
+      // per token — worth being able to see rather than trust.
+      document.getElementById('meterPlanner').textContent = subscription;
+    }
+  }
+
+  function tickWorkTimer() {
+    const secs = Math.floor((Date.now() - agent.workStarted) / 1000);
+    agentEl.workingTimer.textContent =
+      `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  }
+
+  function startWorking(text) {
+    agentEl.workingText.textContent = text || 'Thinking…';
+    agentEl.working.classList.add('open');
+    if (!agent.workTimer) {
+      agent.workStarted = Date.now();
+      tickWorkTimer();
+      agent.workTimer = setInterval(tickWorkTimer, 1000);
+    }
+  }
+
+  function stopWorking() {
+    agentEl.working.classList.remove('open');
+    if (agent.workTimer) { clearInterval(agent.workTimer); agent.workTimer = null; }
+  }
+
   function setAgentBusy(busy) {
     agent.busy = busy;
     agentEl.stop.disabled = !busy;
-    if (busy) setAgentState('working', 'busy');
-    else if (!agentEl.blocked.classList.contains('open')) setAgentState('idle', '');
+    // Sending mid-run would just be rejected, so don't offer it — unless the agent is parked
+    // on a question, which is exactly when a reply is needed.
+    const blocked = agentEl.blocked.classList.contains('open');
+    agentEl.send.disabled = busy && !blocked;
+    agentEl.input.placeholder = (busy && !blocked)
+      ? 'The agent is working — press Stop to redirect it'
+      : 'Tell the agent what to test — e.g. “test the login module: empty submit, wrong password, valid login, session persistence”';
+    if (busy) { setAgentState('working', 'busy'); startWorking(agentEl.workingText.textContent); }
+    else {
+      stopWorking();
+      if (!blocked) setAgentState('idle', '');
+    }
   }
 
   async function agentFetch(url, options) {
@@ -2237,11 +2357,15 @@
 
   async function selectModule(slug) {
     if (!slug) return;
-    const changed = agent.slug !== slug;
+    // Keyed on package *and* slug: two projects can both have a module called "arithmetic",
+    // and comparing the slug alone would leave the previous project's transcript on screen.
+    const key = agent.package + '/' + slug;
+    const changed = agent.loadedKey !== key;
+    agent.loadedKey = key;
     agent.slug = slug;
     agentEl.subproject.value = slug;
     document.querySelectorAll('.agent-module').forEach((el) => el.classList.remove('active'));
-    if (changed) await loadTranscript();
+    if (changed) { await loadTranscript(); warmModule(); }
     else renderModuleHighlight();
   }
 
@@ -2273,16 +2397,25 @@
     });
   }
 
+  let transcriptRequest = 0;
   async function loadTranscript() {
     if (!agent.package || !agent.slug) return;
+    // Two loads can be in flight at once (switching project and module in quick succession).
+    // Without this guard each clears the log and then appends its own history, so the two
+    // interleave and you end up reading one module's conversation under another's name.
+    const token = ++transcriptRequest;
+    const forPackage = agent.package;
+    const forSlug = agent.slug;
     chatLog.innerHTML = '';
     let data;
     try {
-      data = await agentFetch(`/agent/${encodeURIComponent(agent.package)}/${agent.slug}/chat`);
+      data = await agentFetch(`/agent/${encodeURIComponent(forPackage)}/${forSlug}/chat`);
     } catch (err) {
-      appendChat('error', 'Could not load the transcript: ' + err.message);
+      if (token === transcriptRequest) appendChat('error', 'Could not load the transcript: ' + err.message);
       return;
     }
+    if (token !== transcriptRequest) return;   // a newer selection won; discard this one
+    chatLog.innerHTML = '';
     (data.messages || []).forEach((m) => {
       if (m.role === 'user') appendChat('user', m.text || '');
       else if (m.role === 'agent') appendChat('agent', m.text || '');
@@ -2301,7 +2434,8 @@
     else hideBlocked();
     if (data.parked) setAgentState('parked', 'parked');
     renderModuleHighlight();
-    scrollChatToEnd();
+    chatPinned = true;
+    scrollChatToEnd(true);
   }
 
   function showBlocked(question) {
@@ -2326,7 +2460,10 @@
     const img = document.createElement('img');
     img.src = '/agent/shot?path=' + encodeURIComponent(path);
     img.alt = note || 'screenshot';
-    img.addEventListener('click', () => window.open(img.src, '_blank'));
+    img.addEventListener('click', () => {
+      document.getElementById('shotLightboxImg').src = img.src;
+      document.getElementById('shotLightbox').classList.add('open');
+    });
     wrap.appendChild(img);
     if (note) {
       const cap = document.createElement('div');
@@ -2367,15 +2504,29 @@
       return;
     }
     switch (msg.type) {
-      case 'agent_text': appendChat('agent', msg.text); break;
-      case 'agent_tool': appendChat('tool', msg.summary || msg.tool); break;
+      case 'agent_text':
+        appendChat('agent', msg.text);
+        // Text between tool calls means it is still working, not that it finished.
+        if (agent.busy) startWorking('Working…');
+        break;
+      case 'agent_model': setAgentModel(msg.model, msg.model_label, msg.subscription); break;
+      case 'agent_ready':
+        setAgentModel(msg.model, msg.model_label, msg.subscription);
+        break;
+      case 'agent_tool':
+        appendChat('tool', msg.summary || msg.tool);
+        if (agent.busy) startWorking(msg.summary || msg.tool);
+        break;
       case 'agent_tool_error': {
         const row = appendChat('tool failed', msg.text);
         row.classList.add('failed');
         break;
       }
       case 'agent_busy': setAgentBusy(msg.busy); break;
-      case 'agent_thinking': setAgentState('thinking', 'busy'); break;
+      case 'agent_thinking':
+        setAgentState('thinking', 'busy');
+        startWorking('Thinking…');
+        break;
       case 'agent_screenshot':
         agent.shots += 1;
         appendShot(msg.path, msg.note);
@@ -2413,7 +2564,8 @@
         chatLog.appendChild(row);
         agent.taps = msg.taps || agent.taps;
         agent.shots = msg.shots || agent.shots;
-        if (msg.stepper_cost_usd !== undefined) {
+        if (msg.stepper_calls) {
+          document.getElementById('meterStepperRow').hidden = false;
           agentEl.meterStepper.textContent = `${msg.stepper_calls} calls · $${msg.stepper_cost_usd}`;
         }
         updateMeters();
@@ -2492,18 +2644,39 @@
     if (agent.ready) { refreshFrame(); return; }
     agent.ready = true;
     loadAgentProjects().then(refreshFrame);
+    // Follow-live is on by default, so kick the poller off rather than waiting for a toggle.
+    agentEl.liveToggle.dispatchEvent(new Event('change'));
 
     fetch('/agent/status').then((r) => r.json()).then((s) => {
-      document.getElementById('meterPlanner').textContent = 'Claude Code (subscription)';
-      agentEl.meterStepper.textContent = s.stepper_configured
-        ? s.stepper_model.split('/').pop()
-        : 'not configured';
+      document.getElementById('meterPlanner').textContent = 'subscription';
+      if (s.cheap_tier && s.stepper_model) {
+        document.getElementById('meterStepperRow').hidden = false;
+        agentEl.meterStepper.textContent = s.stepper_model.split('/').pop();
+      }
+      // A session pre-warmed at startup already knows its model — adopt that rather than
+      // showing "connecting…" until the first message.
+      const live = (s.sessions || []).find((x) => x.model);
+      if (live) setAgentModel(live.model, live.model_label, live.subscription);
     }).catch(() => {});
+  }
+
+  // Warming on selection means the CLI spawn happens while you are still typing.
+  async function warmModule() {
+    if (!agent.package || !agent.slug) return;
+    try {
+      const data = await agentFetch(
+        `/agent/${encodeURIComponent(agent.package)}/${agent.slug}/warm`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      setAgentModel(data.model, data.model_label, data.subscription);
+    } catch {
+      /* Warming is an optimisation; a failure surfaces on the first real message. */
+    }
   }
 
   agentEl.project.addEventListener('change', () => {
     agent.package = agentEl.project.value;
     agent.slug = null;
+    agent.loadedKey = null;
     loadModules();
   });
   agentEl.subproject.addEventListener('change', () => selectModule(agentEl.subproject.value));
@@ -2583,6 +2756,19 @@
       e.preventDefault();
       document.getElementById('chatForm').requestSubmit();
     }
+  });
+
+  agentEl.jump.addEventListener('click', () => { chatPinned = true; scrollChatToEnd(true); });
+
+  agentEl.traceToggle.addEventListener('change', () => {
+    chatLog.classList.toggle('hide-trace', !agentEl.traceToggle.checked);
+    scrollChatToEnd(true);
+  });
+
+  const lightbox = document.getElementById('shotLightbox');
+  lightbox.addEventListener('click', () => lightbox.classList.remove('open'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') lightbox.classList.remove('open');
   });
 
   agentEl.liveToggle.addEventListener('change', () => {

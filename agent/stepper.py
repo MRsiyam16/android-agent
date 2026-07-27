@@ -200,3 +200,7 @@ def build_stepper_server(stepper: Stepper, session):
 
 
 STEPPER_TOOL_NAMES = ["mcp__cheap__check_screen", "mcp__cheap__pick_next_element"]
+
+
+def stepper_tool_names() -> list[str]:
+    return list(STEPPER_TOOL_NAMES)
