@@ -322,7 +322,7 @@ If any step fails, refer to **Troubleshooting** above.
 
 ## Next Steps
 
-1. **Read the Quick Start**: `README.md` → Section "Running for a Target App"
+1. **Read the Quick Start**: `../README.md` → Section "Running for a Target App"
 2. **Try an Example**: `EXAMPLES.md` → Example 1 (Calculator App)
 3. **Explore Your App**: Pick a target app package, run `run_agent.py`
 4. **Check the Dashboard**: Open http://localhost:8000 and watch live
@@ -357,10 +357,10 @@ ACTION_SETTLE_SECONDS = 1.5   # Network latency
 ## Getting Help
 
 ### Documentation
-- **Quick Reference**: `QUICK_REFERENCE.md`
+- **Main README**: `../README.md` — the full guide, including the command cheat sheet
+  and dashboard controls that used to live in a separate `QUICK_REFERENCE.md`
 - **Architecture**: `ARCHITECTURE.md`
 - **Examples**: `EXAMPLES.md`
-- **Main README**: `README.md`
 
 ### Common Issues
 See **Troubleshooting Setup** section above.

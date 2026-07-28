@@ -5,6 +5,14 @@
       "Bash(\"C:\\\\Users\\\\MRsiy\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\" devices *)",
       "Bash(\"C:\\\\Users\\\\MRsiy\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\" -s * shell pm list packages*)",
       "Bash(curl -s http://localhost:8000/map)"
+    ],
+    "deny": [
+      "Read(./android-agent/projects/**/flow-graph.json)",
+      "Read(./android-agent/projects/**/screenshots/**)",
+      "Read(./android-agent/projects/**/shots/**)",
+      "Read(./android-agent/projects/**/chat.jsonl)",
+      "Read(./android-agent/**/*.jpg)",
+      "Read(./android-agent/**/*.png)"
     ]
   }
 }

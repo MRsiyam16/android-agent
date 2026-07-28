@@ -581,8 +581,9 @@ gitignored. `pytest.ini` restricts collection to `tests/` so they are never pick
 - *How do I test app crashes?* The agent logs crashes to console and moves on. Review the flow graph to identify crash-prone transitions.
 
 **Next steps:**
-- Read `ARCHITECTURE.md` for deep-dive on state hashing and exploration algorithms
-- Check `EXAMPLES.md` for sample runs and output interpretation
+- Read `docs/ARCHITECTURE.md` for deep-dive on state hashing and exploration algorithms
+- Check `docs/EXAMPLES.md` for sample runs and output interpretation
+- `docs/SETUP.md` covers installation in more detail than the Quick Install above
 - Open an issue on GitHub for bugs or feature requests
 
 ---

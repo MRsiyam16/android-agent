@@ -35,10 +35,13 @@ ENV/
 .DS_Store
 
 # Test files & logs
-# `test_*.py` here means the ad-hoc driver scripts that accumulate at the top level
-# (test_yt_recheck.py, test_meta_probe.py…) — one-off scripts pointed at one app on one day,
-# not source. The real unit tests live in tests/ and must be tracked, hence the negation:
-# without it, `git add tests/` silently does nothing and the suite exists only on one machine.
+# The ad-hoc driver scripts — one-off flows pointed at one app on one day, not source —
+# now live in scratch/ rather than accumulating at the top level, where twenty of them
+# added ~50k tokens to every codebase-wide grep. The `test_*.py` patterns stay as a
+# backstop for new ones that land at the root before being filed away.
+# The real unit tests live in tests/ and must be tracked, hence the negation: without it,
+# `git add tests/` silently does nothing and the suite exists only on one machine.
+scratch/
 *.log
 test_*.py
 *_test.py
