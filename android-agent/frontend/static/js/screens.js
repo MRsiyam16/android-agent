@@ -1,10 +1,11 @@
 // screens.js — extracted verbatim from the old dashboard.js IIFE.
 
+import { escapeHtml } from './markdown.js';
 import { screenListEl, screenSearchEl, screensEmptyEl, thumbObserver } from './board.js';
 import { openModal } from './modal.js';
 import { network, scheduleRenderOverlay } from './render.js';
 import { nodeMeta, nodeStatus, nodesData, sectionOrder, sections, ui } from './state.js';
-import { scaledCache } from './util.js';
+import { CARD_MAX_W, scaledCache } from './util.js';
 
 function focusScreen(hash) {
   if (!nodesData.get(hash)) return;

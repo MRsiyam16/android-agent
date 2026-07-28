@@ -1,9 +1,10 @@
 // render.js — extracted verbatim from the old dashboard.js IIFE.
 
+import { escapeHtml } from './markdown.js';
 import { renderComments } from './comments.js';
 import { openModal } from './modal.js';
 import { renderTextNotes } from './notes.js';
-import { CARD_H, CARD_W, sectionLayout } from './sections.js';
+import { CARD_H, CARD_W, nodeHeaderLabel, sectionLayout } from './sections.js';
 import { PLACEHOLDER_IMG, cardElements, edgeMeta, nodeMeta, nodeStatus, nodesData, sections, ui } from './state.js';
 import { CARD_MAX_W, requestScaled, truncate } from './util.js';
 

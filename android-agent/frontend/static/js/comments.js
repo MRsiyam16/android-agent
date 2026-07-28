@@ -1,5 +1,6 @@
 // comments.js — extracted verbatim from the old dashboard.js IIFE.
 
+import { escapeHtml } from './markdown.js';
 import { scheduleAutoSave } from './board.js';
 import { anchorPoint, nodeDomRect, scheduleRenderOverlay } from './render.js';
 import { comments } from './state.js';

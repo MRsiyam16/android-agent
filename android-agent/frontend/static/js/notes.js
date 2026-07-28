@@ -4,7 +4,7 @@ import { scheduleAutoSave } from './board.js';
 // Deliberately the *chat* renderer, not renderNoteMarkdown. The two collided in the old
 // single-closure file and this is the one that actually won, so importing it keeps notes
 // rendering exactly as they do today. See the header of markdown.js.
-import { renderChatMarkdown as renderMarkdown } from './markdown.js';
+import { escapeHtml, renderChatMarkdown as renderMarkdown } from './markdown.js';
 import { network, scheduleRenderOverlay } from './render.js';
 import { textNotes, ui } from './state.js';
 import { setTool } from './tools.js';

@@ -1,5 +1,6 @@
 // modal.js — extracted verbatim from the old dashboard.js IIFE.
 
+import { escapeHtml } from './markdown.js';
 import { modalBackdrop } from './screens.js';
 import { PLACEHOLDER_IMG, nodeMeta } from './state.js';
 import { screenshotSrc } from './util.js';

@@ -1,5 +1,6 @@
 // board.js — extracted verbatim from the old dashboard.js IIFE.
 
+import { escapeHtml } from './markdown.js';
 import { emptyState } from './comments.js';
 import { resetGraph, updateStats } from './feed.js';
 import { relayoutAll } from './layout.js';

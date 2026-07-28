@@ -485,7 +485,13 @@
 
 <!-- main.js pulls in the other 22 modules. type="module" is required and also implies defer,
      so this runs after the DOM is parsed — which the old script relied on being at the end
-     of <body> for. Native ES modules, no bundler: the browser resolves the graph itself. -->
-<script type="module" src="/static/js/main.js?v=21"></script>
+     of <body> for. Native ES modules, no bundler: the browser resolves the graph itself.
+
+     No ?v= here, deliberately. A module's identity is its URL, and board.js and modules.js
+     import './main.js' unversioned — so "main.js?v=21" loaded a *second* copy of main.js
+     whose body ran in the middle of board.js's evaluation, before board.js had reached
+     `const screenSearchEl`. The whole boot died on that one character of cache-busting.
+     Version the assets with cache headers, or hard-reload (ctrl+shift+R) after editing. -->
+<script type="module" src="/static/js/main.js"></script>
 </body>
 </html>
