@@ -153,7 +153,7 @@
     "ui-never-settled": {
       "evidence": "waited 0s for com.example.app with no readable dump",
       "first_seen_run": 0,
-      "hits": 18,
+      "hits": 22,
       "last_seen_run": 0,
       "text": "The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app."
     }
@@ -162,5 +162,5 @@
   "runs": [],
   "schema": 1,
   "timings": {},
-  "updated_at": "2026-07-28T05:16:43+00:00"
+  "updated_at": "2026-07-28T05:30:23+00:00"
 }
