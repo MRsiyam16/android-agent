@@ -524,17 +524,31 @@ android-agent/
 ├── journey.py            # Scripted-flow mapping (one node per step)
 ├── telemetry.py          # HTTP client for posting results
 ├── system_memory.py      # Self-updating briefing on how to drive this harness
+├── backend/              # The server, split by concern. server.py above is the entry
+│   ├── app.py            #   the FastAPI factory: mounts, lifecycle, routers
+│   ├── state.py          #   in-memory stores + the WebSocket fan-out
+│   ├── naming.py         #   breadcrumb screen names and numbering
+│   ├── projects.py       #   project folders, meta.json, screenshots
+│   ├── devices.py        #   the server's own uiautomator2 connection
+│   ├── schemas.py        #   every request body
+│   ├── paths.py          #   where the served files live
+│   └── routes/           #   pages, telemetry, projects, device, agent
 ├── agent/                # The chat agent behind the Agent tab
 │   ├── runtime.py        #   one live Claude Code session per module
 │   ├── device_tools.py   #   in-process MCP tools that drive the phone
+│   ├── screen.py         #   reading a UI dump: who owns the screen, what it says
+│   ├── guards.py         #   when a verdict may not be trusted yet
 │   ├── stepper.py        #   cheap OpenRouter tier for high-volume calls
 │   ├── prompts.py        #   the QA system prompt + learned lessons
 │   └── store.py          #   modules, transcripts, memory, findings, credentials
-├── templates/
-│   └── dashboard.html    # Frontend (vis.js graph, agent chat)
-├── static/
-│   ├── dashboard.js      # Graph + agent UI logic
-│   └── dashboard.css     # Styling
+├── frontend/
+│   ├── dashboard.html    # The page. Loads main.js as a native ES module
+│   └── static/
+│       ├── js/           #   23 modules — state, render, board, notes, chat, …
+│       └── css/          #   six sheets — base, layout, graph, notes, agent, panels
+├── tools/
+│   └── inspect_board.py  # Print a flow-graph.json without its base64 screenshots
+├── scratch/              # Ad-hoc one-off drivers — gitignored, not the test suite
 ├── tests/                # Unit tests — no device needed, ~1s
 │   ├── conftest.py       #   UI dumps reproducing screens that have misled this harness
 │   ├── test_extractor.py #   state hashing, action extraction
