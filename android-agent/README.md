@@ -92,7 +92,7 @@ Navigate to `http://localhost:8000` to see:
 ### Controls
 - **Pan/Zoom**: Click and drag graph, scroll to zoom
 - **Toolbar**: Tool buttons (pan, select, text annotation, comments)
-- **Live Preview**: Toggle to see current device screen
+- **Rails**: `[` and `]` toggle the left and right sidebars
 - **Settings** (gear icon):
   - Toggle tap markers (show interaction points)
   - Toggle section headings
@@ -100,9 +100,10 @@ Navigate to `http://localhost:8000` to see:
   - Auto-fit on new state (camera follows exploration)
   - Reset layout
 
-### Save & Import
-- **Save**: Downloads the entire flow graph as JSON
-- **Import**: Reload a previously saved JSON to pick up where you left off
+### Saving
+The board autosaves into its project folder, and **Save this board** in the Projects panel
+forces it. Download-as-file and import-from-file are gone from the dock: a second copy of a
+board sitting in `~/Downloads` was one more thing that could be loaded into the wrong project.
 
 ---
 
@@ -154,13 +155,49 @@ default.
 **Do not set `ANTHROPIC_API_KEY`.** It overrides the subscription profile and silently bills
 planner calls per token. `start.py` warns if it finds one.
 
+### Projects
+
+**New project** asks for the app package and a folder. The folder you pick *is* the project
+root — screenshots, findings, per-module memory and the flow graph all go inside it, so a
+project can live on whatever drive you keep work on rather than inside this repo. Browse opens
+the machine's own folder dialog; leaving the field empty keeps the default
+`android-agent/projects/<package>/`. The mapping is recorded in `projects/registry.json`, and
+a package with no entry there keeps the default location, so nothing that already exists has
+to move.
+
+A board belongs to the project it was loaded from, and the server refuses a save aimed at any
+other one. This is not theoretical: four saved boards were destroyed before that check
+existed — see the header of `tests/test_project_ownership.py` for what went wrong and how.
+
 ### Modules
 
-A project is an app package; a module is a test suite for one part of it. On a new project,
-press **Recon**: the agent explores the app and proposes a breakdown (Auth, Catalog, Cart,
-Checkout…) for you to approve, rename or merge. It does not test anything until you approve.
+A project is an app package; a module is a test suite for one part of it. Creating a project
+starts a short interview — what you want out of the app, whether there are test accounts,
+anything that must be left alone — and only then does the agent ask permission to look at the
+phone. With permission it explores, then proposes a breakdown (Auth, Catalog, Cart, Checkout…)
+that you approve one module at a time. Nothing runs until you approve it. **Recon** does the
+exploration half on its own if you would rather skip the interview.
+
+**Add module** opens a dialog for a name and scope. Hovering a module shows a **⋯** menu:
+rename, edit its scope, open it, or remove it from the list — removal keeps the folder, so a
+mis-click cannot destroy a test history.
+
 Each module keeps its own chat transcript, memory file, findings and screenshots under
-`projects/<package>/agent/<module>/`.
+`<project>/agent/<module>/`, and its own Claude Code session — separate process, separate
+system prompt, separate resumed conversation. Modules cannot bleed into each other. The model
+picker at the top of the agent rail is per-module too, so recon can run somewhere cheap while
+the suite that files defects runs on something better; switching resumes the conversation
+rather than starting over, and is refused mid-run.
+
+### Working · Warnings · Bugs · Suggestions
+
+The four pills in the top bar are the whole project's verdict, gathered across every module.
+Each opens a list grouped by module, with the evidence screenshot on every entry. They are
+counts for the *project*, not for whichever module happens to be selected.
+
+Every test case ends in a `record_finding` call, including the ones that pass — a module with
+only bugs in it cannot be told apart from a module where the good cases were never run. The
+evidence and staleness rules below apply to a `pass` exactly as hard as to a `bug`.
 
 Each test case also draws itself onto the **Flow Graph** as an ordered chain of named steps,
 grouped by module — so the graph shows the path a test walked, not just which screens exist.
@@ -168,11 +205,20 @@ grouped by module — so the graph shows the path a test walked, not just which 
 ### What it will and will not do
 
 - It runs an instruction to completion rather than asking after each step, and streams every
-  action into the chat. **Stop** halts it after the step in flight.
+  action into the chat. **Stop** cancels the step in flight rather than waiting it out: the
+  long waits (`wait_for_ui`, `wait_for_text`, `wait_until_gone`) poll a cancel flag, so a
+  press lands in a fraction of a second instead of up to two minutes later.
+- You can attach reference images to a chat message — paste, drag, or the **＋** button. They
+  are saved into the module's `shots/` folder and handed to the agent as a path it opens with
+  `Read`, the same way it looks at its own evidence.
 - It pauses only when genuinely blocked — a credential it does not have, an OTP, a paywall, or
   a spec ambiguity where the two readings imply different tests.
 - It **cannot file a defect without a screenshot**, and is told to look at the image itself
   before doing so. Every false defect this harness has produced was a dump misread.
+- It also cannot file one off a **stale screen** — if it has tapped since it last read the
+  screen, or the screen it read still showed "Creating your account…", `record_finding`
+  refuses and tells it to re-read or wait first. Both of the false defects below were correct
+  behaviour judged a moment too early, so that rule is enforced rather than merely asked for.
 - It has no shell, no web access and no subagents; the phone plus its own notes are the whole
   of its world.
 - If the subscription window runs out mid-run it **stops and says so**, keeping the session so
@@ -251,23 +297,45 @@ Key numbers:
 - **Edges**: State-to-state transitions
 
 ### Files Generated
-- **No persistent files by default** — all data lives in the telemetry server's in-memory database
-- **Save from dashboard**: Click "Save" to download `flow-graph.json`
-- **Re-import later**: Click "Import" and select the JSON file
+Everything lands in the project's folder — the default `projects/<package>/`, or wherever you
+pointed it when you created it:
 
-### Dashboard Export (JSON Format)
+```
+<project root>/
+    meta.json                     bookkeeping: created, last run, last saved, counts
+    flow-graph.json               the board, stamped with the package it belongs to
+    memory.json                   exploration memory (memory.py)
+    secrets.json                  test credentials — GITIGNORED
+    screenshots/<hash>.jpg        one per discovered state
+    agent/
+        subprojects.json          the module list, each module's status and model
+        <module>/
+            chat.jsonl            append-only transcript
+            memory.md             what the agent learned about this module
+            findings.json         outcomes: pass / warning / bug / suggestion
+            shots/                evidence screenshots and attached reference images
+```
+
+Screenshots and the board are filed under the *run's target package*, not whatever screen
+happened to be showing — a run that wanders into the Play Store or a browser no longer creates
+a project for it.
+
+### Board format (`flow-graph.json`)
 ```json
 {
+  "package": "com.example.app",
   "nodes": [
-    {"id": "c25453e3", "label": "Notes Main", "image": "data:image/jpeg;base64,..."},
-    ...
+    {"hash": "c25453e3", "screenName": "Notes Main", "screenshot": "data:image/jpeg;base64,..."}
   ],
   "edges": [
-    {"from": "c25453e3", "to": "9fdbdcdb", "label": "click 'New item'", "x": 84, "y": 871},
-    ...
-  ]
+    {"id": "e1", "from": "c25453e3", "to": "9fdbdcdb", "fullLabel": "click 'New item'"}
+  ],
+  "nodePositions": [{"hash": "c25453e3", "x": 120, "y": 40}],
+  "notes": [], "comments": [], "nodeStatus": []
 }
 ```
+`package` is what lets the server refuse a save aimed at the wrong project. A board saved
+before that field existed has no `package` and is still accepted.
 
 ---
 
@@ -449,6 +517,7 @@ android-agent/
 ├── run_agent.py          # Autonomous exploration loop
 ├── server.py             # FastAPI telemetry + agent server
 ├── config.py             # Configuration (ADB, server, limits, agent tiers)
+├── project_paths.py      # Where each project's folder lives (the registry)
 ├── extractor.py          # XML parsing, state hashing, action extraction
 ├── adb_device.py         # uiautomator2 wrapper
 ├── graph.py              # Graph data structures
@@ -466,10 +535,40 @@ android-agent/
 ├── static/
 │   ├── dashboard.js      # Graph + agent UI logic
 │   └── dashboard.css     # Styling
+├── tests/                # Unit tests — no device needed, ~1s
+│   ├── conftest.py       #   UI dumps reproducing screens that have misled this harness
+│   ├── test_extractor.py #   state hashing, action extraction
+│   ├── test_screen_reading.py    # what the agent is told the screen contains
+│   ├── test_finding_guards.py    # record_finding's evidence + timing rules
+│   ├── test_project_ownership.py # which project a board and its screenshots belong to
+│   ├── test_stop.py              # the Stop button cancelling the step in flight
+│   ├── test_store.py             # findings, transcripts, credentials, concurrency
+│   ├── test_telemetry_replay.py  # the graph replayed to a reconnecting browser
+│   ├── test_screen_naming.py     # breadcrumb names and screen numbers
+│   ├── test_prompts.py           # the prompt only names tools that exist
+│   └── test_toolkit_detection.py # native / flutter / webview classification
 ├── .env                  # OPENROUTER_API_KEY — gitignored, never committed
 ├── requirements.txt      # Python dependencies
+├── requirements-dev.txt  # + pytest
 └── README.md             # This file
 ```
+
+### Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+No phone required: every test runs against captured UI dumps and a temp directory, so the
+suite is a few seconds and works anywhere. The point of it is narrow and specific — each
+incident in `SYSTEM_MEMORY.md` cost a wrong bug report to learn, and until it is an assertion
+it is only a comment that a refactor can quietly invalidate. If you fix a false defect, add
+the dump that caused it to `tests/conftest.py` and pin the behaviour.
+
+The ad-hoc `test_*.py` scripts in this directory are *not* part of that suite — they are
+one-off drivers pointed at one app on one day, they talk to a real device, and they are
+gitignored. `pytest.ini` restricts collection to `tests/` so they are never picked up.
 
 ---
 

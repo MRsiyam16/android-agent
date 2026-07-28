@@ -1,0 +1,10 @@
+# Development-only dependencies. The runtime does not need these.
+#     pip install -r requirements.txt -r requirements-dev.txt
+#     python -m pytest
+#
+# The suite is device-free by design: every test runs against captured UI dumps and a temp
+# directory, so it passes with no phone attached and in a few seconds. Anything needing a
+# real device belongs in the ad-hoc driver scripts, not here.
+-r requirements.txt
+
+pytest>=8.0.0

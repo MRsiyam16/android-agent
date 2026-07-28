@@ -26,6 +26,14 @@
   let lastDims = { w: 1080, h: 1920 };
   let currentSessionId = null;
   let currentPackage = null;
+  // Which project the screens currently on the board actually came from.
+  //
+  // This is deliberately *not* `currentPackage`. That one tracks "the app whose screen I am
+  // looking at", and telemetry used to reassign it on every frame — so a deskclock run that
+  // wandered into Chrome flipped it to Chrome, and the next autosave wrote the deskclock
+  // board into Chrome's file. Four saved boards were destroyed that way. The board's owner
+  // is set once, when a board is loaded or a run begins, and nothing on screen may change it.
+  let boardPackage = null;
   let autoSaveTimer = null;
   let showTapMarkers = true;
   let showHeadings = true;
@@ -46,6 +54,84 @@
 
   function screenshotSrc(b64) {
     return b64 ? 'data:image/jpeg;base64,' + b64 : '';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Image downscaling
+  //
+  // A stored screenshot is a full phone frame — 1080x2400, which the browser decodes to a
+  // ~10MB bitmap no matter how small it is drawn. The board shows every screen at a couple
+  // of hundred pixels, so a 39-screen project was asking for ~390MB of bitmap and locking
+  // the tab solid before a single card appeared. (Measured, and reproducible on the old
+  // tabbed UI too — this is not new, it is just no longer survivable now that the board and
+  // the agent share one screen.)
+  //
+  // So every stored screenshot is decoded once, drawn down to something proportionate to how
+  // it is actually displayed, and cached by state hash. Full resolution is still what the
+  // detail modal and the lightbox open — those show one image at a time, which is affordable.
+  // Decodes are queued two at a time so the transient full-size bitmaps never pile up.
+  // ---------------------------------------------------------------------------
+  // One size, shared. A 360px-wide JPEG costs nothing to display in a 26px tile, and
+  // deriving a second, smaller copy would mean decoding the full-size original twice —
+  // the expensive half of the work, done again for no visible difference.
+  const CARD_MAX_W = 360;          // node cards: ~2x their on-screen width at normal zoom
+  const DECODE_CONCURRENCY = 2;
+
+  const scaledCache = new Map();   // `${hash}@${maxW}` -> small data URL
+  const scaleQueue = [];
+  let scaleWorkers = 0;
+
+  function decodeScaled(b64, maxW) {
+    return new Promise((resolve) => {
+      const src = screenshotSrc(b64);
+      if (!src) { resolve(null); return; }
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, maxW / (img.naturalWidth || maxW));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round((img.naturalWidth || maxW) * scale));
+          canvas.height = Math.max(1, Math.round((img.naturalHeight || maxW) * scale));
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
+        } catch {
+          resolve(null);   // tainted or malformed — the caller keeps its placeholder
+        } finally {
+          img.src = '';    // drop the full-size bitmap now, not at the next GC
+        }
+      };
+      img.onerror = () => { img.src = ''; resolve(null); };
+      img.src = src;
+    });
+  }
+
+  function pumpScaleQueue() {
+    while (scaleWorkers < DECODE_CONCURRENCY && scaleQueue.length) {
+      const job = scaleQueue.shift();
+      scaleWorkers += 1;
+      decodeScaled(job.b64, job.maxW).then((url) => {
+        if (url) {
+          scaledCache.set(job.key, url);
+          job.apply(url);
+        }
+        scaleWorkers -= 1;
+        pumpScaleQueue();
+      });
+    }
+  }
+
+  /** Hand `apply` a scaled data URL for this screenshot, now if cached or later if not. */
+  function requestScaled(hash, b64, maxW, apply) {
+    if (!b64) return null;
+    const key = `${hash}@${maxW}`;
+    const hit = scaledCache.get(key);
+    if (hit) { apply(hit); return hit; }
+    if (!scaleQueue.some((j) => j.key === key)) {
+      scaleQueue.push({ key, hash, b64, maxW, apply });
+      pumpScaleQueue();
+    }
+    return null;
   }
 
   function escapeHtml(s) {
@@ -251,8 +337,17 @@
       }
 
       const meta = nodeMeta.get(n.id);
-      const wantSrc = (meta && screenshotSrc(meta.screenshot)) || PLACEHOLDER_IMG;
       const img = card.querySelector('img');
+      // Scaled, never the full-resolution original — see requestScaled. Until the scaled
+      // copy exists the card shows the placeholder, which is what it showed anyway while a
+      // multi-megabyte data URI was decoding.
+      const hash = n.id;
+      const wantSrc = (meta && meta.screenshot)
+        ? (requestScaled(hash, meta.screenshot, CARD_MAX_W, (url) => {
+            const live = cardElements.get(hash)?.querySelector('img');
+            if (live && live.dataset.src !== url) { live.src = url; live.dataset.src = url; }
+          }) || PLACEHOLDER_IMG)
+        : PLACEHOLDER_IMG;
       if (img.dataset.src !== wantSrc) { img.src = wantSrc; img.dataset.src = wantSrc; }
     });
 
@@ -522,7 +617,13 @@
       // both, the note is what the user sees and is aiming at.
       const hitId = hitTestNote(x, y) || hitTestNode(x, y);
       if (hitId) {
-        if (!selectedIds.has(hitId)) { selectedIds = new Set([hitId]); scheduleRenderOverlay(); }
+        if (!selectedIds.has(hitId)) {
+          selectedIds = new Set([hitId]);
+          scheduleRenderOverlay();
+          // Keep the Screens index in step with the canvas: selecting a card should show you
+          // where it sits in the list, not leave the two views disagreeing.
+          renderScreenList();
+        }
         beginGroupDrag(x, y);
       } else {
         dragState = { mode: 'marquee', startX: x, startY: y };
@@ -1329,6 +1430,10 @@
     if (!record || !record.state_hash) return;
     if (record.session_id) currentSessionId = record.session_id;
     if (record.package_name) currentPackage = record.package_name;
+    // Claim ownership only for an unowned board. `target_package` is the run's target;
+    // `package_name` is merely the screen in front of us, so it is the last resort and
+    // still may not *re*assign an owner.
+    if (!boardPackage) boardPackage = record.target_package || record.package_name || null;
 
     if (Array.isArray(record.available_elements) && record.available_elements.length) {
       lastElements = record.available_elements;
@@ -1395,6 +1500,9 @@
   function updateStats() {
     document.getElementById('statNodes').textContent = nodesData.length + ' states';
     document.getElementById('statEdges').textContent = edgeMeta.size + ' transitions';
+    // The Screens panel is an index of the same graph, so it is rebuilt wherever the graph
+    // changes — which is exactly everywhere this already runs (ingest, load, reset).
+    renderScreenList();
   }
 
   function resetGraph() {
@@ -1415,7 +1523,7 @@
       .forEach((id) => { document.getElementById(id).innerHTML = ''; });
     updateStats();
     emptyState.classList.remove('hidden');
-    document.getElementById('statSession').textContent = 'Session — none';
+    setSessionLabel(null);
     hideStatus();
   }
 
@@ -1467,15 +1575,53 @@
   // ---------------------------------------------------------------------------
   // WebSocket
   // ---------------------------------------------------------------------------
-  const connIndicator = document.getElementById('connIndicator');
-  const connLabel = document.getElementById('connLabel');
+  // One pill carries both the socket and the phone. They were separate, and "Live" told you
+  // the browser had a socket — which is not the question anyone was asking. What you want to
+  // know before starting a run is *which phone am I about to drive*, and a green dot next to
+  // the word "Live" answered that with something that was true even with no device attached.
+  // The session id used to have its own pill in the top bar. That row now carries things you
+  // act on — the outcome counts, the phone — and a hex session id was never one of them. It
+  // stays reachable as a tooltip on the device pill for when a log line needs matching up.
+  let sessionLabel = null;
+  function setSessionLabel(id) { sessionLabel = id || null; }
+
+  const devicePill = document.getElementById('devicePill');
+  const deviceNameEl = document.getElementById('deviceName');
+  let connState = 'connecting';
+  let deviceLabel = null;
+
+  function renderDevicePill() {
+    devicePill.classList.toggle('online', connState === 'online' && Boolean(deviceLabel));
+    if (connState === 'offline') { deviceNameEl.textContent = 'Disconnected'; return; }
+    if (connState !== 'online') { deviceNameEl.textContent = 'Connecting…'; return; }
+    deviceNameEl.textContent = deviceLabel || 'No device';
+  }
 
   function setConnState(state) {
-    connIndicator.classList.remove('online', 'offline');
-    if (state === 'online') { connIndicator.classList.add('online'); connLabel.textContent = 'Live'; }
-    else if (state === 'offline') { connIndicator.classList.add('offline'); connLabel.textContent = 'Disconnected'; }
-    else { connLabel.textContent = 'Connecting…'; }
+    connState = state;
+    renderDevicePill();
   }
+
+  // Polled rather than pushed: a phone can be unplugged at any moment and nothing in the
+  // server would think to broadcast that. 10s is often enough to notice, rare enough that an
+  // idle dashboard is not running adb in a loop.
+  async function refreshDeviceInfo() {
+    try {
+      const resp = await fetch('/device/info');
+      const info = await resp.json();
+      deviceLabel = info.label || null;
+      devicePill.title = [
+        info.serial ? `${info.label}\nserial: ${info.serial}` : 'No device detected — check the cable and `adb devices`',
+        info.count > 1 ? `${info.count} devices attached` : '',
+        sessionLabel ? `session: ${sessionLabel}` : '',
+      ].filter(Boolean).join('\n');
+    } catch {
+      deviceLabel = null;   // the server is the only way to know; assume nothing on failure
+    }
+    renderDevicePill();
+  }
+  refreshDeviceInfo();
+  setInterval(refreshDeviceInfo, 10000);
 
   function connectWs() {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1491,13 +1637,13 @@
 
       if (msg.type === 'history') {
         (msg.items || []).forEach(ingest);
-        if (currentSessionId) document.getElementById('statSession').textContent = 'Session — ' + currentSessionId;
+        setSessionLabel(currentSessionId);
         network.fit({ animation: false });
         scheduleRenderOverlay();
         restoreSavedAnnotations();
       } else if (msg.type === 'telemetry') {
         ingest(msg.payload);
-        if (currentSessionId) document.getElementById('statSession').textContent = 'Session — ' + currentSessionId;
+        setSessionLabel(currentSessionId);
       } else if (msg.type === 'clear') {
         resetGraph();
       } else if (msg.type === 'status') {
@@ -1599,12 +1745,22 @@
     e.currentTarget.classList.toggle('active', observeMode);
   });
 
+  // Focus mode: give the canvas the whole window. Browser fullscreen alone no longer does
+  // that now the rails are part of the same view, so this collapses both and restores
+  // whatever was open when you come back out.
+  let focusModeRestore = null;
   document.getElementById('fullscreenBtn').addEventListener('click', (e) => {
-    if (!document.fullscreenElement) {
+    if (!focusModeRestore) {
+      focusModeRestore = { left: railOpen('left'), right: railOpen('right') };
+      setRail('left', false);
+      setRail('right', false);
       document.documentElement.requestFullscreen().catch(() => {});
       e.currentTarget.classList.add('active');
     } else {
-      document.exitFullscreen().catch(() => {});
+      setRail('left', focusModeRestore.left);
+      setRail('right', focusModeRestore.right);
+      focusModeRestore = null;
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       e.currentTarget.classList.remove('active');
     }
   });
@@ -1614,93 +1770,137 @@
     resetGraph();
   });
 
-  // -- Live preview sidebar --
-  let livePollTimer = null;
-  const liveSidebar = document.getElementById('liveSidebar');
-  const livePreviewBtn = document.getElementById('livePreviewBtn');
+  // -- Rails ------------------------------------------------------------------
+  //
+  // Replaces both the tab strip and the old live-preview sidebar. There is one view now, so
+  // "which tab am I on" becomes "which rails are open" — and the phone lives in the agent
+  // rail rather than in a second preview that polled the same device over the same ADB
+  // connection.
+  const RAIL_KEY = 'qa.rails.v1';
+  const leftSidebar = document.getElementById('leftSidebar');
+  const rightSidebar = document.getElementById('rightSidebar');
+  const toggleLeftBtn = document.getElementById('toggleLeftBtn');
+  const toggleRightBtn = document.getElementById('toggleRightBtn');
 
-  async function pollLiveFrame() {
+  function loadRailPrefs() {
+    try { return JSON.parse(localStorage.getItem(RAIL_KEY)) || {}; } catch { return {}; }
+  }
+  function saveRailPrefs(patch) {
     try {
-      const resp = await fetch('/command', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: 'screenshot' }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data.screenshot_b64) {
-        const img = document.getElementById('liveScreen');
-        img.src = 'data:image/jpeg;base64,' + data.screenshot_b64;
-        img.classList.add('loaded');
-        document.getElementById('livePlaceholder').classList.add('hidden');
-        drawLiveOverlay();
-      }
-    } catch { /* device may be briefly unreachable between polls */ }
+      localStorage.setItem(RAIL_KEY, JSON.stringify({ ...loadRailPrefs(), ...patch }));
+    } catch { /* private mode — the layout just won't persist, which is not worth failing on */ }
   }
 
-  function drawLiveOverlay() {
-    const layer = document.getElementById('liveOverlayLayer');
-    layer.innerHTML = '';
-    if (!document.getElementById('liveOverlayToggle').checked || !lastElements.length) return;
-    const img = document.getElementById('liveScreen');
-    const rect = img.getBoundingClientRect();
-    if (!rect.width) return;
-    const sx = rect.width / lastDims.w, sy = rect.height / lastDims.h;
-    lastElements.forEach((el) => {
-      if (!el.bounds) return;
-      const [x1, y1, x2, y2] = el.bounds;
-      const box = document.createElement('div');
-      box.className = 'overlay-box';
-      box.style.left = (x1 * sx) + 'px';
-      box.style.top = (y1 * sy) + 'px';
-      box.style.width = Math.max(2, (x2 - x1) * sx) + 'px';
-      box.style.height = Math.max(2, (y2 - y1) * sy) + 'px';
-      layer.appendChild(box);
+  function setRail(which, open) {
+    const rail = which === 'left' ? leftSidebar : rightSidebar;
+    const btn = which === 'left' ? toggleLeftBtn : toggleRightBtn;
+    rail.classList.toggle('collapsed', !open);
+    // `pinned` overrides the responsive rules: asking for a rail on a narrow window should
+    // get you the rail, not silently nothing.
+    rail.classList.toggle('pinned', open);
+    btn.classList.toggle('active', open);
+    saveRailPrefs({ [which]: open });
+    // vis-network measures its container on resize only; without this the canvas keeps the
+    // old width and every overlay lands offset from the node it belongs to.
+    requestAnimationFrame(() => { network.redraw(); scheduleRenderOverlay(); });
+  }
+
+  function railOpen(which) {
+    return !(which === 'left' ? leftSidebar : rightSidebar).classList.contains('collapsed');
+  }
+
+  toggleLeftBtn.addEventListener('click', () => setRail('left', !railOpen('left')));
+  // The dock's phone button used to duplicate this. Two controls for one rail meant the
+  // dock button could read "off" while the rail was open; the top-bar toggle and `]` are now
+  // the only ways to move it.
+  toggleRightBtn.addEventListener('click', () => setRail('right', !railOpen('right')));
+
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === '[') { e.preventDefault(); setRail('left', !railOpen('left')); }
+    if (e.key === ']') { e.preventDefault(); setRail('right', !railOpen('right')); }
+  });
+
+  // -- Rail resizing --
+  function wireRailResize(handleId, rail, which, min, max) {
+    const handle = document.getElementById(handleId);
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = rail.getBoundingClientRect().width;
+      handle.classList.add('dragging');
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'ew-resize';
+      function onMove(ev) {
+        // The left rail grows as the pointer moves right; the right rail grows as it moves left.
+        const delta = which === 'left' ? ev.clientX - startX : startX - ev.clientX;
+        const width = Math.max(min, Math.min(max, startWidth + delta));
+        rail.style.width = width + 'px';
+      }
+      function onUp() {
+        handle.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        saveRailPrefs({ [which + 'Width']: rail.getBoundingClientRect().width });
+        network.redraw();
+        scheduleRenderOverlay();
+      }
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
     });
   }
+  wireRailResize('leftResize', leftSidebar, 'left', 210, 460);
+  wireRailResize('rightResize', rightSidebar, 'right', 300, 620);
 
-  livePreviewBtn.addEventListener('click', () => {
-    const opening = !liveSidebar.classList.contains('open');
-    liveSidebar.classList.toggle('open', opening);
-    livePreviewBtn.classList.toggle('active', opening);
-    if (opening) {
-      pollLiveFrame();
-      livePollTimer = setInterval(pollLiveFrame, 1800);
-    } else if (livePollTimer) {
-      clearInterval(livePollTimer);
-      livePollTimer = null;
-    }
+  // -- Collapsible panels --
+  document.querySelectorAll('.panel > .panel-head').forEach((head) => {
+    head.addEventListener('click', () => {
+      const panel = head.parentElement;
+      panel.classList.toggle('open');
+      saveRailPrefs({ ['panel.' + panel.dataset.panel]: panel.classList.contains('open') });
+    });
   });
-  document.getElementById('liveSidebarClose').addEventListener('click', () => livePreviewBtn.click());
-
-  // -- Live sidebar resize (drag its left edge to make it narrower/wider) --
-  const liveResizeHandle = document.getElementById('liveResizeHandle');
-  liveResizeHandle.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = liveSidebar.getBoundingClientRect().width;
-    liveResizeHandle.classList.add('dragging');
-    document.body.style.userSelect = 'none';
-
-    function onMove(ev) {
-      const next = startWidth + (startX - ev.clientX);
-      const clamped = Math.max(200, Math.min(520, next));
-      liveSidebar.style.width = clamped + 'px';
-      drawLiveOverlay();
-    }
-    function onUp() {
-      liveResizeHandle.classList.remove('dragging');
-      document.body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    }
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+  document.getElementById('phoneBlockToggle').addEventListener('click', () => {
+    const block = document.getElementById('phoneBlock');
+    block.classList.toggle('open');
+    saveRailPrefs({ phoneBlock: block.classList.contains('open') });
+    if (block.classList.contains('open')) refreshFrame();
   });
-  document.getElementById('liveOverlayToggle').addEventListener('change', drawLiveOverlay);
+
+  // Clicking the project name in the top bar is a shortcut to the panel that changes it.
+  document.getElementById('projectPill').addEventListener('click', () => {
+    if (!railOpen('left')) setRail('left', true);
+    const panel = document.querySelector('.panel[data-panel="projects"]');
+    panel.classList.add('open');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+
+  function restoreRailPrefs() {
+    const prefs = loadRailPrefs();
+    setRail('left', prefs.left !== false);      // both rails open on a first visit
+    setRail('right', prefs.right !== false);
+    if (prefs.leftWidth) leftSidebar.style.width = prefs.leftWidth + 'px';
+    if (prefs.rightWidth) rightSidebar.style.width = prefs.rightWidth + 'px';
+    document.querySelectorAll('.panel[data-panel]').forEach((panel) => {
+      const saved = prefs['panel.' + panel.dataset.panel];
+      if (saved !== undefined) panel.classList.toggle('open', saved);
+    });
+    if (prefs.phoneBlock !== undefined) {
+      document.getElementById('phoneBlock').classList.toggle('open', prefs.phoneBlock);
+    }
+  }
 
   // -- Save / Import --
   function buildProjectBlob() {
     return {
       version: 1,
       savedAt: new Date().toISOString(),
+      // Stamped so the server can reject a save aimed at the wrong project rather than
+      // silently taking it. Without this the check on the server has nothing to compare.
+      package: boardPackage,
       sessionId: currentSessionId,
       nodes: Array.from(nodeMeta.entries()).map(([hash, meta]) => ({ hash, ...meta })),
       edges: Array.from(edgeMeta.entries()).map(([id, meta]) => ({ id, ...meta })),
@@ -1745,20 +1945,13 @@
     return updates.length;
   }
 
-  document.getElementById('saveBtn').addEventListener('click', () => {
-    const project = buildProjectBlob();
-    const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `android-agent-flow-${(currentSessionId || 'session')}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    if (currentPackage) persistProjectToServer();
-  });
+  // Download-as-file and import-from-file are gone from the dock. The board lives in its
+  // project folder on disk and is saved there; a second, divergent copy in ~/Downloads was
+  // one more thing that could be loaded into the wrong project.
 
   // -- Projects (server-persisted, one per app package) --
   function scheduleAutoSave() {
-    if (!currentPackage) return;
+    if (!boardPackage) return;
     clearTimeout(autoSaveTimer);
     autoSaveTimer = setTimeout(persistProjectToServer, 2000);
   }
@@ -1768,9 +1961,12 @@
   // note-less blob over the saved project and silently destroys every text note and comment
   // pin the user had added. Pull them back before the autosave fires.
   async function restoreSavedAnnotations() {
-    if (!currentPackage || textNotes.size || comments.size || nodeStatus.size) return;
+    // Keyed on the board's owner, not the on-screen app: pulling annotations by whatever
+    // package the current frame happens to be would graft one project's notes onto another's
+    // board the moment a run wandered out of its own app.
+    if (!boardPackage || textNotes.size || comments.size || nodeStatus.size) return;
     try {
-      const resp = await fetch(`/projects/${encodeURIComponent(currentPackage)}/flow-graph`);
+      const resp = await fetch(`/projects/${encodeURIComponent(boardPackage)}/flow-graph`);
       if (!resp.ok) return;
       const saved = await resp.json();
       (saved.notes || []).forEach((n) => textNotes.set(n.id, n));
@@ -1787,13 +1983,21 @@
   }
 
   async function persistProjectToServer() {
-    if (!currentPackage) return;
+    // Saves to the board's owner, never to whatever is merely selected or on screen.
+    if (!boardPackage) return;
     try {
-      await fetch(`/projects/${encodeURIComponent(currentPackage)}/flow-graph`, {
+      const resp = await fetch(`/projects/${encodeURIComponent(boardPackage)}/flow-graph`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildProjectBlob()),
       });
+      // A 409 means the server caught a save that would have overwritten another project.
+      // Silence here would leave the user believing the board was saved, so it is loud.
+      if (resp.status === 409) {
+        const detail = await resp.json().catch(() => ({}));
+        showStatus(detail.detail || 'Refused a save that would overwrite another project.',
+          'error');
+      }
     } catch (err) {
       // Best-effort — the live dashboard/telemetry keeps working even if this fails.
       console.warn('Could not auto-save project:', err);
@@ -1814,46 +2018,90 @@
     }
     list.querySelectorAll('.project-row').forEach((el) => el.remove());
     empty.classList.toggle('hidden', projects.length > 0);
+    document.getElementById('projectCount').textContent = projects.length;
     projects.forEach((p) => {
       const row = document.createElement('div');
-      row.className = 'project-row';
-      const lastRun = p.last_run_at ? new Date(p.last_run_at).toLocaleString() : 'never';
+      row.className = 'project-row' + (p.package === currentPackage ? ' active' : '');
+      const lastRun = p.last_run_at
+        ? new Date(p.last_run_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+        : 'never';
       row.innerHTML = `
-        <div class="project-row-main">
-          <div class="project-row-package">${escapeHtml(p.package)}</div>
-          <div class="project-row-meta">last tested: ${escapeHtml(lastRun)}</div>
-        </div>
+        <div class="project-row-package">${escapeHtml(p.package)}</div>
+        <div class="project-row-meta">last tested: ${escapeHtml(lastRun)}</div>
         <div class="project-row-stats">
           <div class="stat-pill">${p.state_count || 0} states</div>
           <div class="stat-pill">${p.edge_count || 0} transitions</div>
         </div>`;
+      // Where it lives is worth surfacing once a project can live anywhere: two projects with
+      // similar package names in different folders are otherwise indistinguishable here.
+      if (p.root) row.title = p.root;
       row.addEventListener('click', () => openProject(p.package));
       list.appendChild(row);
     });
   }
 
+  // The top bar names the open project, and is the only place the chrome does.
+  function setProjectPill(pkg) {
+    const pill = document.getElementById('projectPill');
+    document.getElementById('projectPillName').textContent = pkg || 'No project open';
+    pill.classList.toggle('live', Boolean(pkg));
+    pill.title = pkg ? `${pkg} — click to switch project` : 'Click to pick a project';
+  }
+
   async function openProject(pkg) {
+    // A debounced autosave from the outgoing board must not survive the switch: it would
+    // fire after the retarget and write the old board's screens under the new project's
+    // name. Cancel it, then flush the old board to its own project while we still know
+    // which one that is.
+    clearTimeout(autoSaveTimer);
+    if (boardPackage && boardPackage !== pkg) await persistProjectToServer();
     currentPackage = pkg;
+    // Disowned until the incoming board actually loads. Anything that autosaves in the gap
+    // would otherwise be writing the previous project's screens into this one's file.
+    boardPackage = null;
+    setProjectPill(pkg);
+    // One click now means "work on this app": the board loads *and* the agent is pointed at
+    // it. Splitting those across two tabs is what used to let the graph and the agent end up
+    // on different packages without anything saying so.
+    pointAgentAt(pkg);
+    document.querySelectorAll('.project-row').forEach((row) => {
+      row.classList.toggle('active',
+        row.querySelector('.project-row-package')?.textContent === pkg);
+    });
     try {
       const resp = await fetch(`/projects/${encodeURIComponent(pkg)}/flow-graph`);
       if (resp.status === 404) {
         resetGraph();
+        // An empty board legitimately belongs to pkg — a run started now should save here.
+        boardPackage = pkg;
         showStatus(`Project "${pkg}" has no saved runs yet — start exploring to populate it.`, 'info');
         return;
       }
       const project = await resp.json();
       loadProject(project);
-      document.querySelector('.tab[data-tab="graph"]').click();
+      boardPackage = pkg;
     } catch (err) {
       showStatus('Could not open project: ' + err.message, 'error');
     }
+  }
+
+  // Drives the agent's own (hidden) project select, so its module list, transcript and
+  // findings all follow the board. Declared here and safe to call before the agent has
+  // loaded: the select is simply empty until then, and initAgent picks the value back up.
+  function pointAgentAt(pkg) {
+    const select = document.getElementById('agentProject');
+    if (!select || !pkg || select.value === pkg) return;
+    if (![...select.options].some((o) => o.value === pkg)) {
+      select.appendChild(new Option(pkg, pkg));
+    }
+    select.value = pkg;
+    select.dispatchEvent(new Event('change'));
   }
 
   // Explicit save of the open board. Autosave already runs on a 2s debounce, but it is
   // invisible and easy to distrust — and it does not fire at all if the last change was
   // a pan or zoom. This is the button you press before closing the laptop.
   const saveProjectBtn = document.getElementById('saveProjectBtn');
-  const saveProjectHint = document.getElementById('saveProjectHint');
 
   // Looks the element up rather than closing over the const above: this is called from
   // fetchProjects, which is declared earlier in the file, so a closure would risk a
@@ -1861,31 +2109,32 @@
   function refreshSaveProjectBtn() {
     const btn = document.getElementById('saveProjectBtn');
     if (!btn) return;
-    const ready = Boolean(currentPackage) && nodesData.length > 0;
+    const ready = Boolean(boardPackage) && nodesData.length > 0;
     btn.disabled = !ready;
-    btn.textContent = ready ? `Save "${currentPackage}"` : 'Save current project';
+    btn.textContent = ready ? `Save "${boardPackage}"` : 'Save current project';
   }
 
   if (saveProjectBtn) {
     saveProjectBtn.addEventListener('click', async () => {
-      if (!currentPackage) return;
+      if (!boardPackage) return;
       const original = saveProjectBtn.textContent;
       saveProjectBtn.disabled = true;
       saveProjectBtn.textContent = 'Saving…';
       try {
         const blob = buildProjectBlob();
-        const resp = await fetch(`/projects/${encodeURIComponent(currentPackage)}/flow-graph`, {
+        const resp = await fetch(`/projects/${encodeURIComponent(boardPackage)}/flow-graph`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(blob),
         });
-        if (!resp.ok) throw new Error(`server said ${resp.status}`);
-        saveProjectBtn.textContent = 'Saved ✓';
-        if (saveProjectHint) {
-          saveProjectHint.textContent =
-            `Saved ${blob.nodePositions.length} screen positions, ${blob.notes.length} notes `
-            + `and ${blob.comments.length} comment pins at ${new Date().toLocaleTimeString()}.`;
+        if (!resp.ok) {
+          const detail = await resp.json().catch(() => ({}));
+          throw new Error(detail.detail || `server said ${resp.status}`);
         }
+        saveProjectBtn.textContent = 'Saved ✓';
+        showStatus(
+          `Saved ${blob.nodePositions.length} screen positions, ${blob.notes.length} notes `
+          + `and ${blob.comments.length} comment pins to "${boardPackage}".`, 'info');
         fetchProjects();
         setTimeout(() => { saveProjectBtn.textContent = original; refreshSaveProjectBtn(); }, 2000);
       } catch (err) {
@@ -1896,39 +2145,91 @@
     });
   }
 
-  document.getElementById('newProjectBtn').addEventListener('click', async () => {
-    const input = document.getElementById('newProjectPackage');
-    const pkg = input.value.trim();
-    if (!pkg) return;
+  // -- New project ---------------------------------------------------------------------
+  // The old "+ New" was a button next to a text field that most people never noticed was
+  // required, so pressing it with an empty field did nothing at all and read as broken.
+  // It is now a dialog that asks for both things it needs.
+  const newProjectSheet = document.getElementById('newProjectBackdrop');
+  const newProjectPackage = document.getElementById('newProjectPackage');
+  const newProjectRoot = document.getElementById('newProjectRoot');
+  const newProjectNote = document.getElementById('newProjectNote');
+  const NEW_PROJECT_NOTE = newProjectNote.innerHTML;
+
+  function openNewProjectSheet() {
+    newProjectPackage.value = '';
+    newProjectRoot.value = '';
+    newProjectNote.innerHTML = NEW_PROJECT_NOTE;
+    newProjectNote.classList.remove('error');
+    newProjectSheet.classList.add('open');
+    newProjectPackage.focus();
+  }
+  function closeNewProjectSheet() { newProjectSheet.classList.remove('open'); }
+
+  document.getElementById('newProjectBtn').addEventListener('click', openNewProjectSheet);
+  document.getElementById('newProjectCancel').addEventListener('click', closeNewProjectSheet);
+  newProjectSheet.addEventListener('click', (e) => {
+    if (e.target === newProjectSheet) closeNewProjectSheet();
+  });
+
+  document.getElementById('newProjectBrowse').addEventListener('click', async () => {
+    const btn = document.getElementById('newProjectBrowse');
+    const original = btn.textContent;
+    // The dialog is modal on the server's thread, so this can sit here for as long as the
+    // user takes to decide. Saying so beats a button that looks dead for half a minute.
+    btn.textContent = 'Choose…';
+    btn.disabled = true;
     try {
-      await fetch('/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ package: pkg }),
-      });
-      input.value = '';
-      fetchProjects();
+      const resp = await fetch('/ui/pick-folder', { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || `server said ${resp.status}`);
+      if (data.path) newProjectRoot.value = data.path;
     } catch (err) {
-      showStatus('Could not create project: ' + err.message, 'error');
+      newProjectNote.textContent =
+        `${err.message} — you can type the folder path in by hand instead.`;
+      newProjectNote.classList.add('error');
+    } finally {
+      btn.textContent = original;
+      btn.disabled = false;
     }
   });
 
-  const importFile = document.getElementById('importFile');
-  document.getElementById('importBtn').addEventListener('click', () => importFile.click());
-  importFile.addEventListener('change', () => {
-    const file = importFile.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const project = JSON.parse(reader.result);
-        loadProject(project);
-      } catch (err) {
-        showStatus('Could not read project file: ' + err.message, 'error');
-      }
-    };
-    reader.readAsText(file);
-    importFile.value = '';
+  document.getElementById('newProjectCreate').addEventListener('click', async () => {
+    const pkg = newProjectPackage.value.trim();
+    if (!pkg) {
+      newProjectNote.textContent = 'An app package is required, e.g. com.example.app.';
+      newProjectNote.classList.add('error');
+      newProjectPackage.focus();
+      return;
+    }
+    try {
+      const body = { package: pkg };
+      if (newProjectRoot.value.trim()) body.root = newProjectRoot.value.trim();
+      const resp = await fetch('/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || `server said ${resp.status}`);
+      closeNewProjectSheet();
+      await fetchProjects();
+      await openProject(pkg);
+      // Straight into the interview rather than leaving an empty board with no next step.
+      startProjectOnboarding(pkg);
+    } catch (err) {
+      newProjectNote.textContent = err.message;
+      newProjectNote.classList.add('error');
+    }
+  });
+
+  // Load project — the counterpart to Save, and what the removed hint text used to occupy.
+  // Opening the Projects panel is the whole action: this is the one list of projects.
+  document.getElementById('loadProjectBtn').addEventListener('click', async () => {
+    await fetchProjects();
+    const panel = document.querySelector('.panel[data-panel="projects"]');
+    if (panel) panel.classList.add('open');
+    document.getElementById('projectsList').scrollIntoView({ block: 'nearest' });
+    showStatus('Pick a project from the list above to load its board.', 'info');
   });
 
   function loadProject(project) {
@@ -1954,27 +2255,150 @@
     // vis hasn't drawn the new nodes yet on this frame, so comment pins (which need a
     // node's DOM rect) and text notes render into nothing and stay invisible until the
     // user happens to pan or resize. Re-render once the layout has actually settled.
-    network.once('afterDrawing', scheduleRenderOverlay);
-    setTimeout(scheduleRenderOverlay, 250);
+    //
+    // The fit is not cosmetic. A saved arrangement keeps the canvas coordinates it was
+    // dragged into, and those are nowhere near the origin — the two boards saved with a
+    // custom layout here start at x≈4300, while a freshly loaded page has its camera at
+    // 0,0. Without moving the camera to the content, opening such a project loads all 39
+    // screens correctly and shows you an empty canvas, which reads as "the project is
+    // broken". Boards with no saved positions were laid out near the origin, which is why
+    // this went unnoticed.
+    // Deferred out of the draw callback on purpose: fit() moves the camera, and moving it
+    // from inside vis's own afterDrawing handler re-enters the draw it is still finishing,
+    // which leaves getBoundingBox() returning nothing and the overlay with no rects to
+    // position cards by — a board that is loaded, fitted, and completely invisible.
+    let framed = false;
+    const frameBoard = () => {
+      if (framed) return;
+      framed = true;
+      requestAnimationFrame(() => {
+        network.fit({ animation: false });
+        requestAnimationFrame(scheduleRenderOverlay);
+      });
+    };
+    network.once('afterDrawing', frameBoard);
+    setTimeout(frameBoard, 250);
     updateStats();
     if (nodesData.length) emptyState.classList.add('hidden');
-    if (currentSessionId) document.getElementById('statSession').textContent = 'Session — ' + currentSessionId;
+    setSessionLabel(currentSessionId);
     showStatus(`Loaded project — ${nodesData.length} states, ${edgeMeta.size} transitions.`, 'ok');
   }
 
   // ---------------------------------------------------------------------------
-  // Tabs
+  // Screens panel — the graph as a list you can jump from
+  //
+  // A 40-node board is quick to lose your place in: the names are on the cards, so finding
+  // one means panning around looking for it. This is the same data as an index, filterable,
+  // and clicking an entry flies the canvas to that screen instead of hunting for it.
   // ---------------------------------------------------------------------------
-  document.querySelectorAll('.tab').forEach((tab) => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-      document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById('view-' + tab.dataset.tab).classList.add('active');
-      if (tab.dataset.tab === 'graph') { network.redraw(); scheduleRenderOverlay(); }
-      if (tab.dataset.tab === 'projects') fetchProjects();
-      if (tab.dataset.tab === 'agent') initAgentTab();
+  const screenListEl = document.getElementById('screenList');
+  const screensEmptyEl = document.getElementById('screensEmpty');
+  const screenSearchEl = document.getElementById('screenSearch');
+  let screenFilter = '';
+
+  // Tiles reuse the shared downscaler above, and are only requested for rows actually on
+  // screen — a 39-screen project should not decode 39 phone frames to fill a panel that
+  // shows seven of them at a time.
+  const thumbObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      const el = entry.target;
+      thumbObserver.unobserve(el);
+      const hash = el.dataset.hash;
+      const meta = nodeMeta.get(hash);
+      if (!meta || !meta.screenshot) return;
+      const apply = (url) => {
+        // The row may have been rebuilt while this decoded, so address it by hash.
+        screenListEl.querySelector(`.screen-thumb[data-hash="${hash}"]`)?.setAttribute('src', url);
+      };
+      const cached = requestScaled(hash, meta.screenshot, CARD_MAX_W, apply);
+      if (cached) apply(cached);
     });
+  }, { root: screenListEl, rootMargin: '120px' });
+
+  function focusScreen(hash) {
+    if (!nodesData.get(hash)) return;
+    network.selectNodes([hash]);
+    network.focus(hash, { scale: Math.max(network.getScale(), 0.55), animation: { duration: 380 } });
+    selectedIds = new Set([hash]);
+    scheduleRenderOverlay();
+    renderScreenList();
+  }
+
+  let lastRevealed = null;
+
+  function renderScreenList() {
+    const needle = screenFilter.trim().toLowerCase();
+    screenListEl.querySelectorAll('.screen-row, .screen-section-label').forEach((el) => el.remove());
+
+    let shown = 0;
+    sectionOrder.forEach((sectionName) => {
+      const hashes = (sections.get(sectionName) || []).filter((hash) => {
+        const meta = nodeMeta.get(hash);
+        if (!meta) return false;
+        if (!needle) return true;
+        return [meta.screenName, meta.activity, sectionName, String(meta.screenNumber || '')]
+          .filter(Boolean).join(' ').toLowerCase().includes(needle);
+      });
+      if (!hashes.length) return;
+
+      const label = document.createElement('div');
+      label.className = 'screen-section-label';
+      label.textContent = sectionName;
+      screenListEl.appendChild(label);
+
+      hashes.forEach((hash) => {
+        const meta = nodeMeta.get(hash);
+        // Same status the canvas colours its connectors by, so a screen carrying a defect
+        // is visible in the index without opening it.
+        const status = nodeStatus.get(hash);
+        const row = document.createElement('div');
+        row.className = 'screen-row' + (selectedIds.has(hash) ? ' active' : '')
+          + (status?.level === 'fail' ? ' flagged' : '');
+        // Starts blank and fills in once the row scrolls into view — see thumbObserver.
+        row.innerHTML = `
+          <img class="screen-thumb" data-hash="${hash}" alt="">
+          <div class="screen-row-main">
+            <div class="screen-row-name">${escapeHtml(meta.screenName || 'Screen')}</div>
+            <div class="screen-row-sub">${escapeHtml((meta.activity || '').split('.').pop() || '')}</div>
+          </div>
+          <div class="screen-row-num">${meta.screenNumber ? '#' + meta.screenNumber : ''}</div>`;
+        row.addEventListener('click', () => focusScreen(hash));
+        row.addEventListener('dblclick', () => openModal(hash));
+        screenListEl.appendChild(row);
+
+        const thumb = row.querySelector('.screen-thumb');
+        const cachedThumb = scaledCache.get(`${hash}@${CARD_MAX_W}`);
+        if (cachedThumb) thumb.src = cachedThumb;
+        else if (meta.screenshot) thumbObserver.observe(thumb);
+        shown += 1;
+      });
+    });
+
+    // Reveal the selected screen — but only when the selection actually changed. Doing it on
+    // every render would yank the list back during a live run, which re-renders on each
+    // telemetry post and would make the panel impossible to read while exploring.
+    const selected = selectedIds.size === 1 ? [...selectedIds][0] : null;
+    if (selected && selected !== lastRevealed) {
+      screenListEl.querySelector('.screen-row.active')
+        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+    lastRevealed = selected;
+
+    document.getElementById('screenCount').textContent = nodesData.length;
+    screensEmptyEl.classList.toggle('hidden', shown > 0);
+    if (!shown && needle) {
+      screensEmptyEl.classList.remove('hidden');
+      screensEmptyEl.textContent = `No screen matches “${screenFilter}”.`;
+    } else if (!shown) {
+      screensEmptyEl.textContent =
+        'Screens appear here as they are discovered. Click one to centre it on the canvas.';
+    }
+  }
+
+  screenSearchEl.addEventListener('input', () => {
+    screenFilter = screenSearchEl.value;
+    renderScreenList();
   });
 
   // ---------------------------------------------------------------------------
@@ -2141,17 +2565,13 @@
     blockedLabel: document.getElementById('agentBlockedLabel'),
     blockedQuestion: document.getElementById('agentBlockedQuestion'),
     moduleList: document.getElementById('agentModuleList'),
-    findings: document.getElementById('agentFindings'),
-    findingCount: document.getElementById('agentFindingCount'),
     secretNames: document.getElementById('agentSecretNames'),
     meterStepper: document.getElementById('meterStepper'),
-    meterActions: document.getElementById('meterActions'),
     liveToggle: document.getElementById('liveFrameToggle'),
     traceToggle: document.getElementById('traceToggle'),
     input: document.getElementById('chatInput'),
     send: document.getElementById('chatSend'),
     model: document.getElementById('agentModel'),
-    meterModel: document.getElementById('meterModel'),
     working: document.getElementById('agentWorking'),
     workingText: document.getElementById('agentWorkingText'),
     workingTimer: document.getElementById('agentWorkingTimer'),
@@ -2192,16 +2612,62 @@
     const short = prettyModel(id);
     if (short) {
       agentEl.model.textContent = short;
-      agentEl.meterModel.textContent = short;
       agentEl.model.title = [id && 'Model: ' + id, label, subscription && 'Auth: ' + subscription]
         .filter(Boolean).join('\n');
     }
     if (subscription) {
-      // Shown because it is the difference between spending the subscription and being billed
-      // per token — worth being able to see rather than trust.
-      document.getElementById('meterPlanner').textContent = subscription;
+      // In the top bar because it is the difference between spending the subscription and
+      // being billed per token — worth seeing without opening a rail.
+      document.getElementById('statAuth').textContent = 'auth ' + subscription;
     }
   }
+
+  // -- Model picker --------------------------------------------------------------------
+  // Populated from what the CLI reports it can run. Per module, because the model is fixed
+  // when a session connects and each module has its own session anyway — so recon can run
+  // somewhere cheap while the suite that files defects runs on something better.
+  async function loadModelPicker() {
+    const picker = document.getElementById('agentModelPicker');
+    if (!agent.package || !agent.slug) { picker.innerHTML = ''; return; }
+    let data;
+    try {
+      data = await agentFetch(
+        `/agent/${encodeURIComponent(agent.package)}/${agent.slug}/models`);
+    } catch {
+      return;   // the session may not be warm yet; the next selection will retry
+    }
+    picker.innerHTML = '';
+    const auto = new Option('Default model', '');
+    picker.appendChild(auto);
+    (data.models || []).forEach((m) => {
+      if (!m.value || m.value === 'default') return;
+      picker.appendChild(new Option(m.label || m.value, m.value));
+    });
+    picker.value = data.requested || '';
+    picker.title = data.current ? 'Currently running ' + data.current : 'Model for this module';
+  }
+
+  document.getElementById('agentModelPicker').addEventListener('change', async (e) => {
+    const picker = e.target;
+    const wanted = picker.value || null;
+    picker.disabled = true;
+    try {
+      const data = await agentFetch(
+        `/agent/${encodeURIComponent(agent.package)}/${agent.slug}/model`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: wanted }) });
+      setAgentModel(data.model, data.model_label);
+      if (!data.unchanged) {
+        appendChat('notice', `Switched to ${prettyModel(data.model) || 'the default model'}. `
+          + 'The conversation was resumed, so I still know where we were.');
+      }
+    } catch (err) {
+      appendChat('error', err.message);
+      await loadModelPicker();   // put the control back to what is actually in force
+    } finally {
+      picker.disabled = false;
+    }
+  });
 
   function tickWorkTimer() {
     const secs = Math.floor((Date.now() - agent.workStarted) / 1000);
@@ -2295,6 +2761,8 @@
       return;
     }
 
+    document.getElementById('moduleCount').textContent = modules.length;
+
     // Module dropdown in the chat header
     agentEl.subproject.innerHTML = '';
     modules.forEach((m) => {
@@ -2317,12 +2785,21 @@
       const card = document.createElement('div');
       card.className = 'agent-module' + (m.slug === agent.slug ? ' active' : '');
       card.innerHTML =
-        `<div class="agent-module-title"></div>`
+        `<div class="agent-module-head">`
+        + `<div class="agent-module-title"></div>`
+        + `<button class="module-row-menu" title="Module options">⋯</button>`
+        + `</div>`
         + (m.scope ? `<div class="agent-module-scope"></div>` : '')
         + `<div class="agent-module-meta">${moduleBadges(m)}</div>`;
       card.querySelector('.agent-module-title').textContent = m.title;
       if (m.scope) card.querySelector('.agent-module-scope').textContent = m.scope;
       card.addEventListener('click', () => selectModule(m.slug));
+
+      const menuBtn = card.querySelector('.module-row-menu');
+      menuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();   // opening the menu is not also selecting the module
+        openModuleMenu(m, menuBtn);
+      });
 
       if (m.status === 'proposed') {
         const approve = document.createElement('button');
@@ -2353,7 +2830,146 @@
       agent.slug = null;
     }
     loadSecretNames();
+    refreshOutcomes();
   }
+
+  // -- Module row menu ------------------------------------------------------------------
+  let openMenuEl = null;
+
+  function closeModuleMenu() {
+    if (openMenuEl) { openMenuEl.remove(); openMenuEl = null; }
+    document.querySelectorAll('.module-row-menu.open')
+      .forEach((b) => b.classList.remove('open'));
+  }
+
+  function openModuleMenu(mod, anchor) {
+    const wasOpen = anchor.classList.contains('open');
+    closeModuleMenu();
+    if (wasOpen) return;   // a second click on the same button closes it
+
+    anchor.classList.add('open');
+    const menu = document.createElement('div');
+    menu.className = 'module-menu';
+
+    const add = (label, handler, cls) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      if (cls) btn.className = cls;
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        closeModuleMenu();
+        await handler();
+      });
+      menu.appendChild(btn);
+    };
+
+    add('Edit name & scope', () => openModuleSheet(mod));
+    add('Open module', () => selectModule(mod.slug));
+    if (mod.status === 'proposed') add('Approve', () => setModuleStatus(mod.slug, 'approved'));
+    add('Delete module', () => deleteModule(mod), 'danger');
+
+    // Positioned fixed against the button's viewport rect: the rail scrolls, and a menu
+    // absolutely positioned inside it would scroll out of view or be clipped by the rail's
+    // own overflow.
+    const rect = anchor.getBoundingClientRect();
+    menu.style.top = `${rect.bottom + 4}px`;
+    menu.style.left = `${Math.max(8, rect.right - 150)}px`;
+    document.body.appendChild(menu);
+    openMenuEl = menu;
+  }
+
+  document.addEventListener('click', () => closeModuleMenu());
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModuleMenu(); });
+
+  async function setModuleStatus(slug, status) {
+    try {
+      await agentFetch(`/agent/${encodeURIComponent(agent.package)}/subprojects/${slug}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      await loadModules();
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  }
+
+  async function deleteModule(mod) {
+    // The server keeps the folder — transcript, findings and evidence all survive. Saying so
+    // is the difference between a confirm people read and one they click through.
+    const ok = window.confirm(
+      `Remove "${mod.title}" from the module list?\n\n`
+      + 'Its conversation, memory, findings and screenshots stay on disk, so this can be '
+      + 'undone by adding a module with the same name.');
+    if (!ok) return;
+    try {
+      await agentFetch(`/agent/${encodeURIComponent(agent.package)}/subprojects/${mod.slug}`,
+        { method: 'DELETE' });
+      if (agent.slug === mod.slug) { agent.slug = null; agent.loadedKey = null; }
+      await loadModules();
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  }
+
+  // -- Add / edit module sheet ----------------------------------------------------------
+  const moduleBackdrop = document.getElementById('moduleBackdrop');
+  const moduleSheetName = document.getElementById('moduleSheetName');
+  const moduleSheetScope = document.getElementById('moduleSheetScope');
+  let editingModule = null;
+
+  function openModuleSheet(mod) {
+    editingModule = mod || null;
+    document.getElementById('moduleSheetTitle').textContent = mod ? 'Edit module' : 'Add module';
+    document.getElementById('moduleSheetSave').textContent = mod ? 'Save changes' : 'Add module';
+    moduleSheetName.value = mod ? (mod.title || '') : '';
+    moduleSheetScope.value = mod ? (mod.scope || '') : '';
+    moduleBackdrop.classList.add('open');
+    moduleSheetName.focus();
+  }
+  function closeModuleSheet() {
+    moduleBackdrop.classList.remove('open');
+    editingModule = null;
+  }
+
+  document.getElementById('addModuleBtn').addEventListener('click', () => {
+    if (!agent.package) { appendChat('error', 'Open a project first.'); return; }
+    openModuleSheet(null);
+  });
+  document.getElementById('moduleSheetCancel').addEventListener('click', closeModuleSheet);
+  moduleBackdrop.addEventListener('click', (e) => {
+    if (e.target === moduleBackdrop) closeModuleSheet();
+  });
+
+  document.getElementById('moduleSheetSave').addEventListener('click', async () => {
+    const title = moduleSheetName.value.trim();
+    const scope = moduleSheetScope.value.trim();
+    if (!title || !agent.package) return;
+    try {
+      if (editingModule) {
+        // The slug is the folder name, so renaming changes the title only — moving the
+        // transcript and evidence to a new folder to match a typo fix would be a far bigger
+        // and far more destructive operation than the rename it looks like.
+        await agentFetch(
+          `/agent/${encodeURIComponent(agent.package)}/subprojects/${editingModule.slug}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, scope }),
+          });
+      } else {
+        await agentFetch(`/agent/${encodeURIComponent(agent.package)}/subprojects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, scope }),
+        });
+      }
+      closeModuleSheet();
+      await loadModules();
+    } catch (err) {
+      appendChat('error', err.message);
+    }
+  });
 
   async function selectModule(slug) {
     if (!slug) return;
@@ -2365,7 +2981,7 @@
     agent.slug = slug;
     agentEl.subproject.value = slug;
     document.querySelectorAll('.agent-module').forEach((el) => el.classList.remove('active'));
-    if (changed) { await loadTranscript(); warmModule(); }
+    if (changed) { await loadTranscript(); await warmModule(); loadModelPicker(); }
     else renderModuleHighlight();
   }
 
@@ -2376,26 +2992,139 @@
     if (index >= 0 && cards[index]) cards[index].classList.add('active');
   }
 
-  function renderFindings(findings) {
-    agentEl.findings.innerHTML = '';
-    agentEl.findingCount.textContent = findings.length;
-    if (!findings.length) {
-      const empty = document.createElement('div');
-      empty.className = 'agent-empty';
-      empty.textContent = 'Nothing filed for this module yet.';
-      agentEl.findings.appendChild(empty);
-      return;
+  // ---------------------------------------------------------------------------
+  // Outcomes — the four top-bar pills, gathered across every module
+  // ---------------------------------------------------------------------------
+  const OUTCOME_KINDS = {
+    pass: { label: 'Working', el: 'countPass',
+            blurb: 'Cases the agent ran and found behaving correctly.' },
+    warning: { label: 'Warnings', el: 'countWarning',
+               blurb: 'Not broken, but questionable — worth a human look.' },
+    bug: { label: 'Bugs', el: 'countBug',
+           blurb: 'Confirmed defects. Every one carries the screenshot it was judged from.' },
+    suggestion: { label: 'Suggestions', el: 'countSuggestion',
+                  blurb: 'Nothing is wrong; these are places the app could be better.' },
+  };
+
+  // Declared before the function that assigns it: `let` is in a temporal dead zone until its
+  // declaration runs, and refreshOutcomes is reachable from startup paths.
+  let outcomeData = null;
+
+  async function refreshOutcomes() {
+    // Keyed on the board's project, so the pills describe the app you are looking at.
+    const pkg = boardPackage || agent.package;
+    if (!pkg) return;
+    let data;
+    try {
+      data = await agentFetch(`/projects/${encodeURIComponent(pkg)}/outcomes`);
+    } catch {
+      return;   // a transient failure must not blank counts that were correct a second ago
     }
-    findings.forEach((f) => {
-      const row = document.createElement('div');
-      row.className = 'agent-finding-row';
-      row.innerHTML = `<b>${f.id} · ${f.severity}</b><br>`;
-      const title = document.createElement('span');
-      title.textContent = f.title;
-      row.appendChild(title);
-      agentEl.findings.appendChild(row);
+    outcomeData = data;
+    Object.entries(OUTCOME_KINDS).forEach(([kind, spec]) => {
+      const count = (data.counts && data.counts[kind]) || 0;
+      document.getElementById(spec.el).textContent = count;
+      document.querySelector(`.outcome-pill[data-kind="${kind}"]`)
+        .classList.toggle('has-items', count > 0);
     });
   }
+
+  const outcomeBackdrop = document.getElementById('outcomeBackdrop');
+  const outcomeList = document.getElementById('outcomeList');
+
+  function openOutcomes(kind) {
+    const spec = OUTCOME_KINDS[kind];
+    document.getElementById('outcomeTitle').textContent = spec.label;
+    document.getElementById('outcomeSub').textContent = spec.blurb;
+    outcomeList.innerHTML = '';
+    const bucket = outcomeData && outcomeData.buckets && outcomeData.buckets[kind];
+    const modules = (bucket && bucket.modules) || [];
+    if (!modules.length) {
+      const empty = document.createElement('div');
+      empty.className = 'outcome-empty';
+      empty.textContent = `Nothing under ${spec.label.toLowerCase()} yet for this project.`;
+      outcomeList.appendChild(empty);
+    }
+    modules.forEach((mod) => {
+      const group = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'outcome-module-title';
+      title.textContent = `${mod.title} — ${mod.items.length}`;
+      group.appendChild(title);
+      mod.items.forEach((f) => group.appendChild(outcomeItem(f, kind)));
+      outcomeList.appendChild(group);
+    });
+    outcomeBackdrop.classList.add('open');
+  }
+
+  function outcomeItem(f, kind) {
+    const item = document.createElement('div');
+    item.className = 'outcome-item';
+
+    const head = document.createElement('div');
+    head.className = 'outcome-item-head';
+    const id = document.createElement('span');
+    id.className = 'outcome-item-id';
+    id.textContent = f.id || '';
+    const title = document.createElement('span');
+    title.className = 'outcome-item-title';
+    title.textContent = f.title || '';
+    head.append(id, title);
+    // Severity is meaningless on a pass, and printing "none" next to every working case is
+    // just noise in the column where the eye is looking for a real signal.
+    if (kind !== 'pass' && f.severity && f.severity !== 'none') {
+      const sev = document.createElement('span');
+      sev.className = 'outcome-item-sev';
+      sev.textContent = f.severity;
+      head.appendChild(sev);
+    }
+    item.appendChild(head);
+
+    [['Expected', f.expected], ['Actual', f.actual]].forEach(([label, value]) => {
+      if (!value) return;
+      const row = document.createElement('div');
+      row.className = 'outcome-item-row';
+      const b = document.createElement('b');
+      b.textContent = label + ': ';
+      row.append(b, document.createTextNode(value));
+      item.appendChild(row);
+    });
+
+    if (Array.isArray(f.steps) && f.steps.length) {
+      const row = document.createElement('div');
+      row.className = 'outcome-item-row';
+      const b = document.createElement('b');
+      b.textContent = 'Steps: ';
+      row.append(b, document.createTextNode(f.steps.join(' → ')));
+      item.appendChild(row);
+    }
+
+    // The evidence screenshot is the point. Every incident this harness has learned from was
+    // a verdict that looked right in text and wrong in the picture.
+    if (f.evidence) {
+      const img = document.createElement('img');
+      img.src = '/agent/shot?path=' + encodeURIComponent(f.evidence);
+      img.alt = 'Evidence';
+      img.addEventListener('click', () => {
+        document.getElementById('shotLightboxImg').src = img.src;
+        document.getElementById('shotLightbox').classList.add('open');
+      });
+      item.appendChild(img);
+    }
+    return item;
+  }
+
+  document.querySelectorAll('.outcome-pill').forEach((pill) => {
+    pill.addEventListener('click', async () => {
+      await refreshOutcomes();
+      openOutcomes(pill.dataset.kind);
+    });
+  });
+  document.getElementById('outcomeClose')
+    .addEventListener('click', () => outcomeBackdrop.classList.remove('open'));
+  outcomeBackdrop.addEventListener('click', (e) => {
+    if (e.target === outcomeBackdrop) outcomeBackdrop.classList.remove('open');
+  });
 
   let transcriptRequest = 0;
   async function loadTranscript() {
@@ -2428,7 +3157,7 @@
         + 'them on the phone, and report what I actually observe. I will stop and ask only if '
         + 'I hit something I cannot get past on my own.');
     }
-    renderFindings(data.findings || []);
+    refreshOutcomes();
     setAgentBusy(!!data.busy);
     if (data.blocked) showBlocked(data.blocked);
     else hideBlocked();
@@ -2480,7 +3209,9 @@
     box.className = 'chat-finding';
     const head = document.createElement('div');
     head.className = 'chat-finding-head';
-    head.textContent = `${f.id} · ${f.severity} · ${f.title}`;
+    const kind = f.kind || 'bug';
+    const sev = (kind === 'pass' || !f.severity || f.severity === 'none') ? '' : ` · ${f.severity}`;
+    head.textContent = `${f.id} · ${kind}${sev} · ${f.title}`;
     box.appendChild(head);
     [['Expected', f.expected], ['Actual', f.actual]].forEach(([label, value]) => {
       if (!value) return;
@@ -2543,6 +3274,7 @@
       case 'agent_finding':
         appendFinding(msg.finding);
         loadModules();
+        refreshOutcomes();
         break;
       case 'agent_blocked': showBlocked(msg); break;
       case 'agent_unblocked': hideBlocked(); break;
@@ -2578,7 +3310,85 @@
   }
 
   function updateMeters() {
-    agentEl.meterActions.textContent = `${agent.taps} · ${agent.shots}`;
+    document.getElementById('statActions').textContent =
+      `${agent.taps} taps · ${agent.shots} shots`;
+  }
+
+  // -- Chat image attachments -----------------------------------------------------------
+  // Staged locally, uploaded on send. Each becomes a file in the module's own shots/ folder
+  // and reaches the agent as a *path*, which it opens with Read — the same way it looks at
+  // its own evidence. Inlining the bytes into the message would bloat the transcript on disk
+  // and make the same image unreadable the second time it came up.
+  let pendingAttachments = [];
+  const attachmentsEl = document.getElementById('chatAttachments');
+  const chatImageInput = document.getElementById('chatImageInput');
+
+  function renderAttachments() {
+    attachmentsEl.innerHTML = '';
+    pendingAttachments.forEach((att, i) => {
+      const box = document.createElement('div');
+      box.className = 'chat-attachment';
+      const img = document.createElement('img');
+      img.src = att.dataUrl;
+      img.alt = att.name;
+      img.title = att.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '✕';
+      remove.title = 'Remove';
+      remove.addEventListener('click', () => {
+        pendingAttachments.splice(i, 1);
+        renderAttachments();
+      });
+      box.append(img, remove);
+      attachmentsEl.appendChild(box);
+    });
+  }
+
+  function stageImage(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingAttachments.push({ name: file.name || 'image', dataUrl: String(reader.result) });
+      renderAttachments();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.getElementById('chatAttachBtn')
+    .addEventListener('click', () => chatImageInput.click());
+  chatImageInput.addEventListener('change', () => {
+    Array.from(chatImageInput.files || []).forEach(stageImage);
+    chatImageInput.value = '';
+  });
+
+  // Paste and drag-drop, because that is how a reference screenshot actually arrives.
+  agentEl.input.addEventListener('paste', (e) => {
+    const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
+    const images = items.filter((it) => it.type.startsWith('image/'));
+    if (!images.length) return;
+    e.preventDefault();
+    images.forEach((it) => stageImage(it.getAsFile()));
+  });
+  agentEl.input.addEventListener('dragover', (e) => e.preventDefault());
+  agentEl.input.addEventListener('drop', (e) => {
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || [])
+      .filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    files.forEach(stageImage);
+  });
+
+  async function uploadAttachments() {
+    const paths = [];
+    for (const att of pendingAttachments) {
+      const data = await agentFetch(
+        `/agent/${encodeURIComponent(agent.package)}/${agent.slug}/attachment`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data_url: att.dataUrl }) });
+      paths.push(data.path);
+    }
+    return paths;
   }
 
   async function sendToAgent(text) {
@@ -2586,17 +3396,50 @@
       appendChat('error', 'Pick a project and a module first.');
       return;
     }
+    const staged = pendingAttachments.slice();
+    let paths = [];
+    try {
+      paths = await uploadAttachments();
+    } catch (err) {
+      appendChat('error', 'Could not attach the image: ' + err.message);
+      return;   // sending without it would leave the agent referring to a file that is not there
+    }
+    pendingAttachments = [];
+    renderAttachments();
+
     appendChat('user', text);
+    staged.forEach((att) => appendChatImage(att.dataUrl));
     hideBlocked();
+
+    // The paths ride along as a plain instruction rather than a separate channel: the agent
+    // has Read, and telling it where the file is *is* the interface.
+    const body = paths.length
+      ? `${text}\n\nReference image${paths.length > 1 ? 's' : ''} the user attached — `
+        + `Read ${paths.length > 1 ? 'these paths' : 'this path'} to look at `
+        + `${paths.length > 1 ? 'them' : 'it'}:\n` + paths.map((p) => `- ${p}`).join('\n')
+      : text;
     try {
       await agentFetch(`/agent/${encodeURIComponent(agent.package)}/${agent.slug}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: body }),
       });
     } catch (err) {
       appendChat('error', err.message);
     }
+  }
+
+  function appendChatImage(src) {
+    const img = document.createElement('img');
+    img.className = 'chat-msg-image';
+    img.src = src;
+    img.alt = 'Attached reference';
+    img.addEventListener('click', () => {
+      document.getElementById('shotLightboxImg').src = src;
+      document.getElementById('shotLightbox').classList.add('open');
+    });
+    chatLog.appendChild(img);
+    scrollChatToEnd();
   }
 
   // The old manual command parser survives behind a `/` prefix, so the phone can still be
@@ -2640,7 +3483,7 @@
     }
   }
 
-  function initAgentTab() {
+  function initAgent() {
     if (agent.ready) { refreshFrame(); return; }
     agent.ready = true;
     loadAgentProjects().then(refreshFrame);
@@ -2648,8 +3491,10 @@
     agentEl.liveToggle.dispatchEvent(new Event('change'));
 
     fetch('/agent/status').then((r) => r.json()).then((s) => {
-      document.getElementById('meterPlanner').textContent = 'subscription';
+      // A placeholder until a live session reports the real subscription type below.
+      document.getElementById('statAuth').textContent = 'auth subscription';
       if (s.cheap_tier && s.stepper_model) {
+        document.getElementById('agentMeter').hidden = false;
         document.getElementById('meterStepperRow').hidden = false;
         agentEl.meterStepper.textContent = s.stepper_model.split('/').pop();
       }
@@ -2682,14 +3527,43 @@
   agentEl.subproject.addEventListener('change', () => selectModule(agentEl.subproject.value));
 
   agentEl.stop.addEventListener('click', async () => {
+    if (!agent.package || !agent.slug) return;
+    // Feedback before the round-trip. The server cancels the device first and then ends the
+    // turn, which is fast but not instant, and a button that looks inert for a second is
+    // what made people press it repeatedly and conclude it did nothing.
+    agentEl.stop.disabled = true;
+    agentEl.stop.textContent = '■ Stopping…';
     try {
-      await agentFetch(`/agent/${encodeURIComponent(agent.package)}/${agent.slug}/stop`,
-        { method: 'POST' });
-      appendChat('notice', 'Stop requested — the agent will finish the step it is on and halt.');
+      const data = await agentFetch(
+        `/agent/${encodeURIComponent(agent.package)}/${agent.slug}/stop`, { method: 'POST' });
+      appendChat('notice', data.stopped
+        ? 'Stopped. The step in flight was cancelled.'
+        : 'Nothing was running.');
     } catch (err) {
       appendChat('error', err.message);
+    } finally {
+      agentEl.stop.textContent = '■ Stop';
+      agentEl.stop.disabled = !agent.busy;
     }
   });
+
+  // Called straight after a project is created. The agent asks what you want out of the app
+  // before it asks to look at it, so the module breakdown answers your priorities rather
+  // than just enumerating screens.
+  async function startProjectOnboarding(pkg) {
+    try {
+      await agentFetch(`/agent/${encodeURIComponent(pkg)}/onboarding`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      setRail('right', true);
+      await loadModules();
+      await selectModule('onboarding');
+    } catch (err) {
+      // The project itself was created; only the interview failed to start, and saying so is
+      // better than leaving a project that looks half-made.
+      showStatus('Project created, but the setup interview could not start: ' + err.message,
+        'error');
+    }
+  }
 
   document.getElementById('agentReconBtn').addEventListener('click', async () => {
     if (!agent.package) { appendChat('error', 'Pick a project first.'); return; }
@@ -2704,24 +3578,7 @@
     }
   });
 
-  document.getElementById('agentNewModuleForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const title = document.getElementById('agentNewModuleTitle');
-    const scope = document.getElementById('agentNewModuleScope');
-    if (!title.value.trim() || !agent.package) return;
-    try {
-      await agentFetch('/agent/' + encodeURIComponent(agent.package) + '/subprojects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: title.value.trim(), scope: scope.value.trim() }),
-      });
-      title.value = '';
-      scope.value = '';
-      await loadModules();
-    } catch (err) {
-      appendChat('error', err.message);
-    }
-  });
+  // The always-open two-field form that used to sit here is now the Add module sheet.
 
   document.getElementById('agentSecretForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -2796,5 +3653,27 @@
     sendCommand(`tap ${devX} ${devY}`);
   });
 
+  // ---------------------------------------------------------------------------
+  // Boot
+  //
+  // Everything is on screen at once now, so everything initialises at once. Under the tabs
+  // this work was deferred until you clicked into a view, which is why the agent used to
+  // take a moment to wake up the first time you spoke to it.
+  // ---------------------------------------------------------------------------
+  restoreRailPrefs();
+  setProjectPill(currentPackage);
   updateStats();
+  fetchProjects();
+  initAgent();
+
+  // The board is per-package and the agent remembers the module you had open, so reopening
+  // the last project is what makes a reload continue rather than restart.
+  fetch('/agent/status')
+    .then((r) => r.json())
+    .then((s) => {
+      if (s.last_opened && s.last_opened.package && !currentPackage) {
+        openProject(s.last_opened.package);
+      }
+    })
+    .catch(() => { /* the dashboard is fully usable without the agent */ });
 })();

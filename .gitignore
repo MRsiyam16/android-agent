@@ -1,69 +1,28 @@
+# Root-level ignores. The android-agent/ subtree has its own .gitignore, which still
+# applies to everything under it — patterns there are relative to that file, so
+# `projects/`, `.env` and `test_*.py` keep working unchanged after the repo root moved up.
+
+# Claude Code local state: settings.json is shared project config and IS tracked;
+# the rest is per-machine and would only cause conflicts.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/launch.json
+
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual environments
+.venv/
 venv/
 env/
-ENV/
 
-# IDE
+# IDE / editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
 
-# Test files & logs
-*.log
-test_*.py
-*_test.py
-.coverage
-.pytest_cache/
-
-# Temporary files
-*.tmp
-*.temp
-/tmp/
-.session_*
-
-# Project-specific
-# Board snapshots are multi-MB blobs of screenshots — local safety nets, not source.
-project_backups/
-flow-graph*.json
-*.adb_log
-server.log
-notes_test.log
-run-*.log
-projects/
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-# OS-specific
+# OS
 Thumbs.db
 .DS_Store
-.AppleDouble
-.LSOverride
+desktop.ini

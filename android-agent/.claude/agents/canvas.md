@@ -30,8 +30,8 @@ and the dashboard doesn't yet reflect it — use `telemetry.py`'s `TelemetryClie
 ## Per-app memory (memory.py)
 
 Reuse the existing `AppMemory` API from `android-agent/memory.py` — don't hand-edit
-the JSON files under `android-agent/projects/<package>/memory.json`. Typical
-update, run via `python -c` from `android-agent/`:
+the JSON files under `android-agent/memory/`. Typical update, run via `python -c`
+from `android-agent/`:
 
 ```python
 import memory
@@ -63,6 +63,6 @@ so you don't need to touch that part yourself).
 
 - Whether the dashboard was reachable and whether you posted anything to it
 - Whether memory was updated (and for which package/state hashes)
-- The path to the REPORT.md you updated
+- The path to the flow summary you wrote
 - Anything from the hand's report you'd flag as worth the user's attention (a bug,
   an incomplete objective, a screen that couldn't be reached)

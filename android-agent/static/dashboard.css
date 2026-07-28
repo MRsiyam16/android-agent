@@ -57,7 +57,9 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0 18px;
-  z-index: 30;
+  /* Above the rails (40), which are in turn above the canvas — so a panel dropped from the
+     top bar hangs over both, rather than being clipped behind the sidebar under it. */
+  z-index: 50;
 }
 
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 14px; }
@@ -93,8 +95,147 @@ body {
 .conn-indicator.offline .conn-dot { background: var(--danger); box-shadow: 0 0 0 3px rgba(255,85,119,0.15); }
 
 /* ---------------- VIEWS ---------------- */
-.view { display: none; flex: 1; min-height: 0; flex-direction: column; }
-.view.active { display: flex; }
+/* ---------------- WORKSPACE (one view: rail · canvas · rail) ---------------- */
+.workspace { flex: 1; min-height: 0; display: flex; align-items: stretch; }
+
+.rail {
+  position: relative;
+  display: flex; flex-direction: column;
+  background: var(--surface-1);
+  min-height: 0;
+  flex-shrink: 0;
+  /* Above the canvas. The rails and .canvas-col are siblings, and the canvas's own layers
+     run up to z-index 28 (comment pins, sticky notes, the dock popover). With the rails on
+     auto, those layers won the comparison and painted notes and screenshots straight over
+     both sidebars. Pairing this with `isolation` on .canvas-col means the canvas can never
+     reach out past its own box again, whatever z-index a future layer picks. */
+  z-index: 40;
+}
+.rail-left { width: 288px; border-right: 1px solid var(--hairline); overflow-y: auto; }
+.rail-right { width: 380px; border-left: 1px solid var(--hairline); }
+
+/* Collapsed rather than removed, so the canvas reflows and the rail's scroll position,
+   chat log and poll timers all survive being hidden. */
+.rail.collapsed { display: none; }
+
+/* `isolation` makes this a stacking context, so every z-index inside the canvas is compared
+   only against its siblings inside the canvas — never against the rails or the top bar. */
+.canvas-col {
+  position: relative; flex: 1; min-width: 0; min-height: 0; display: flex;
+  isolation: isolate;
+}
+
+.rail-resize {
+  position: absolute; top: 0; bottom: 0; width: 7px; z-index: 20; cursor: ew-resize;
+}
+.rail-left .rail-resize { right: -3px; }
+.rail-right .rail-resize { left: -3px; }
+.rail-resize:hover, .rail-resize.dragging { background: rgba(0, 153, 255, 0.35); }
+
+.rail-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: var(--radius-sm);
+  background: none; border: 1px solid transparent; color: var(--ink-faint); cursor: pointer;
+}
+.rail-toggle:hover { color: var(--ink); background: var(--surface-2); }
+.rail-toggle.active { color: var(--accent-blue); }
+
+/* The open project, named once in the chrome and doubling as the way to the Projects panel. */
+.project-pill {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
+  font-family: var(--font-body); font-size: 12.5px; font-weight: 500;
+  padding: 7px 12px; border-radius: var(--radius-pill); cursor: pointer;
+  max-width: 340px;
+}
+.project-pill:hover { border-color: var(--accent-blue); background: var(--surface-3); }
+.project-pill span:nth-child(2) {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.project-pill-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); flex-shrink: 0;
+}
+.project-pill.live .project-pill-dot { background: var(--accent-blue); }
+
+/* ---------------- LEFT RAIL PANELS ---------------- */
+.panel { border-bottom: 1px solid var(--hairline); flex-shrink: 0; }
+.panel-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; cursor: pointer;
+  padding: 13px 14px; color: var(--ink-faint);
+  font-family: var(--font-display); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+.panel-head:hover { color: var(--ink); }
+.panel-title { flex: 1; text-align: left; }
+.panel-caret { transition: transform 0.15s ease; flex-shrink: 0; }
+.panel.open > .panel-head .panel-caret { transform: rotate(90deg); }
+.panel-count {
+  background: var(--surface-3); color: var(--ink-muted); border-radius: var(--radius-pill);
+  font-size: 10px; padding: 2px 7px; font-family: var(--font-body); letter-spacing: 0;
+}
+.panel-body { display: none; padding: 0 14px 16px; }
+.panel.open > .panel-body { display: block; }
+
+.panel-empty {
+  color: var(--ink-faint); font-size: 12px; line-height: 1.55; padding: 10px 2px;
+}
+.panel-empty code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.panel-empty.hidden { display: none; }
+
+.panel-note {
+  color: var(--ink-faint); font-size: 11px; line-height: 1.5; margin-top: 10px;
+}
+.panel-note code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+
+.panel-form { display: flex; gap: 6px; margin-bottom: 10px; }
+.panel-form.stacked { flex-direction: column; margin-top: 10px; }
+.panel-form input {
+  flex: 1; min-width: 0; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink); font-size: 12px; padding: 8px 10px;
+  border-radius: var(--radius-sm); outline: none;
+}
+.panel-form input:focus { border-color: var(--accent-blue); }
+
+.panel-action {
+  width: 100%; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink); font-size: 12px; font-weight: 500; padding: 9px 12px;
+  border-radius: var(--radius-sm); cursor: pointer; margin-top: 10px;
+}
+.panel-action:hover:not(:disabled) { background: var(--surface-3); border-color: var(--accent-blue); }
+.panel-action:disabled { opacity: 0.4; cursor: not-allowed; }
+.panel-action.accent { border-color: rgba(0, 153, 255, 0.4); color: var(--accent-blue); margin-top: 0; }
+.panel-action.accent:hover { background: rgba(0, 153, 255, 0.1); }
+
+/* ---------------- SCREENS PANEL ---------------- */
+.screen-list { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; }
+.screen-row {
+  display: flex; align-items: center; gap: 9px; padding: 6px 7px;
+  border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent;
+}
+.screen-row:hover { background: var(--surface-2); }
+.screen-row.active { background: var(--surface-2); border-color: var(--accent-blue); }
+.screen-row.flagged .screen-row-name { color: var(--accent-red, #f43f5e); }
+.screen-thumb {
+  width: 26px; height: 46px; border-radius: 4px; object-fit: cover; flex-shrink: 0;
+  background: var(--surface-3); border: 1px solid var(--hairline);
+}
+/* An <img> with no src draws the broken-image glyph; the tile should just be empty until
+   its thumbnail has been generated. */
+.screen-thumb:not([src]) { content-visibility: hidden; }
+.screen-row-main { min-width: 0; flex: 1; }
+.screen-row-name {
+  font-size: 12px; color: var(--ink); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis;
+}
+.screen-row-sub { font-size: 10.5px; color: var(--ink-faint); }
+.screen-row-num {
+  font-size: 10px; color: var(--ink-faint); font-variant-numeric: tabular-nums; flex-shrink: 0;
+}
+.screen-section-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint);
+  padding: 10px 2px 4px; font-family: var(--font-display);
+}
 
 input[type="range"] {
   -webkit-appearance: none; appearance: none;
@@ -110,7 +251,6 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* ---------------- GRAPH BODY (graph canvas + right dock + live sidebar) ---------------- */
-.graph-body { flex: 1; min-height: 0; display: flex; position: relative; }
 .graph-wrap { position: relative; flex: 1; min-height: 0; }
 #network {
   width: 100%; height: 100%;
@@ -267,26 +407,11 @@ input[type="range"]::-moz-range-thumb {
 }
 .popover-action:hover { background: var(--surface-3); }
 
-/* ---------------- LIVE PREVIEW SIDEBAR ---------------- */
-.live-sidebar {
-  display: none;
-  position: relative;
-  width: 260px; min-width: 200px; max-width: 520px; border-left: 1px solid var(--hairline);
-  background: var(--surface-1); padding: 16px; flex-direction: column; align-items: center;
-  overflow-y: auto;
-}
-.live-sidebar.open { display: flex; }
-.live-sidebar-head {
-  display: flex; align-items: center; justify-content: space-between; width: 100%;
-  font-size: 13px; font-weight: 500; margin-bottom: 14px;
-}
+/* The separate live-preview sidebar is gone: it polled the same phone the agent rail already
+   shows, so the merged layout had two device previews fighting over one ADB connection. The
+   dock's phone button now reveals the agent rail instead. */
 .icon-x { background: none; border: none; color: var(--ink-muted); cursor: pointer; font-size: 13px; }
 .icon-x:hover { color: var(--ink); }
-
-.live-resize-handle {
-  position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 5;
-}
-.live-resize-handle:hover, .live-resize-handle.dragging { background: rgba(0, 153, 255, 0.3); }
 
 /* ---------------- TOOL CURSOR OVERLAY / SELECTION ---------------- */
 .tool-overlay { position: absolute; inset: 0; z-index: 15; }
@@ -602,6 +727,59 @@ div.vis-tooltip {
 
 .agent-chat-col, .remote-chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
+/* ---------------- RIGHT RAIL: the device block ----------------
+   The phone was a fixed 260x546 in a 320px column of its own. In a resizable rail it has to
+   track the rail's width instead, or it either overflows a narrow rail or strands a wide one.
+   9/19.5 is the aspect ratio of the 1080x2340-ish phones this is pointed at. */
+/* Allowed to shrink, unlike everything else in the rail. When the window is too short for
+   the phone *and* a usable chat, the phone is what gives — it scrolls inside its own block
+   rather than pushing the message box off the bottom of the screen, which is the one thing
+   in this rail that must always be reachable. */
+.phone-block {
+  border-bottom: 1px solid var(--hairline);
+  display: flex; flex-direction: column;
+  flex: 0 1 auto; min-height: 0; overflow: hidden;
+}
+.phone-block-head { flex-shrink: 0; }
+.phone-block-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; cursor: pointer; padding: 11px 14px; color: var(--ink-faint);
+  font-family: var(--font-display); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+.phone-block-head:hover { color: var(--ink); }
+.phone-block.open > .phone-block-head .panel-caret { transform: rotate(90deg); }
+.phone-block-body {
+  display: none; flex-direction: column; align-items: center; gap: 10px; padding: 0 14px 14px;
+}
+.phone-block.open > .phone-block-body { display: flex; }
+
+/* Sized from its *height*, not its width. A phone is far taller than it is wide, so on a
+   short window a width-driven frame is what pushes the chat log to zero height and starts
+   clipping the message box off the bottom. Capping by vh means the phone gives up space
+   first and the conversation stays usable. */
+.rail-right .phone-frame {
+  height: min(44vh, 500px); width: auto; aspect-ratio: 9 / 19.5;
+  max-width: 100%; padding: 8px; border-radius: 26px;
+}
+.rail-right .phone-screen-wrap { border-radius: 19px; }
+.rail-right .agent-meter { font-size: 11px; padding: 8px 10px; }
+.rail-right .phone-actions { gap: 6px; }
+.rail-right .chip-btn { padding: 5px 9px; font-size: 11.5px; }
+.rail-right .chip-toggle { font-size: 11px; }
+
+/* The chat absorbs the leftover height, whatever the phone does — but never below the point
+   where it stops being a conversation. If it comes to that, the device block scrolls. */
+.rail-right .chat-log-wrap { flex: 1; min-height: 120px; position: relative; }
+.rail-right .phone-block-body { overflow-y: auto; }
+.rail-right { overflow: hidden; }
+.rail-right .agent-head { padding: 10px 14px; }
+.rail-right .agent-select { max-width: 100%; flex: 1; }
+.rail-right .agent-model {
+  font-family: var(--font-body); letter-spacing: 0; text-transform: none;
+  font-size: 10.5px; color: var(--ink-faint); font-weight: 400;
+}
+
 .agent-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 12px 18px; border-bottom: 1px solid var(--hairline); background: var(--surface-1);
@@ -754,31 +932,30 @@ div.vis-tooltip {
   padding: 11px 20px; border-radius: var(--radius-md); cursor: pointer;
 }
 .chat-input-row button:hover { background: #e6e6e6; }
-.chat-hint { padding: 0 18px 14px; font-size: 11px; color: var(--ink-faint); }
-.chat-hint code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+/* The hint line under the composer is gone — `/tap 400 800` still works, it just no longer
+   needs a permanent caption explaining itself. */
 
-/* Right rail: modules, findings, credentials */
-.agent-modules-col {
-  width: 272px; min-width: 272px; border-left: 1px solid var(--hairline);
-  background: var(--surface-1); overflow-y: auto; padding: 0 0 20px;
-}
+/* Modules, findings and credentials — now panels in the left rail. */
 .agent-side-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 14px 16px 8px; font-family: var(--font-display); font-size: 11px;
+  padding: 14px 0 8px; font-family: var(--font-display); font-size: 11px;
   text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-faint);
 }
 .agent-count {
   background: var(--surface-3); color: var(--ink-muted); border-radius: var(--radius-pill);
   padding: 1px 8px; font-size: 10.5px;
 }
-.agent-module-list { display: flex; flex-direction: column; gap: 6px; padding: 0 12px; }
+.agent-module-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .agent-module {
   background: var(--surface-2); border: 1px solid var(--hairline);
   border-radius: var(--radius-md); padding: 10px 12px; cursor: pointer;
 }
 .agent-module:hover { border-color: var(--accent-blue); }
 .agent-module.active { border-color: var(--accent-blue); background: rgba(0, 153, 255, 0.08); }
-.agent-module-title { font-size: 12.5px; font-weight: 500; }
+/* The title and its ⋯ button share a row, with the title taking the slack so the button
+   stays pinned right however long the module name is. */
+.agent-module-head { display: flex; align-items: flex-start; gap: 6px; }
+.agent-module-title { font-size: 12.5px; font-weight: 500; flex: 1; min-width: 0; }
 .agent-module-scope { font-size: 11px; color: var(--ink-faint); margin-top: 3px; line-height: 1.4; }
 .agent-module-meta { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 .agent-badge {
@@ -795,60 +972,59 @@ div.vis-tooltip {
 }
 .agent-module-approve:hover { border-color: var(--accent-blue); }
 
-.agent-newmodule { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 0; }
+.agent-newmodule { display: flex; flex-direction: column; gap: 6px; padding: 10px 0 0; }
 .agent-newmodule input {
   background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
   font-size: 12px; padding: 8px 10px; border-radius: var(--radius-sm); outline: none;
 }
 .agent-newmodule input:focus { border-color: var(--accent-blue); }
 
-.agent-findings { display: flex; flex-direction: column; gap: 6px; padding: 0 12px; }
+.agent-findings { display: flex; flex-direction: column; gap: 6px; }
 .agent-finding-row {
   background: var(--surface-2); border: 1px solid rgba(255, 85, 119, 0.25);
   border-radius: var(--radius-sm); padding: 8px 10px; font-size: 11.5px; line-height: 1.4;
 }
+.agent-finding-row { cursor: pointer; }
+.agent-finding-row:hover { border-color: var(--danger); background: var(--surface-3); }
 .agent-finding-row b { color: var(--danger); font-weight: 600; }
-.agent-empty { padding: 4px 16px 8px; font-size: 11px; color: var(--ink-faint); line-height: 1.5; }
-.agent-secret-names { padding: 8px 16px 0; font-size: 11px; color: var(--ink-faint); line-height: 1.6; }
+.agent-empty { padding: 4px 0 8px; font-size: 11px; color: var(--ink-faint); line-height: 1.5; }
+.agent-secret-names { padding: 8px 0 0; font-size: 11px; color: var(--ink-faint); line-height: 1.6; }
 
-@media (max-width: 1200px) {
-  .agent-modules-col { display: none; }
+/* On a narrow window the canvas is the first thing to become unusable, so the rails give way
+   before it does — right first (the agent is reachable again with ]), then left. */
+@media (max-width: 1240px) {
+  .rail-left { width: 250px; }
+  .rail-right { width: 330px; }
+}
+@media (max-width: 1000px) {
+  .rail-right:not(.pinned) { display: none; }
+}
+@media (max-width: 820px) {
+  .rail-left:not(.pinned) { display: none; }
 }
 
-/* ---------------- PROJECTS ---------------- */
-.projects-layout { max-width: 760px; margin: 0 auto; padding: 32px 24px; }
-.projects-header { display: flex; gap: 10px; margin-bottom: 22px; }
-.projects-header input {
-  flex: 1; background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
-  font-size: 13px; padding: 11px 14px; border-radius: var(--radius-md); outline: none;
-}
-.projects-header input:focus { border-color: var(--accent-blue); }
+/* ---------------- PROJECTS (left rail panel) ---------------- */
 .chip-btn.primary {
   background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; font-weight: 600;
 }
 .chip-btn.primary:hover { filter: brightness(1.08); background: var(--accent-blue); }
 .chip-btn.primary:disabled,
-.chip-btn:disabled {
-  opacity: 0.45; cursor: not-allowed; filter: none;
-}
-.projects-save-hint {
-  color: var(--ink-faint); font-size: 12px; line-height: 1.5;
-  margin: -12px 0 20px; max-width: 620px;
-}
-.projects-list { display: flex; flex-direction: column; gap: 10px; }
-.projects-empty { color: var(--ink-faint); font-size: 13px; padding: 24px; text-align: center; }
-.projects-empty.hidden { display: none; }
-.projects-empty code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.chip-btn:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+.projects-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
 .project-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 14px;
-  background: var(--surface-1); border: 1px solid var(--hairline); border-radius: var(--radius-md);
-  padding: 14px 16px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 3px;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  padding: 8px 9px; cursor: pointer;
 }
-.project-row:hover { background: var(--surface-2); border-color: var(--accent-blue); }
-.project-row-main { min-width: 0; }
-.project-row-package { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
-.project-row-meta { font-size: 11.5px; color: var(--ink-faint); margin-top: 3px; }
-.project-row-stats { display: flex; gap: 8px; flex-shrink: 0; }
+.project-row:hover { background: var(--surface-2); }
+.project-row.active { background: var(--surface-2); border-color: var(--accent-blue); }
+.project-row-package {
+  font-size: 12px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.project-row-meta { font-size: 10.5px; color: var(--ink-faint); }
+.project-row-stats { display: flex; gap: 5px; margin-top: 2px; }
+.project-row-stats .stat-pill { font-size: 9.5px; padding: 1px 6px; }
 
 /* ---------------- LOCK / ALERT POPUP ---------------- */
 .lock-popup-backdrop {
@@ -930,4 +1106,164 @@ div.vis-tooltip {
   accent-color: var(--accent-blue);
   cursor: pointer;
   height: 4px;
+}
+
+/* ---------------- SHEETS (new project, module, outcomes) ----------------
+   One dialog treatment for every "stop and fill this in" moment. The old panel forms sat
+   open in the rail permanently, which meant two text inputs and a button competing for
+   attention with the list they were supposed to act on. */
+.sheet-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(3px);
+  display: none; align-items: center; justify-content: center; z-index: 400;
+}
+.sheet-backdrop.open { display: flex; }
+
+.sheet {
+  width: 440px; max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 80px); overflow-y: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-float);
+  padding: 22px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sheet-wide { width: 720px; }
+
+.sheet-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.sheet-close {
+  background: none; border: none; color: var(--ink-faint); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 4px; border-radius: var(--radius-sm);
+}
+.sheet-close:hover { color: var(--ink); background: var(--surface-2); }
+
+.sheet-title {
+  font-family: var(--font-display); font-weight: 600; font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.sheet-sub { font-size: 12.5px; color: var(--ink-faint); line-height: 1.5; }
+.sheet-label {
+  font-size: 11px; font-weight: 600; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-top: 6px;
+}
+.sheet-input {
+  width: 100%; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink); border-radius: var(--radius-sm); padding: 9px 11px;
+  font-family: var(--font-body); font-size: 13px; resize: vertical;
+}
+.sheet-input:focus { outline: none; border-color: var(--accent-blue); }
+.sheet-row { display: flex; gap: 8px; align-items: center; }
+.sheet-row .sheet-input { flex: 1; min-width: 0; }
+.sheet-note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.5; }
+.sheet-note.error { color: var(--danger); }
+.sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+/* ---------------- OUTCOMES (Working / Warnings / Bugs / Suggestions) ---------------- */
+.outcome-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: var(--radius-pill);
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink-muted); font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: var(--font-body);
+}
+.outcome-pill:hover { color: var(--ink); border-color: var(--ink-faint); }
+.outcome-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+/* Colour only once there is something to look at. A permanently red Bugs pill on a project
+   with no bugs trains you to ignore the colour. */
+.outcome-pill.has-items { color: var(--ink); }
+.outcome-pill.kind-pass.has-items { color: var(--success); border-color: rgba(34, 197, 94, 0.4); }
+.outcome-pill.kind-warning.has-items { color: var(--accent-orange); border-color: rgba(255, 122, 61, 0.4); }
+.outcome-pill.kind-bug.has-items { color: var(--danger); border-color: rgba(255, 85, 119, 0.4); }
+.outcome-pill.kind-suggestion.has-items { color: var(--accent-blue); border-color: rgba(0, 153, 255, 0.4); }
+.outcome-pill .count { font-variant-numeric: tabular-nums; }
+
+.outcome-list { display: flex; flex-direction: column; gap: 18px; margin-top: 6px; }
+.outcome-module-title {
+  font-size: 11px; font-weight: 700; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: 0.07em;
+  padding-bottom: 6px; border-bottom: 1px solid var(--hairline);
+}
+.outcome-item {
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); padding: 11px 13px; margin-top: 8px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.outcome-item-head { display: flex; align-items: baseline; gap: 8px; }
+.outcome-item-id { font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.outcome-item-title { font-size: 13px; font-weight: 600; flex: 1; }
+.outcome-item-sev {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--ink-faint);
+}
+.outcome-item-row { font-size: 12px; color: var(--ink-muted); line-height: 1.5; }
+.outcome-item-row b { color: var(--ink-faint); font-weight: 600; }
+.outcome-item img {
+  max-width: 130px; border-radius: var(--radius-sm); border: 1px solid var(--hairline);
+  cursor: zoom-in; margin-top: 4px;
+}
+.outcome-empty { font-size: 12.5px; color: var(--ink-faint); padding: 18px 0; }
+
+/* ---------------- MODULE ROW MENU ---------------- */
+.module-row-menu {
+  opacity: 0; background: none; border: none; color: var(--ink-faint);
+  cursor: pointer; padding: 2px 5px; border-radius: var(--radius-sm);
+  font-size: 15px; line-height: 1; flex-shrink: 0;
+}
+.agent-module:hover .module-row-menu,
+.module-row-menu.open { opacity: 1; }
+.module-row-menu:hover { color: var(--ink); background: var(--surface-3); }
+
+.module-menu {
+  position: fixed; z-index: 420; min-width: 150px;
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); box-shadow: var(--elevation-float);
+  padding: 5px; display: flex; flex-direction: column;
+}
+.module-menu button {
+  background: none; border: none; color: var(--ink); text-align: left;
+  padding: 7px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 12.5px; font-family: var(--font-body);
+}
+.module-menu button:hover { background: var(--surface-2); }
+.module-menu button.danger { color: var(--danger); }
+
+/* ---------------- TOP BAR DEVICE ---------------- */
+.device-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: var(--radius-pill);
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  font-size: 12px; color: var(--ink-muted); max-width: 210px;
+}
+.device-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); flex-shrink: 0; }
+.device-pill.online { color: var(--ink); }
+.device-pill.online .dot { background: var(--success); }
+.device-pill .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------- CHAT ATTACHMENTS ---------------- */
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 6px; }
+.chat-attachment {
+  position: relative; width: 52px; height: 52px; border-radius: var(--radius-sm);
+  overflow: hidden; border: 1px solid var(--hairline);
+}
+.chat-attachment img { width: 100%; height: 100%; object-fit: cover; }
+.chat-attachment button {
+  position: absolute; top: 1px; right: 1px; width: 16px; height: 16px;
+  border-radius: 50%; border: none; background: rgba(0, 0, 0, 0.75);
+  color: #fff; font-size: 10px; line-height: 1; cursor: pointer; padding: 0;
+}
+/* Scoped to the row on purpose: `.chat-input-row button` above styles every button in there
+   as the solid white Send button, and it out-specifies a bare class — so an unqualified
+   `.chat-attach-btn` rule loses and the attach control renders as a second Send. */
+.chat-input-row .chat-attach-btn {
+  background: none; border: 1px solid var(--hairline); color: var(--ink-faint);
+  border-radius: var(--radius-md); cursor: pointer; padding: 0 12px;
+  font-size: 17px; line-height: 1; font-weight: 400; align-self: stretch;
+}
+.chat-input-row .chat-attach-btn:hover {
+  background: var(--surface-2); color: var(--ink); border-color: var(--ink-faint);
+}
+.chat-msg img.chat-msg-image {
+  max-width: 160px; border-radius: var(--radius-sm);
+  border: 1px solid var(--hairline); margin-top: 6px; cursor: zoom-in; display: block;
 }

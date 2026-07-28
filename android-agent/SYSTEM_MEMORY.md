@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **0** · last updated: 2026-07-27T13:23:31+00:00
+Runs recorded: **0** · last updated: 2026-07-28T04:12:52+00:00
 
 ## Environment
 
@@ -19,14 +19,18 @@ Runs recorded: **0** · last updated: 2026-07-27T13:23:31+00:00
 
 ## Operating lessons
 
-- **ui-never-settled** (seen twice) — The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app.
-  - _evidence:_ waited 13s for com.google.android.calculator with no readable dump
+- **ui-never-settled** (confirmed) — The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app.
+  - _evidence:_ waited 0s for com.example.app with no readable dump
 - **agent-ask-user-parks-until-answered** (seen once) — The chat agent's ask_user tool parks the run on a future until the browser answers. Driving the agent from a bare script therefore looks exactly like a hang, and with block-buffered stdout there is no output at all. Run such scripts with python -u, and read the chat.jsonl transcript to see what the agent actually did.
   - _evidence:_ a locked-device run sat with 0.8s CPU and an empty output file; the transcript showed it had correctly asked the user to unlock the phone
 - **appbar-shares-label-with-primary-button** (seen once) — The app bar often carries the same accessibility label as the screen primary button, so a first-match label lookup taps the back header and navigates away. Constrain body taps below the app-bar band, and never use a button label as a screen-identity marker.
   - _evidence:_ desc=Login matched both the back header and the submit button on the same screen
 - **back-up-the-project-blob-before-ui-work** (seen once) — The project blob carries the whole board (screens, notes, layout) and is several MB. Snapshot it to disk before doing anything that opens a second dashboard tab or rewrites notes.
   - _evidence:_ a 5.9MB blob with 23 notes was backed up before UI changes and made the work reversible
+- **board-owner-is-the-run-target-not-the-screen** (seen once) — The package on screen is not the project a board belongs to. A run wanders out of its own app constantly (Play Store, browser, permissioncontroller), so anything that decides 'which project does this belong to' must key off the run's target package, never the current frame's. Conflating them destroyed four saved boards and scattered screenshots into projects for apps that were only passed through.
+  - _evidence:_ youtube/flow-graph.json held 39 Metaesthetics screens; chrome held deskclock's; keep held the Play Store's; vending and gms existed as projects at all
+- **chat-input-row-button-outspecifies-a-bare-class** (seen once) — `.chat-input-row button` (0,1,1) beats a bare `.chat-attach-btn` (0,1,0) however far down the file the class sits, so a new button added to an existing styled row silently inherits the row's primary-button look. Scope new rules to the container.
+  - _evidence:_ the chat attach button rendered as a second solid white Send button
 - **dashboard-hidden-tab-freezes-overlay** (seen once) — requestAnimationFrame is throttled in a hidden browser tab, so the dashboard overlay (cards, notes, selection) stops repainting while the underlying data stays correct. A board that looks empty in a background tab is a rendering artefact -- verify against the server before debugging the UI.
   - _evidence:_ notes and selection state were correct on the server while the hidden tab showed none
 - **dashboard-stale-tab-clobbers-project** (seen once) — Two dashboard tabs open on one project is data loss: a tab that loaded before annotations restored will autosave a note-less blob over the good one, and the stale tab wins. Keep one tab per project.
@@ -39,13 +43,19 @@ Runs recorded: **0** · last updated: 2026-07-27T13:23:31+00:00
   - _evidence:_ the calculator's = key was missing from the agent's element list and had to be located by eye from a screenshot
 - **hard-reload-after-editing-static-assets** (seen once) — dashboard.js and dashboard.css are served with a cache-busting query and still get served from cache. After editing either, hard-reload (ctrl+shift+R) before concluding a change did not work.
   - _evidence:_ a verified-correct fix appeared to do nothing until a hard reload
+- **interrupt-does-not-cancel-the-tool-in-flight** (seen once) — ClaudeSDKClient.interrupt() ends the turn only after the tool in flight returns, so a Stop pressed during a long poll (wait_for_ui up to 120s, wait_for_text, wait_until_gone) lands minutes later and reads as a dead button. A real stop needs a threading.Event the blocking loops poll, cleared at the start of the next turn or every later tool returns 'stopped' immediately.
+  - _evidence:_ Stop appeared to do nothing while the agent kept tapping through a settle wait
 - **launch-succeeded-but-launcher-still-showing** (seen once) — A launch that reports success but leaves the launcher on screen usually means the package is not installed, not that the app refused to start. Check `pm list packages <pkg>` before suspecting the app; on OEM ROMs the vendor app often owns the name you expect.
   - _evidence:_ two launches of com.google.android.calculator reported success on a Samsung S21 where only com.sec.android.app.popupcalculator is installed
+- **patching-a-constant-that-is-no-longer-read** (seen once) — When a module stops computing a path and starts asking a helper for it, every test that monkeypatched the old constant keeps passing while writing to the real location. The failure is invisible on the first run and shows up on the second as leftover state. After moving a path lookup behind an indirection, grep for monkeypatch of the old name and check the real folder for new files.
+  - _evidence:_ test_store and test_finding_guards patched store.PROJECTS_DIR after project_dir began delegating to project_paths; the suite wrote a com.example.app project into the live projects folder and still reported all green
 - **reactive-validation-defeats-diffs** (seen once) — Forms that validate while you type already show their error before the submit tap, so a before/after text diff around the tap finds nothing. Baseline the pristine screen on arrival and diff against that, excluding input field values.
   - _evidence:_ five validation checks reported blocked-but-silent against a screen that was showing a specific message
 - **screenshot-before-believing-a-dump** (seen once) — Before reporting anything negative derived from a UI dump, capture a screenshot. Every false defect this harness has produced was a dump misread, not an app fault.
   - _evidence:_ four separate dump misreads each presented as a confident defect
 - **server-needs-a-real-restart** (seen once) — server.py runs with reload=False, and a stale process keeps holding port 8000 while the new one fails to bind -- so edits appear to have no effect. Check who owns the port before debugging the code.
   - _evidence:_ documented in the repo troubleshooting notes and re-confirmed in use
+- **sibling-rails-need-a-stacking-context-not-a-bigger-z-index** (seen once) — Canvas overlays painted over both sidebars because .canvas-col and .rail are siblings and neither created a stacking context, so the canvas's inner z-indexes (up to 28) competed directly with the rails' auto. `isolation: isolate` on the canvas column is the durable fix; raising the rails' z-index alone only holds until a new canvas layer picks a higher number.
+  - _evidence:_ notes and screenshots painted over both rails; elementFromPoint inside each rail returned a canvas layer
 - **system-dialogs-are-invisible-to-package-filters** (seen once) — Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing.
   - _evidence:_ a notification-permission prompt after a data wipe made the app dump look empty

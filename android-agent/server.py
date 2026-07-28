@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import json
 import logging
 import re
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,7 +20,9 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import adb_device
 import config
+import project_paths
 from agent import runtime as agent_runtime
 from agent import store as agent_store
 
@@ -28,7 +32,9 @@ logger = logging.getLogger("server")
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
-PROJECTS_DIR = BASE_DIR / "projects"
+# Only the *default* home for projects now — one that has been pointed at a folder elsewhere
+# lives wherever the registry says. Ask project_paths, never build a path from this.
+PROJECTS_DIR = project_paths.DEFAULT_PROJECTS_DIR
 
 app = FastAPI(title="Android App Testing Agent — Telemetry Server")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -44,9 +50,41 @@ async def log_validation_errors(request: Request, exc: RequestValidationError):
 # In-memory stores
 # --------------------------------------------------------------------------------------
 state_store: dict[str, dict[str, Any]] = {}
-telemetry_history: list[dict[str, Any]] = []
+# Bounded: this is replayed in full to every browser that connects, and it is the one
+# structure that grows without limit for as long as the server is up.
+telemetry_history: deque[dict[str, Any]] = deque(maxlen=config.TELEMETRY_HISTORY_LIMIT)
 latest_state: dict[str, Any] | None = None
 _device_cache: dict[str, Any] = {}
+
+
+def _history_for_replay() -> list[dict[str, Any]]:
+    """The history a newly-connected browser needs, with each screenshot sent once.
+
+    In memory a revisit is cheap — the backfill above assigns the *same* base64 string
+    object, so RAM holds one copy per capture. Serialising to JSON discards that sharing
+    entirely: a screen visited forty times would put forty full copies of its JPEG on the
+    wire, and the replay is exactly when a long session is most likely to stall the browser.
+
+    Sending it on first sight only is enough, because the dashboard's `ingest()` already
+    falls back to the screenshot it has for that state (see `existingMeta.screenshot`).
+    """
+    seen: set[str] = set()
+    items: list[dict[str, Any]] = []
+    for record in telemetry_history:
+        state_hash = record.get("state_hash", "")
+        if state_hash in seen:
+            if record.get("screenshot_b64"):
+                record = {**record, "screenshot_b64": ""}
+        else:
+            seen.add(state_hash)
+            if not record.get("screenshot_b64"):
+                # First appearance in the replay, but the image arrived on a later post —
+                # take it from the state store so the node is not left blank.
+                known = state_store.get(state_hash) or {}
+                if known.get("screenshot_b64"):
+                    record = {**record, "screenshot_b64": known["screenshot_b64"]}
+        items.append(record)
+    return items
 
 # --------------------------------------------------------------------------------------
 # Projects: one local folder per app package (projects/<package>/), auto-populated as
@@ -55,12 +93,14 @@ _device_cache: dict[str, Any] = {}
 # flow-graph.json (the same "project blob" shape the dashboard already builds for its
 # manual Save/Import feature — see static/dashboard.js's saveBtn handler and loadProject()).
 # --------------------------------------------------------------------------------------
-def _safe_package_name(package: str) -> str:
-    return "".join(c if (c.isalnum() or c in ".-_") else "_" for c in package) or "unknown"
+# Both of these now defer to project_paths, which is the one place that knows a project may
+# have been pointed at a folder outside this repo. Kept as thin aliases because they are
+# called from a dozen places in this file and in the tests.
+_safe_package_name = project_paths.safe_package_name
 
 
 def _project_dir(package: str) -> Path:
-    return PROJECTS_DIR / _safe_package_name(package)
+    return project_paths.project_dir(package)
 
 
 def _screenshots_dir(package: str) -> Path:
@@ -127,6 +167,9 @@ def _save_screenshot_if_new(package: str, state_hash: str, screenshot_b64: str) 
 
 class ProjectCreatePayload(BaseModel):
     package: str
+    # Where to put the project folder. Absent means the default `projects/<package>/`, which
+    # is what telemetry from a bare `run_agent.py` still creates.
+    root: Optional[str] = None
 
 
 # --------------------------------------------------------------------------------------
@@ -226,6 +269,12 @@ class TelemetryPayload(BaseModel):
     session_id: str
     device_serial: Optional[str] = None
     package_name: str
+    # The app the run was pointed at. `package_name` is only whatever was on screen when the
+    # frame was captured, and a run wanders out of its own app constantly — into the Play
+    # Store, a browser, the permission controller. Filing by `package_name` is what scattered
+    # screenshots into `com.android.vending` and `com.google.android.gms` folders and wrote a
+    # deskclock board into Chrome's project. Optional so older clients still post.
+    target_package: Optional[str] = None
     activity_name: str = ""
     state_hash: str
     parent_state_hash: Optional[str] = None
@@ -300,6 +349,28 @@ class AgentMessagePayload(BaseModel):
     device_serial: Optional[str] = None
 
 
+class AttachmentPayload(BaseModel):
+    """A reference image pasted or picked in the chat, as a base64 data URL."""
+    data_url: str
+
+
+class ModelPayload(BaseModel):
+    """Which Claude model a module's session should run on. None means the CLI default."""
+    model: Optional[str] = None
+
+
+class AgentTriggerPayload(BaseModel):
+    """For endpoints that start something rather than say something: /warm and /recon.
+
+    They used to share `AgentMessagePayload`, whose `text` is required — so the `{}` the
+    dashboard posts failed validation and both endpoints answered 422. Pre-warming swallowed
+    it (it is an optimisation, and the client catches), which meant the advertised "your
+    first message does not wait for the CLI to spawn" quietly never happened; Recon surfaced
+    it as an error instead. Declaring what these actually accept fixes both.
+    """
+    device_serial: Optional[str] = None
+
+
 class SubprojectPayload(BaseModel):
     title: str
     scope: str = ""
@@ -363,10 +434,14 @@ async def post_telemetry(payload: TelemetryPayload):
             "label": action_label or ("next" if payload.step_label else "?"),
         })
 
-    if payload.package_name:
-        _ensure_project(payload.package_name)
-        _write_meta(payload.package_name, last_run_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-        _save_screenshot_if_new(payload.package_name, payload.state_hash, payload.screenshot_b64)
+    # Everything that says "this belongs to project X" keys off the run's target, so a
+    # screen the run merely passed through no longer creates a project of its own.
+    owner = payload.target_package or payload.package_name
+    record["target_package"] = owner
+    if owner:
+        _ensure_project(owner)
+        _write_meta(owner, last_run_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        _save_screenshot_if_new(owner, payload.state_hash, payload.screenshot_b64)
 
     logger.info(
         "telemetry: pkg=%s state=%s..%s (#%d %s) elements=%d action=%s",
@@ -401,16 +476,18 @@ async def clear_state():
 
 @app.get("/projects")
 async def list_projects():
-    """All known projects (one per app package tested), newest-run-first."""
-    if not PROJECTS_DIR.is_dir():
-        return []
+    """All known projects (one per app package tested), newest-run-first.
+
+    Enumerated by package rather than by walking one directory, because a project may have
+    been pointed at a folder anywhere on disk. Each entry carries its root so the UI can show
+    where it actually lives.
+    """
     projects = []
-    for entry in PROJECTS_DIR.iterdir():
-        if not entry.is_dir():
+    for package in project_paths.known_packages():
+        meta = _read_meta(package)
+        if meta is None:
             continue
-        meta = _read_meta(entry.name)
-        if meta is not None:
-            projects.append(meta)
+        projects.append({**meta, **project_paths.describe(package)})
     projects.sort(key=lambda m: m.get("last_run_at") or "", reverse=True)
     return projects
 
@@ -418,10 +495,66 @@ async def list_projects():
 @app.post("/projects")
 async def create_project(payload: ProjectCreatePayload):
     """Idempotent: returns the existing project's meta if it's already there."""
-    if not payload.package.strip():
+    package = payload.package.strip()
+    if not package:
         raise HTTPException(status_code=400, detail="package is required")
-    meta = _write_meta(payload.package)
-    return meta
+    if payload.root:
+        # Registered before the meta is written, so `_write_meta` creates the folder in the
+        # chosen place rather than making one under projects/ and leaving it orphaned.
+        existing = project_paths.registered_root(package)
+        if existing and Path(existing).resolve() != Path(payload.root).expanduser().resolve() \
+                and _meta_path(package).is_file():
+            raise HTTPException(
+                status_code=409,
+                detail=f"{package} already lives in {existing}. Move or delete that folder "
+                       f"first if you want it somewhere else.")
+        project_paths.register(package, payload.root)
+    meta = _write_meta(package)
+    return {**meta, **project_paths.describe(package)}
+
+
+@app.post("/ui/pick-folder")
+async def pick_folder():
+    """Open the machine's own folder dialog and return what was chosen.
+
+    A web page cannot hand the server a filesystem path: Chrome's directory picker yields a
+    sandboxed handle that only JavaScript can read, and it is this process — not the browser —
+    that writes screenshots, transcripts and findings. Since the server and the browser are
+    the same machine here, the honest way to get a real path is to open a real dialog.
+
+    Tk must own a thread with no event loop running on it, so this goes through a worker
+    rather than the request's thread. `topmost` is not decoration: without it the dialog opens
+    *behind* the browser window and the click looks like it did nothing at all.
+    """
+    def _ask() -> Optional[str]:
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except ImportError as exc:  # a Python built without Tk
+            raise HTTPException(
+                status_code=501,
+                detail="This Python has no tkinter, so the folder dialog cannot open. Type the "
+                       "folder path instead.") from exc
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            chosen = filedialog.askdirectory(title="Choose a folder for this project",
+                                             mustexist=False)
+        finally:
+            root.destroy()
+        return chosen or None
+
+    try:
+        chosen = await asyncio.to_thread(_ask)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any Tk failure should read as "type it instead"
+        logger.warning("folder dialog failed: %s", exc)
+        raise HTTPException(status_code=500,
+                            detail=f"Could not open the folder dialog: {exc}") from exc
+    # Cancelling is a normal outcome, not an error — the UI just leaves the field alone.
+    return {"path": chosen, "cancelled": chosen is None}
 
 
 @app.get("/projects/{package}/flow-graph")
@@ -437,6 +570,19 @@ async def get_project_flow_graph(package: str):
 
 @app.post("/projects/{package}/flow-graph")
 async def save_project_flow_graph(package: str, payload: dict):
+    # The board carries the project it was loaded from. If that disagrees with the URL, the
+    # browser is about to write one app's board over another's file — which is exactly how
+    # the YouTube, Chrome and Keep boards were destroyed: autosave fired with a stale
+    # `currentPackage` after a project switch, and the server took it without question.
+    # Refuse rather than accept a save that is provably about to lose data.
+    claimed = payload.get("package")
+    if claimed and claimed != package:
+        logger.warning("refused flow-graph save: board belongs to %s, URL said %s",
+                       claimed, package)
+        raise HTTPException(
+            status_code=409,
+            detail=f"This board belongs to {claimed}, not {package}. Refusing to overwrite "
+                   f"{package}'s saved board with it.")
     try:
         _project_dir(package).mkdir(parents=True, exist_ok=True)
         _flow_graph_path(package).write_text(json.dumps(payload), encoding="utf-8")
@@ -592,7 +738,7 @@ async def agent_status():
 
 
 @app.post("/agent/{package}/{slug}/warm")
-async def warm_agent(package: str, slug: str, payload: AgentMessagePayload | None = None):
+async def warm_agent(package: str, slug: str, payload: AgentTriggerPayload | None = None):
     """Spawn the module's Claude Code session now, without sending it anything.
 
     Called on startup for the last-used module and again whenever you select one in the UI, so
@@ -674,10 +820,49 @@ async def post_message(package: str, slug: str, payload: AgentMessagePayload):
     return {"ok": True, "accepted": True}
 
 
+@app.post("/agent/{package}/{slug}/attachment")
+async def upload_attachment(package: str, slug: str, payload: AttachmentPayload):
+    """Store an image the user attached to a chat message, and return its path.
+
+    Written into the module's own `shots/` folder alongside the agent's own screenshots, and
+    handed to the agent as a *path* rather than inlined into the message. The agent already
+    has `Read`, and reading an image file is how it looks at its own evidence — so a reference
+    image arrives through the same door, and the transcript stays text.
+    """
+    if agent_store.get_subproject(package, slug) is None:
+        raise HTTPException(status_code=404, detail="Unknown sub-project")
+
+    raw = payload.data_url
+    match = re.fullmatch(r"data:image/(png|jpeg|jpg|webp|gif);base64,(.+)", raw, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=400,
+                            detail="Expected a base64 image data URL (png, jpeg, webp or gif)")
+    ext = "jpg" if match.group(1) in ("jpeg", "jpg") else match.group(1)
+    try:
+        blob = base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode the image: {exc}") from exc
+    if len(blob) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image is larger than 12 MB")
+
+    shots = agent_store.shots_dir(package, slug)
+    shots.mkdir(parents=True, exist_ok=True)
+    # Timestamped and counted: two images attached in the same second must not collide, and a
+    # name derived from the user's filename would let a crafted one escape the folder.
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    existing = len(list(shots.glob(f"ref-{stamp}-*")))
+    path = shots / f"ref-{stamp}-{existing + 1:02d}.{ext}"
+    try:
+        path.write_bytes(blob)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not save the image: {exc}") from exc
+    return {"ok": True, "path": str(path)}
+
+
 @app.post("/agent/{package}/recon")
-async def start_recon(package: str, payload: AgentMessagePayload | None = None):
+async def start_recon(package: str, payload: AgentTriggerPayload | None = None):
     """Kick off the recon pass that proposes the module breakdown for a new project."""
-    from agent.prompts import RECON_PROMPT
+    from agent.prompts import recon_prompt
 
     agent_store.create_subproject(package, "Recon", "map the app and propose modules",
                                   status="approved")
@@ -685,22 +870,103 @@ async def start_recon(package: str, payload: AgentMessagePayload | None = None):
     serial = (payload.device_serial if payload else None) or \
         (latest_state or {}).get("device_serial")
     session = agent_sessions.get(package, "recon", serial=serial)
-    asyncio.create_task(session.send(RECON_PROMPT))
+    asyncio.create_task(session.send(recon_prompt()))
     return {"ok": True, "slug": "recon"}
+
+
+@app.post("/agent/{package}/onboarding")
+async def start_onboarding(package: str, payload: AgentTriggerPayload | None = None):
+    """Start the new-project interview: goals, then permission, then recon, then a proposal.
+
+    Runs in its own module so the interview has somewhere to live. It is a real conversation
+    worth keeping — what the user said they cared about is the context every later module
+    should be read against.
+    """
+    from agent.prompts import onboarding_prompt
+
+    agent_store.create_subproject(
+        package, "Onboarding",
+        "what the user wants from this app, and the module breakdown that follows from it",
+        status="approved")
+    _ensure_project(package)
+    serial = (payload.device_serial if payload else None) or \
+        (latest_state or {}).get("device_serial")
+    session = agent_sessions.get(package, "onboarding", serial=serial)
+    asyncio.create_task(session.send(onboarding_prompt(package)))
+    return {"ok": True, "slug": "onboarding"}
 
 
 @app.post("/agent/{package}/{slug}/stop")
 async def stop_agent(package: str, slug: str):
     session = agent_sessions.peek(package, slug)
     if session is None:
-        raise HTTPException(status_code=404, detail="No live session for this sub-project")
+        # Nothing running is the outcome Stop was asking for, so this is success rather than
+        # a 404 the UI has to explain. The old 404 is why pressing Stop on an idle module
+        # printed an error and looked like the button was broken.
+        return {"ok": True, "stopped": False, "note": "Nothing was running."}
     stopped = await session.interrupt()
     return {"ok": True, "stopped": stopped}
+
+
+@app.get("/agent/{package}/{slug}/models")
+async def list_models(package: str, slug: str):
+    """Models this CLI can run, and which one this module is on.
+
+    Read from the live session rather than hardcoded, so the list is whatever the installed
+    CLI and the signed-in subscription actually offer.
+    """
+    session = agent_sessions.peek(package, slug)
+    if session is None:
+        return {"models": [], "current": None, "requested": None}
+    return {"models": session.available_models,
+            "current": session.model,
+            "requested": session.requested_model}
+
+
+@app.post("/agent/{package}/{slug}/model")
+async def set_model(package: str, slug: str, payload: ModelPayload):
+    """Move a module onto a different model. Reconnects, resuming the conversation."""
+    if agent_store.get_subproject(package, slug) is None:
+        raise HTTPException(status_code=404, detail="Unknown sub-project")
+    session = agent_sessions.get(package, slug)
+    try:
+        return await session.set_model(payload.model)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/agent/{package}/{slug}/findings")
 async def get_findings(package: str, slug: str):
     return agent_store.list_findings(package, slug)
+
+
+@app.get("/projects/{package}/outcomes")
+async def project_outcomes(package: str):
+    """Every outcome across every module, bucketed by kind then module.
+
+    Grouping happens here rather than in the browser so the counts on the top-bar pills and
+    the contents of the popups can never disagree — they are the same traversal.
+    """
+    buckets: dict[str, dict[str, Any]] = {
+        kind: {"kind": kind, "total": 0, "modules": {}}
+        for kind in agent_store.FINDING_KINDS
+    }
+    for finding in agent_store.list_all_findings(package):
+        bucket = buckets[finding["kind"]]
+        module = bucket["modules"].setdefault(
+            finding["module_slug"],
+            {"slug": finding["module_slug"], "title": finding["module_title"], "items": []})
+        module["items"].append(finding)
+        bucket["total"] += 1
+    return {
+        "package": package,
+        "counts": {kind: buckets[kind]["total"] for kind in agent_store.FINDING_KINDS},
+        "buckets": {kind: {"total": buckets[kind]["total"],
+                           "modules": list(buckets[kind]["modules"].values())}
+                    for kind in agent_store.FINDING_KINDS},
+    }
 
 
 @app.post("/agent/{package}/secrets")
@@ -722,17 +988,53 @@ async def list_secrets(package: str):
 async def get_shot(path: str):
     """Serve a screenshot the agent captured, for the chat thumbnails.
 
-    Confined to the projects/ tree: `path` arrives from the browser, so it is resolved and
-    checked before being opened rather than trusted.
+    `path` arrives from the browser, so it is resolved and checked against the set of known
+    project roots before being opened rather than trusted. The check is a whitelist of roots
+    rather than one fixed tree because a project may now live anywhere the user pointed it —
+    but "anywhere the user pointed it" is still a closed set, not "anywhere on disk".
     """
     try:
         resolved = Path(path).resolve()
-        root = agent_store.PROJECTS_DIR.resolve()
-        if not resolved.is_relative_to(root) or not resolved.is_file():
+        roots = [project_paths.DEFAULT_PROJECTS_DIR.resolve()]
+        for package in project_paths.known_packages():
+            with contextlib.suppress(OSError, ValueError):
+                roots.append(project_paths.project_dir(package).resolve())
+        if not any(resolved.is_relative_to(r) for r in roots) or not resolved.is_file():
             raise HTTPException(status_code=404, detail="Not an agent screenshot")
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"Bad path: {exc}") from exc
     return FileResponse(resolved, media_type="image/jpeg")
+
+
+_device_info_cache: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+@app.get("/device/info")
+async def device_info():
+    """Which phone is attached, for the top bar.
+
+    Cached for a few seconds because the dashboard polls this and every miss shells out to
+    adb twice. The serial the *run* is using wins over the first one adb lists: with two
+    devices attached, naming the wrong one in the chrome is worse than naming none.
+    """
+    now = time.monotonic()
+    if _device_info_cache["value"] is not None and now - _device_info_cache["at"] < 5:
+        return _device_info_cache["value"]
+
+    def _probe() -> dict[str, Any]:
+        try:
+            serials = adb_device.list_serials()
+        except adb_device.DeviceError as exc:
+            return {"serial": None, "label": None, "count": 0, "error": str(exc)}
+        if not serials:
+            return {"serial": None, "label": None, "count": 0}
+        active = (latest_state or {}).get("device_serial")
+        serial = active if active in serials else serials[0]
+        return {**adb_device.describe_serial(serial), "count": len(serials)}
+
+    info = await asyncio.to_thread(_probe)
+    _device_info_cache.update({"at": now, "value": info})
+    return info
 
 
 @app.get("/device/frame")
@@ -788,7 +1090,7 @@ async def _close_agent_sessions() -> None:
 async def ws_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        await websocket.send_json({"type": "history", "items": telemetry_history})
+        await websocket.send_json({"type": "history", "items": _history_for_replay()})
         while True:
             # Dashboard doesn't need to send anything up this channel; just keep the
             # connection alive and drain any pings/keepalive frames the client sends.

@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA Tester AI — Flow &amp; Agent</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<link rel="stylesheet" href="/static/dashboard.css?v=20">
+</head>
+<body>
+
+<!--
+  One workspace, not three tabs.
+
+  The three views used to hide each other, which meant the two things you actually do
+  together — watch the flow graph and talk to the agent driving it — could never be on
+  screen at once, and picking a project meant leaving the graph to find it. The layout is
+  now: everything you *choose from* on the left, the thing you *look at* in the middle,
+  the thing you *talk to* on the right. Both rails collapse ([ and ]) when the canvas
+  needs the room.
+-->
+<div class="shell">
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="rail-toggle" id="toggleLeftBtn" title="Toggle the left rail  ([)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="9" y1="4" x2="9" y2="20"></line></svg>
+      </button>
+      <div class="brand">
+        <span class="brand-mark"></span>
+        QA Tester AI
+      </div>
+      <div class="divider"></div>
+      <!-- The open project, and the only place it is named in the chrome. Clicking it
+           opens the Projects panel rather than being a second, competing switcher. -->
+      <button class="project-pill" id="projectPill" title="Open the Projects panel">
+        <span class="project-pill-dot"></span>
+        <span id="projectPillName">No project open</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      </button>
+
+      <!--
+        The whole project's verdict, at a glance, gathered across every module. Each opens a
+        popup grouped by module. They sit next to the project pill because that is what they
+        describe: this project, not the module currently selected on the right.
+      -->
+      <div class="divider"></div>
+      <button class="outcome-pill kind-pass" id="outcomePass" data-kind="pass" title="Cases the agent checked and found working">
+        <span class="dot"></span> Working <span class="count" id="countPass">0</span>
+      </button>
+      <button class="outcome-pill kind-warning" id="outcomeWarning" data-kind="warning" title="Things that work but are questionable">
+        <span class="dot"></span> Warnings <span class="count" id="countWarning">0</span>
+      </button>
+      <button class="outcome-pill kind-bug" id="outcomeBug" data-kind="bug" title="Confirmed defects">
+        <span class="dot"></span> Bugs <span class="count" id="countBug">0</span>
+      </button>
+      <button class="outcome-pill kind-suggestion" id="outcomeSuggestion" data-kind="suggestion" title="Where the app could be improved">
+        <span class="dot"></span> Suggestions <span class="count" id="countSuggestion">0</span>
+      </button>
+    </div>
+
+    <div class="topbar-right">
+      <div class="stat-pill" id="statNodes">0 states</div>
+      <div class="stat-pill" id="statEdges">0 transitions</div>
+      <!-- Moved off the meter box under the phone: auth is the difference between spending
+           the subscription and being billed per token, and taps·shots is how much of a run
+           has actually happened. Both belong where they are visible without opening a rail. -->
+      <div class="stat-pill" id="statAuth" title="How the Claude Code CLI is authenticated">auth —</div>
+      <div class="stat-pill" id="statActions" title="Taps and screenshots this session">0 taps · 0 shots</div>
+      <div class="device-pill" id="devicePill" title="Connected device">
+        <span class="dot"></span>
+        <span class="name" id="deviceName">No device</span>
+      </div>
+      <button class="rail-toggle" id="toggleRightBtn" title="Toggle the agent rail  (])">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="15" y1="4" x2="15" y2="20"></line></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- STATUS BANNER (preflight checks / progress) -->
+  <div class="status-banner" id="statusBanner">
+    <span class="status-dot"></span>
+    <span id="statusMessage"></span>
+  </div>
+
+  <div class="workspace" id="workspace">
+
+    <!-- ==================== LEFT RAIL — what you choose from ==================== -->
+    <aside class="rail rail-left" id="leftSidebar">
+
+      <!-- PROJECTS -->
+      <section class="panel open" data-panel="projects">
+        <button class="panel-head" type="button">
+          <svg class="panel-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <span class="panel-title">Projects</span>
+          <span class="panel-count" id="projectCount">0</span>
+        </button>
+        <div class="panel-body">
+          <button class="panel-action accent" id="newProjectBtn">+ New project</button>
+          <div class="projects-list" id="projectsList">
+            <div class="panel-empty" id="projectsEmpty">No projects yet. Press <b>New project</b>, or one appears automatically the first time you run <code>run_agent.py --package &lt;pkg&gt;</code>.</div>
+          </div>
+          <button class="panel-action" id="saveProjectBtn" disabled>Save this board</button>
+          <button class="panel-action" id="loadProjectBtn">Load project…</button>
+        </div>
+      </section>
+
+      <!-- MODULES -->
+      <section class="panel open" data-panel="modules">
+        <button class="panel-head" type="button">
+          <svg class="panel-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <span class="panel-title">Modules</span>
+          <span class="panel-count" id="moduleCount">0</span>
+        </button>
+        <div class="panel-body">
+          <button class="panel-action accent" id="agentReconBtn" title="Explore the app and propose a module breakdown">
+            Recon — propose modules
+          </button>
+          <div class="agent-module-list" id="agentModuleList"></div>
+          <button class="panel-action" id="addModuleBtn">+ Add module</button>
+        </div>
+      </section>
+
+      <!-- SCREENS — jump straight to a screen on the canvas -->
+      <section class="panel open" data-panel="screens">
+        <button class="panel-head" type="button">
+          <svg class="panel-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <span class="panel-title">Screens</span>
+          <span class="panel-count" id="screenCount">0</span>
+        </button>
+        <div class="panel-body">
+          <div class="panel-form">
+            <input type="text" id="screenSearch" placeholder="Filter screens…" autocomplete="off">
+          </div>
+          <div class="screen-list" id="screenList">
+            <div class="panel-empty" id="screensEmpty">Screens appear here as they are discovered. Click one to centre it on the canvas.</div>
+          </div>
+        </div>
+      </section>
+
+      <!--
+        Findings used to live here, one module's worth at a time. They are now four pills in
+        the top bar, because what you want to know is "does this app have bugs", not "does the
+        module I happen to have selected have bugs" — and the answer to the first was never
+        visible without clicking through every module in turn.
+      -->
+
+      <!-- CREDENTIALS -->
+      <section class="panel" data-panel="credentials">
+        <button class="panel-head" type="button">
+          <svg class="panel-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <span class="panel-title">Test credentials</span>
+        </button>
+        <div class="panel-body">
+          <form class="panel-form stacked" id="agentSecretForm">
+            <input type="text" id="agentSecretName" placeholder="Name, e.g. test_email" autocomplete="off">
+            <input type="password" id="agentSecretValue" placeholder="Value" autocomplete="new-password">
+            <button type="submit" class="chip-btn">Save credential</button>
+          </form>
+          <div class="agent-secret-names" id="agentSecretNames"></div>
+          <div class="panel-note">
+            Stored in <code>projects/&lt;package&gt;/secrets.json</code>, gitignored. The agent
+            types one by name; the value never enters the chat or the report.
+          </div>
+        </div>
+      </section>
+
+      <div class="rail-resize" id="leftResize" title="Drag to resize"></div>
+    </aside>
+
+    <!-- ==================== CENTRE — the flow graph ==================== -->
+    <div class="canvas-col" id="canvasCol">
+      <div class="graph-wrap" id="graphWrap">
+        <div id="network"></div>
+
+        <svg class="connector-svg" id="connectorSvg">
+          <defs>
+            <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#0099ff"></path>
+            </marker>
+            <!-- Transitions that land on a screen with a confirmed defect, so the path
+                 that reaches a problem is visible without opening any note. -->
+            <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#f43f5e"></path>
+            </marker>
+            <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b"></path>
+            </marker>
+          </defs>
+          <g id="connectorPaths"></g>
+        </svg>
+
+        <div class="connector-layer" id="sectionHeadings"></div>
+        <div class="connector-layer" id="nodeCards"></div>
+        <div class="connector-layer" id="nodeHeaders"></div>
+        <div class="connector-layer" id="connectorLabels"></div>
+        <div class="connector-layer" id="connectorMarkers"></div>
+        <div class="connector-layer" id="commentsLayer"></div>
+        <div class="connector-layer" id="textNotesLayer"></div>
+        <div class="selection-box" id="selectionBox"></div>
+        <div class="tool-overlay" id="toolOverlay"></div>
+
+        <div class="empty-state" id="emptyState">
+          <div class="empty-title">Nothing on the board yet</div>
+          <div class="empty-sub">
+            Open a project on the left, run <code>python run_agent.py --package &lt;pkg&gt;</code>,
+            or just tell the agent on the right what to test.
+          </div>
+        </div>
+      </div>
+
+      <!-- DOCK TOOLBAR -->
+      <div class="dock" id="dock">
+        <div class="dock-btn active" id="toolPan" data-tool="pan" title="Pan / click to open (V)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"></path><path d="M14 10V4a2 2 0 0 0-4 0v6"></path><path d="M10 10.5V6a2 2 0 0 0-4 0v8"></path><path d="M6 14v-2a2 2 0 0 0-4 0v3a8 8 0 0 0 8 8h2a8 8 0 0 0 8-8v-4a2 2 0 0 0-4 0v2"></path></svg>
+        </div>
+        <div class="dock-btn" id="toolSelect" data-tool="select" title="Select — drag to box-select, drag a screen to move the group (S)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"></path></svg>
+        </div>
+        <div class="dock-btn" id="toolText" data-tool="text" title="Add a note (T)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="12" y1="4" x2="12" y2="20"></line><line x1="8" y1="20" x2="16" y2="20"></line></svg>
+        </div>
+        <div class="dock-btn" id="toolSticky" data-tool="sticky" title="Add a sticky note (N)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9l6-6V5a2 2 0 0 0-2-2z"></path><polyline points="14 21 14 15 20 15"></polyline></svg>
+        </div>
+        <div class="dock-btn" id="toolComment" data-tool="comment" title="Comment on a spot in a screen (C)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn" id="zoomOutBtn" title="Zoom out">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </div>
+        <div class="dock-zoom" id="zoomPct">100%</div>
+        <div class="dock-btn" id="zoomInBtn" title="Zoom in">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </div>
+        <div class="dock-btn" id="fitBtn" title="Fit to screen">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn" id="observeBtn" title="Observe flow — hide labels">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+        </div>
+        <div class="dock-btn" id="fullscreenBtn" title="Focus mode — hide both rails">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn danger" id="clearBtn" title="Clear the board">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>
+        </div>
+
+        <div class="dock-sep"></div>
+
+        <div class="dock-btn" id="settingsBtn" title="Display settings">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </div>
+
+        <!-- Settings popover -->
+        <div class="dock-popover" id="settingsPopover">
+          <div class="popover-section-title">Layout</div>
+          <div class="popover-row">
+            <label>Label length</label>
+            <input type="range" id="labelLengthSlider" min="4" max="60" value="22">
+            <span id="labelLengthValue">22</span>
+          </div>
+          <div class="popover-row">
+            <label>Connector length</label>
+            <input type="range" id="connectorLengthSlider" min="60" max="100" value="100">
+            <span id="connectorLengthValue">100%</span>
+          </div>
+          <button class="popover-action" id="resetLayoutBtn">Reset layout to grid</button>
+
+          <div class="popover-section-title">Display</div>
+          <label class="popover-toggle"><input type="checkbox" id="toggleTapMarkers" checked> Tap markers</label>
+          <label class="popover-toggle"><input type="checkbox" id="toggleHeadings" checked> Section headings</label>
+          <label class="popover-toggle"><input type="checkbox" id="toggleGridBg" checked> Background grid</label>
+          <label class="popover-toggle"><input type="checkbox" id="toggleAutoFit"> Auto-fit on new state</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== RIGHT RAIL — the agent ==================== -->
+    <aside class="rail rail-right" id="rightSidebar">
+      <div class="rail-resize" id="rightResize" title="Drag to resize"></div>
+
+      <!--
+        The project select is the agent's own idea of what it is pointed at, and the rest of
+        the app already drives it. It stays in the DOM as that single source of truth, but is
+        not shown: the Projects panel on the left is the one switcher, and a second one here
+        would only invite the two to disagree.
+      -->
+      <select id="agentProject" class="agent-select" hidden></select>
+
+      <!--
+        The module select used to live here, duplicating the Modules panel on the left. Two
+        switchers for one thing meant they could disagree about what was selected. It stays in
+        the DOM, hidden, because the rest of the agent code reads its options as the module
+        list; the left rail is the only control.
+      -->
+      <select id="agentSubproject" class="agent-select" hidden></select>
+
+      <div class="agent-head">
+        <div class="agent-head-left">
+          <select id="agentModelPicker" class="agent-select" title="Model this module's agent runs on"></select>
+        </div>
+        <div class="agent-head-right">
+          <span class="agent-state" id="agentState">idle</span>
+          <button class="chip-btn danger" id="agentStopBtn" disabled>■ Stop</button>
+        </div>
+      </div>
+
+      <!-- The phone, collapsible: it matters while the agent works and is dead weight
+           while you are reading back a transcript. -->
+      <section class="phone-block open" id="phoneBlock">
+        <button class="phone-block-head" type="button" id="phoneBlockToggle">
+          <svg class="panel-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          <span class="panel-title">Device</span>
+          <span class="agent-model" id="agentModel" title="Claude model reported by the CLI">connecting…</span>
+        </button>
+        <div class="phone-block-body">
+          <div class="phone-frame">
+            <div class="phone-screen-wrap" id="phoneScreenWrap">
+              <img id="phoneScreen" alt="Live device screen" draggable="false">
+              <div class="overlay-layer" id="overlayLayer"></div>
+              <div class="phone-placeholder" id="phonePlaceholder">No frame yet — press Refresh, or start the agent.</div>
+            </div>
+          </div>
+          <div class="phone-actions">
+            <button class="chip-btn" data-cmd="back">← Back</button>
+            <button class="chip-btn" data-cmd="home">● Home</button>
+            <button class="chip-btn" id="refreshFrameBtn">⟳ Refresh</button>
+          </div>
+          <div class="phone-actions">
+            <label class="chip-toggle"><input type="checkbox" id="overlayToggle" checked> Element bounds</label>
+            <label class="chip-toggle"><input type="checkbox" id="liveFrameToggle" checked> Follow live</label>
+            <label class="chip-toggle"><input type="checkbox" id="traceToggle" checked> Tool trace</label>
+          </div>
+          <!-- Model, auth and taps·shots moved to the top bar, where they stay visible with
+               this block collapsed. Only the cheap-tier spend stays, because it is the one
+               number here that is off by default and worth seeing next to the device. -->
+          <div class="agent-meter" id="agentMeter" hidden>
+            <div class="agent-meter-row" id="meterStepperRow" hidden><span>Cheap tier</span><span id="meterStepper">off</span></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="chat-log-wrap">
+        <div class="chat-log" id="chatLog"></div>
+        <button class="chat-jump" id="chatJump" hidden>↓ Jump to latest</button>
+      </div>
+
+      <!-- Shown while the agent is working, so a long silent step never looks like a hang -->
+      <div class="agent-working" id="agentWorking">
+        <span class="agent-dots"><i></i><i></i><i></i></span>
+        <span class="agent-working-text" id="agentWorkingText">Thinking…</span>
+        <span class="agent-working-timer" id="agentWorkingTimer">0:00</span>
+      </div>
+
+      <!-- Shown only while a tool is parked waiting on the user -->
+      <div class="agent-blocked" id="agentBlocked">
+        <div class="agent-blocked-label" id="agentBlockedLabel">The agent needs an answer</div>
+        <div class="agent-blocked-question" id="agentBlockedQuestion"></div>
+      </div>
+
+      <!-- Images staged for the next message: a reference screenshot, a design mock, a photo
+           of the bug on a real phone. Shown before sending so it is clear what is attached. -->
+      <div class="chat-attachments" id="chatAttachments"></div>
+
+      <form class="chat-input-row" id="chatForm">
+        <button type="button" class="chat-attach-btn" id="chatAttachBtn" title="Attach an image for reference">＋</button>
+        <textarea id="chatInput" rows="2" placeholder="Tell the agent what to test — e.g. “test the login module: empty submit, wrong password, valid login, session persistence”" autocomplete="off"></textarea>
+        <button type="submit" id="chatSend">Send</button>
+      </form>
+      <input type="file" id="chatImageInput" accept="image/*" multiple hidden>
+    </aside>
+
+  </div>
+</div>
+
+<!-- NODE DETAIL MODAL -->
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal">
+    <button class="modal-close" id="modalClose">✕</button>
+    <div class="modal-body">
+      <div class="modal-image-col">
+        <img id="modalImage" alt="Screen detail">
+      </div>
+      <div class="modal-meta-col">
+        <div class="modal-title" id="modalPackage">—</div>
+        <div class="modal-sub" id="modalActivity">—</div>
+        <div class="modal-row"><span>Screen</span><span id="modalScreenName">—</span></div>
+        <div class="modal-row"><span>State hash</span><code id="modalHash">—</code></div>
+        <div class="modal-row"><span>Elements found</span><span id="modalElementCount">0</span></div>
+        <div class="modal-row"><span>Reached via</span><span id="modalAction">—</span></div>
+        <div class="modal-elements" id="modalElements"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- NEW PROJECT -->
+<div class="sheet-backdrop" id="newProjectBackdrop">
+  <div class="sheet">
+    <div class="sheet-title">New project</div>
+    <div class="sheet-sub">
+      One project per app. Everything the agent produces for it — screenshots, findings,
+      per-module memory and the flow graph — is written into the folder you choose.
+    </div>
+    <label class="sheet-label" for="newProjectPackage">App package</label>
+    <input type="text" id="newProjectPackage" class="sheet-input" placeholder="com.example.app" autocomplete="off">
+    <label class="sheet-label" for="newProjectRoot">Project folder</label>
+    <div class="sheet-row">
+      <input type="text" id="newProjectRoot" class="sheet-input" placeholder="Default — android-agent/projects/…" autocomplete="off">
+      <button type="button" class="chip-btn" id="newProjectBrowse">Browse…</button>
+    </div>
+    <div class="sheet-note" id="newProjectNote">
+      The folder you pick <em>is</em> the project root — subfolders for each module are created
+      inside it. Leave it empty to use the default location.
+    </div>
+    <div class="sheet-actions">
+      <button type="button" class="chip-btn" id="newProjectCancel">Cancel</button>
+      <button type="button" class="chip-btn accent" id="newProjectCreate">Create project</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD / EDIT MODULE -->
+<div class="sheet-backdrop" id="moduleBackdrop">
+  <div class="sheet">
+    <div class="sheet-title" id="moduleSheetTitle">Add module</div>
+    <div class="sheet-sub">
+      A module is a test suite for one part of the app. It keeps its own conversation, memory
+      and findings, so reopening it picks up where you left off.
+    </div>
+    <label class="sheet-label" for="moduleSheetName">Name</label>
+    <input type="text" id="moduleSheetName" class="sheet-input" placeholder="e.g. Checkout" autocomplete="off">
+    <label class="sheet-label" for="moduleSheetScope">Scope</label>
+    <textarea id="moduleSheetScope" class="sheet-input" rows="3" placeholder="What this module covers — screens, cases, anything to leave alone."></textarea>
+    <div class="sheet-actions">
+      <button type="button" class="chip-btn" id="moduleSheetCancel">Cancel</button>
+      <button type="button" class="chip-btn accent" id="moduleSheetSave">Add module</button>
+    </div>
+  </div>
+</div>
+
+<!-- OUTCOMES (Working / Warnings / Bugs / Suggestions) -->
+<div class="sheet-backdrop" id="outcomeBackdrop">
+  <div class="sheet sheet-wide">
+    <div class="sheet-head-row">
+      <div class="sheet-title" id="outcomeTitle">Findings</div>
+      <button type="button" class="sheet-close" id="outcomeClose">✕</button>
+    </div>
+    <div class="sheet-sub" id="outcomeSub"></div>
+    <div class="outcome-list" id="outcomeList"></div>
+  </div>
+</div>
+
+<!-- SCREENSHOT LIGHTBOX -->
+<div class="shot-lightbox" id="shotLightbox"><img id="shotLightboxImg" alt="Screenshot"></div>
+
+<!-- LOCK / ALERT POPUP -->
+<div class="lock-popup-backdrop" id="lockPopupBackdrop">
+  <div class="lock-popup" id="lockPopup">
+    <div class="lock-popup-icon" id="lockPopupIcon">🔒</div>
+    <div class="lock-popup-message" id="lockPopupMessage">Phone is locked. Please unlock your device to start testing.</div>
+    <button class="lock-popup-dismiss" id="lockPopupDismiss">Dismiss</button>
+  </div>
+</div>
+
+<script src="/static/dashboard.js?v=20"></script>
+</body>
+</html>

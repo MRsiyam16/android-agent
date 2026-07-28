@@ -38,6 +38,20 @@
       "last_seen_run": 0,
       "text": "The project blob carries the whole board (screens, notes, layout) and is several MB. Snapshot it to disk before doing anything that opens a second dashboard tab or rewrites notes."
     },
+    "board-owner-is-the-run-target-not-the-screen": {
+      "evidence": "youtube/flow-graph.json held 39 Metaesthetics screens; chrome held deskclock's; keep held the Play Store's; vending and gms existed as projects at all",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "The package on screen is not the project a board belongs to. A run wanders out of its own app constantly (Play Store, browser, permissioncontroller), so anything that decides 'which project does this belong to' must key off the run's target package, never the current frame's. Conflating them destroyed four saved boards and scattered screenshots into projects for apps that were only passed through."
+    },
+    "chat-input-row-button-outspecifies-a-bare-class": {
+      "evidence": "the chat attach button rendered as a second solid white Send button",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "`.chat-input-row button` (0,1,1) beats a bare `.chat-attach-btn` (0,1,0) however far down the file the class sits, so a new button added to an existing styled row silently inherits the row's primary-button look. Scope new rules to the container."
+    },
     "dashboard-hidden-tab-freezes-overlay": {
       "evidence": "notes and selection state were correct on the server while the hidden tab showed none",
       "first_seen_run": 0,
@@ -80,12 +94,26 @@
       "last_seen_run": 0,
       "text": "dashboard.js and dashboard.css are served with a cache-busting query and still get served from cache. After editing either, hard-reload (ctrl+shift+R) before concluding a change did not work."
     },
+    "interrupt-does-not-cancel-the-tool-in-flight": {
+      "evidence": "Stop appeared to do nothing while the agent kept tapping through a settle wait",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "ClaudeSDKClient.interrupt() ends the turn only after the tool in flight returns, so a Stop pressed during a long poll (wait_for_ui up to 120s, wait_for_text, wait_until_gone) lands minutes later and reads as a dead button. A real stop needs a threading.Event the blocking loops poll, cleared at the start of the next turn or every later tool returns 'stopped' immediately."
+    },
     "launch-succeeded-but-launcher-still-showing": {
       "evidence": "two launches of com.google.android.calculator reported success on a Samsung S21 where only com.sec.android.app.popupcalculator is installed",
       "first_seen_run": 0,
       "hits": 1,
       "last_seen_run": 0,
       "text": "A launch that reports success but leaves the launcher on screen usually means the package is not installed, not that the app refused to start. Check `pm list packages <pkg>` before suspecting the app; on OEM ROMs the vendor app often owns the name you expect."
+    },
+    "patching-a-constant-that-is-no-longer-read": {
+      "evidence": "test_store and test_finding_guards patched store.PROJECTS_DIR after project_dir began delegating to project_paths; the suite wrote a com.example.app project into the live projects folder and still reported all green",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "When a module stops computing a path and starts asking a helper for it, every test that monkeypatched the old constant keeps passing while writing to the real location. The failure is invisible on the first run and shows up on the second as leftover state. After moving a path lookup behind an indirection, grep for monkeypatch of the old name and check the real folder for new files."
     },
     "reactive-validation-defeats-diffs": {
       "evidence": "five validation checks reported blocked-but-silent against a screen that was showing a specific message",
@@ -108,6 +136,13 @@
       "last_seen_run": 0,
       "text": "server.py runs with reload=False, and a stale process keeps holding port 8000 while the new one fails to bind -- so edits appear to have no effect. Check who owns the port before debugging the code."
     },
+    "sibling-rails-need-a-stacking-context-not-a-bigger-z-index": {
+      "evidence": "notes and screenshots painted over both rails; elementFromPoint inside each rail returned a canvas layer",
+      "first_seen_run": 0,
+      "hits": 1,
+      "last_seen_run": 0,
+      "text": "Canvas overlays painted over both sidebars because .canvas-col and .rail are siblings and neither created a stacking context, so the canvas's inner z-indexes (up to 28) competed directly with the rails' auto. `isolation: isolate` on the canvas column is the durable fix; raising the rails' z-index alone only holds until a new canvas layer picks a higher number."
+    },
     "system-dialogs-are-invisible-to-package-filters": {
       "evidence": "a notification-permission prompt after a data wipe made the app dump look empty",
       "first_seen_run": 0,
@@ -116,9 +151,9 @@
       "text": "Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing."
     },
     "ui-never-settled": {
-      "evidence": "waited 13s for com.google.android.calculator with no readable dump",
+      "evidence": "waited 0s for com.example.app with no readable dump",
       "first_seen_run": 0,
-      "hits": 2,
+      "hits": 10,
       "last_seen_run": 0,
       "text": "The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app."
     }
@@ -127,5 +162,5 @@
   "runs": [],
   "schema": 1,
   "timings": {},
-  "updated_at": "2026-07-27T13:23:31+00:00"
+  "updated_at": "2026-07-28T04:33:32+00:00"
 }

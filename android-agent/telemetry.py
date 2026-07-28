@@ -18,10 +18,18 @@ class TelemetryClient:
     order, since server.py's screen numbering assumes telemetry arrives in the order it was
     produced. Call `flush()` before exiting to make sure queued posts aren't dropped."""
 
-    def __init__(self, server_url: str, session_id: str, device_serial: str | None = None, timeout: float = 5.0):
+    def __init__(self, server_url: str, session_id: str, device_serial: str | None = None,
+                 timeout: float = 5.0, target_package: str | None = None):
         self.base_url = server_url.rstrip("/")
         self.session_id = session_id
         self.device_serial = device_serial
+        # The app this run was pointed at, as opposed to `package_name`, which is whatever
+        # happens to be on screen at the moment. They diverge constantly — a Keep run opens
+        # the Play Store, a deskclock run follows a link into Chrome — and conflating the two
+        # is what let a run's board and screenshots get filed under an app that was merely
+        # passed through. Everything that decides *which project this belongs to* must use
+        # this; only the per-screen metadata uses `package_name`.
+        self.target_package = target_package
         self.timeout = timeout
         self._queue: queue.Queue = queue.Queue()
         self._session = requests.Session()
@@ -64,6 +72,7 @@ class TelemetryClient:
         payload = {
             "session_id": self.session_id,
             "device_serial": self.device_serial,
+            "target_package": self.target_package or package_name,
             "package_name": package_name,
             "activity_name": activity_name,
             "state_hash": state_hash,

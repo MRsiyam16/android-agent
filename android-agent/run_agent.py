@@ -152,7 +152,8 @@ def run(
     logger.info("Connected: serial=%s", device.serial)
 
     session_id = uuid.uuid4().hex[:12]
-    telemetry = TelemetryClient(server_url, session_id, device_serial=device.serial)
+    telemetry = TelemetryClient(server_url, session_id, device_serial=device.serial,
+                                target_package=package)
     graph = ExplorationGraph()
 
     telemetry.post_status("Running preflight checks (screen on, device unlocked)...", level="info")

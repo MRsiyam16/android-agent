@@ -38,7 +38,12 @@ def _discover_adb_path() -> str:
 ADB_PATH: str = _discover_adb_path()
 
 # --- Telemetry server ---------------------------------------------------------
-SERVER_HOST: str = os.environ.get("SERVER_HOST", "0.0.0.0")
+# Loopback by default, deliberately. /command is unauthenticated remote control of the
+# phone — arbitrary taps, launches and screenshots — so binding it to 0.0.0.0 hands anyone
+# on the same Wi-Fi (a cafe, a shared office) a remote for your device and a view of its
+# screen. Set SERVER_HOST=0.0.0.0 explicitly if you really do need to reach the dashboard
+# from another machine, and only on a network you trust.
+SERVER_HOST: str = os.environ.get("SERVER_HOST", "127.0.0.1")
 SERVER_PORT: int = int(os.environ.get("SERVER_PORT", 8000))
 SERVER_URL: str = os.environ.get("SERVER_URL", f"http://localhost:{SERVER_PORT}")
 
@@ -50,6 +55,13 @@ ACTION_SETTLE_SECONDS: float = float(os.environ.get("ACTION_SETTLE_SECONDS", 0.9
 # the poll interval between checks; ACTION_SETTLE_SECONDS above is the max total budget.
 ACTION_SETTLE_POLL_SECONDS: float = float(os.environ.get("ACTION_SETTLE_POLL_SECONDS", 0.25))
 MAX_CONSECUTIVE_BACKTRACKS: int = 6
+
+# How many telemetry records the server keeps for replaying the graph to a browser that
+# connects or reloads. A backstop, not a normal-path limit: a 200-step run posts ~400
+# records, so the default holds many runs' worth. Old records are dropped oldest-first once
+# it is reached, which costs the earliest transitions on a *reload* — the live graph in an
+# already-open tab is unaffected, and a saved project is unaffected either way.
+TELEMETRY_HISTORY_LIMIT: int = int(os.environ.get("TELEMETRY_HISTORY_LIMIT", 20000))
 
 # --- Target / package filtering ---------------------------------------------------------
 # Leave TARGET_PACKAGE empty and pass --package on the CLI to run_agent.py.

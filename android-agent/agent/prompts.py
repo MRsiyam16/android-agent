@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+import config
 from agent import store
 
 logger = logging.getLogger("agent.prompts")
@@ -76,25 +77,42 @@ Two more traps that have each produced a false defect:
   "blocked but silent" about a screen that is displaying a specific message. Read the whole
   screen text and quote what it actually says.
 
-# Before you call anything a defect
+# Recording what you found
 
-Take a screenshot and **look at the image yourself** with the Read tool. Every false defect
-this harness has produced was a dump misread that a screenshot would have caught. Then file
-it with `record_finding`, quoting expected vs actual concretely — "expected the form to
-reject an empty email; the form submitted and landed on the home screen" beats "validation
-broken". Check `list_findings` first so a known defect is not reported twice.
+Every test case ends in a `record_finding` call, including the ones that pass. Pick the kind
+deliberately:
+
+* `pass` — you ran the case and it behaved correctly.
+* `warning` — it works, but something about it is fragile or questionable.
+* `bug` — expected and actual genuinely disagree.
+* `suggestion` — nothing is wrong; the app would simply be better if it did X.
+
+Record the passes. A module with only bugs in it cannot be told apart from a module where
+the good cases were never run, and "we tested this and it was fine" is most of what a QA
+report is for. One per case, not one per tap.
+
+Before any of them, take a screenshot and **look at the image yourself** with the Read tool.
+Every false defect this harness has produced was a dump misread that a screenshot would have
+caught. Quote expected vs actual concretely — "expected the form to reject an empty email;
+the form submitted and landed on the home screen" beats "validation broken". Check
+`list_findings` first so the same case is not recorded twice.
+
+`record_finding` enforces the timing rule rather than trusting it, so it will refuse a
+filing when you have acted since the last `read_screen`, or when the screen you last read
+still showed loading text. That is not an obstacle to work around — it means the verdict
+would have been about a screen that had moved on. Read the screen again, or
+`wait_until_gone` the loading text first, and file from what you see then.
+
+It refuses a `pass` on exactly the same terms as a `bug`, and that is deliberate. Both of
+this harness's worst incidents were premature verdicts, and one of them flipped to PASS the
+moment the overlay cleared — a pass read off a mid-flight screen is as wrong as a defect read
+off one, and it is the more expensive of the two to be wrong about.
 
 If you cannot confirm something, say so plainly. "I could not verify X because Y" is a
 useful result. A fabricated pass or a guessed defect is worse than no answer, and this
 harness has produced both by being confident about a dump.
 
-# Cost discipline
-
-Your own turns are the scarce resource. For routine confirmations use `check_screen`, which
-asks a cheap model a yes/no question about the current screen; for choosing what to tap while
-mapping an unfamiliar screen use `pick_next_element`. Keep the judgement — what to test, what
-is correct, what is a defect — for yourself, and look at images yourself before filing
-anything. A cheap model's "looks fine" is not evidence.
+{cost_section}
 
 # Recording what you did
 
@@ -122,9 +140,40 @@ working is yours, not theirs. Do not narrate every read_screen.
 """
 
 
+# The cheap-tier tools only exist when AGENT_USE_CHEAP_TIER is on (see runtime._options,
+# which registers the "cheap" MCP server conditionally). Describing them unconditionally told
+# every agent — including the recon pass, which leaned on `pick_next_element` — to reach for
+# two tools that were not in its tool list, so the turn was spent discovering they are absent.
+# Whichever section is used has to match how the session was actually built.
+_COST_WITH_CHEAP_TIER = """\
+# Cost discipline
+
+Your own turns are the scarce resource. For routine confirmations use `check_screen`, which
+asks a cheap model a yes/no question about the current screen; for choosing what to tap while
+mapping an unfamiliar screen use `pick_next_element`. Keep the judgement — what to test, what
+is correct, what is a defect — for yourself, and look at images yourself before filing
+anything. A cheap model's "looks fine" is not evidence."""
+
+_COST_SOLO = """\
+# Cost discipline
+
+Your own turns are the scarce resource, and every one of them spends the subscription's
+rate-limit window. Read the screen once per action rather than re-reading to be sure, and
+prefer `read_screen`'s text — which is cheap and complete — over screenshotting to answer a
+question the text already answers. Save `screenshot` plus Read-the-image for what needs an
+eye: anything you are about to call a defect, and anything visual (layout, clipping,
+overlap) that a dump cannot show you."""
+
+
+def _cost_section() -> str:
+    """Whichever cost guidance matches the tools this session will actually have."""
+    return _COST_WITH_CHEAP_TIER if config.AGENT_USE_CHEAP_TIER else _COST_SOLO
+
+
 def build_system_prompt(package: str, slug: str, title: str, scope: str) -> str:
     """Assemble the prompt: core rules, the live harness briefing, then this module's brief."""
-    parts = [CORE.format(memory_path=store.memory_path(package, slug))]
+    parts = [CORE.format(memory_path=store.memory_path(package, slug),
+                         cost_section=_cost_section())]
 
     try:
         import system_memory as sysmem
@@ -159,13 +208,13 @@ def build_system_prompt(package: str, slug: str, title: str, scope: str) -> str:
     return "\n\n".join(parts)
 
 
-RECON_PROMPT = """\
+_RECON_TEMPLATE = """\
 This is a brand-new project with no modules defined yet. Do a recon pass before any testing:
 
 1. Launch the app and read the screen.
 2. Explore breadth-first to find the main areas — the primary navigation, what each tab or
-   menu entry leads to. Use `pick_next_element` so this mapping costs little, and
-   `journey_step` sparingly (recon is not a test case; a handful of steps is plenty).
+   menu entry leads to. {mapping_hint} Use `journey_step` sparingly (recon is not a test
+   case; a handful of steps is plenty).
 3. Do not test anything yet and do not file findings. If you notice something that looks
    broken, note it in your reply and come back to it once a module owns it.
 4. Then call `propose_subprojects` with the modules the app actually has, each with a scope
@@ -174,3 +223,65 @@ This is a brand-new project with no modules defined yet. Do a recon pass before 
 
 The user approves, renames or merges your proposal before testing starts.
 """
+
+_RECON_MAPPING_CHEAP = ("Use `pick_next_element` so this mapping costs little, and lean on "
+                        "`read_screen`'s text rather than screenshotting each screen.")
+_RECON_MAPPING_SOLO = ("Breadth, not depth: one level into each area is enough to name it. "
+                       "Navigate from `read_screen`'s element list and skip screenshots "
+                       "unless a screen's purpose is genuinely unclear from its text.")
+
+
+_ONBOARDING_TEMPLATE = """\
+A new project has just been created for `{package}`. Nothing has been tested and no modules
+exist yet. Your job right now is to find out what the user actually wants from this app, and
+only then to propose how to break it up.
+
+Work through this in order. Do not skip ahead — the point of the interview is that the module
+breakdown reflects their priorities rather than yours.
+
+1. Open by asking what they want out of testing this app. One message, a couple of short
+   questions, not a form. What matters most: is there a release coming, a flow that keeps
+   breaking, an area they already distrust? Use `ask_user` so the run parks for a real answer.
+
+2. Follow up on what they said, once. Ask about anything that changes what you would test —
+   whether there are test accounts, whether any flow costs real money or sends real messages,
+   whether anything on the phone must be left alone. Do not interrogate them; two rounds is
+   the budget.
+
+3. Then ask permission before touching the phone. Say plainly what you are about to do: launch
+   the app and click through it for a few minutes to see what is there, testing nothing and
+   filing nothing. Wait for a yes.
+
+4. With permission, do the recon pass:
+   {recon}
+
+5. Propose the breakdown with `propose_subprojects`, and say in your reply how the interview
+   shaped it — which module covers the thing they said they cared about, and what you have
+   deliberately left out. Each module arrives as a proposal the user approves one at a time;
+   none of them will run until they do.
+
+If they decline the phone at step 3, do not explore. Propose modules from what they told you,
+say plainly that the breakdown is unverified against the real app, and let them correct it.
+"""
+
+
+def recon_prompt() -> str:
+    """The recon brief, matched to the tools this session actually has."""
+    return _RECON_TEMPLATE.format(
+        mapping_hint=_RECON_MAPPING_CHEAP if config.AGENT_USE_CHEAP_TIER
+        else _RECON_MAPPING_SOLO)
+
+
+def onboarding_prompt(package: str) -> str:
+    """The new-project interview: goals first, permission second, recon third.
+
+    Kept separate from `recon_prompt` because they answer different questions. Recon asks
+    "what is in this app"; onboarding asks "what does this person need from it", and the
+    module breakdown is much better for having heard the answer before looking.
+    """
+    mapping = _RECON_MAPPING_CHEAP if config.AGENT_USE_CHEAP_TIER else _RECON_MAPPING_SOLO
+    recon = ("Launch the app and explore breadth-first to find the main areas — the primary "
+             "navigation and what each tab leads to. " + mapping + " Test nothing and file "
+             "nothing; if something looks broken, mention it in your reply and leave it for "
+             "the module that will own it.")
+    return _ONBOARDING_TEMPLATE.format(package=package, recon=recon)

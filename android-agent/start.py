@@ -183,6 +183,10 @@ def main() -> int:
         return 1
 
     print(f"\n  server : {URL}  (pid {proc.pid})")
+    if config.SERVER_HOST not in ("127.0.0.1", "localhost", "::1"):
+        # /command is unauthenticated: whoever can reach this port can tap the phone.
+        print(f"           WARNING: bound to {config.SERVER_HOST}, so anyone on this network "
+              f"can drive the phone and read its screen. Unset SERVER_HOST for loopback only.")
     check_device()
     check_agent()
     list_projects()

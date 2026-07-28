@@ -93,6 +93,12 @@ class AgentSession:
         self.model_label: Optional[str] = None
         self.subscription: Optional[str] = None
         self.activity: Optional[str] = None
+        # What the CLI says it can run, for the model picker. Populated at connect.
+        self.available_models: list[dict[str, Any]] = []
+        # An explicit override for this module, or None to take the CLI's default. Stored on
+        # the sub-project so it survives a restart, and read back in `_options`.
+        entry = store.get_subproject(package, slug) or {}
+        self.requested_model: Optional[str] = entry.get("model") or None
 
     # -- lifecycle ---------------------------------------------------------------
     def _options(self) -> ClaudeAgentOptions:
@@ -144,8 +150,12 @@ class AgentSession:
             max_turns=config.AGENT_MAX_TURNS,
             effort=config.AGENT_PLANNER_EFFORT,  # type: ignore[arg-type]
         )
-        if config.AGENT_PLANNER_MODEL:
-            options.model = config.AGENT_PLANNER_MODEL
+        # The picker wins over the configured default: it is the more specific, more recent
+        # statement of intent, and it is per-module by design — recon can run on a cheaper
+        # model than the suite that files defects.
+        chosen = self.requested_model or config.AGENT_PLANNER_MODEL
+        if chosen:
+            options.model = chosen
         if config.AGENT_PLANNER_FALLBACK:
             options.fallback_model = config.AGENT_PLANNER_FALLBACK
 
@@ -210,7 +220,15 @@ class AgentSession:
             return
 
         models = [m for m in (info.get("models") or []) if isinstance(m, dict)]
-        wanted = config.AGENT_PLANNER_MODEL or "default"
+        # Kept so the picker offers exactly what this CLI can actually run, rather than a
+        # hardcoded list that goes stale the moment a model is added or retired.
+        self.available_models = [
+            {"value": m.get("value"),
+             "label": m.get("displayName") or m.get("description") or m.get("value"),
+             "resolved": m.get("resolvedModel")}
+            for m in models if m.get("value")
+        ]
+        wanted = self.requested_model or config.AGENT_PLANNER_MODEL or "default"
         entry = next((m for m in models if m.get("value") == wanted), None) \
             or next((m for m in models if m.get("value") == "default"), None) \
             or (models[0] if models else None)
@@ -245,10 +263,53 @@ class AgentSession:
                 logger.warning("disconnect failed: %s", exc)
             self._client = None
 
+    async def set_model(self, model: Optional[str]) -> dict[str, Any]:
+        """Switch which model this module runs on.
+
+        The model is fixed when `ClaudeSDKClient` connects, so this necessarily tears the
+        session down and builds a new one. The conversation is not lost: `cli_session_id` is
+        already persisted and `_options` resumes from it, so the new session opens knowing
+        which case it was on. Refused mid-turn — swapping the model under a running test would
+        finish it on a different model than it started on, which is the exact thing this
+        harness refuses to do silently on a rate limit.
+        """
+        if self.busy:
+            raise RuntimeError("The agent is mid-run. Press Stop before changing the model.")
+        if (model or None) == self.requested_model:
+            return {"ok": True, "model": self.model, "unchanged": True}
+        self.requested_model = model or None
+        store.update_subproject(self.package, self.slug, model=self.requested_model)
+        await self.close()
+        # A failed reconnect must not leave the module pointing at a model it could not start,
+        # or every later message fails the same way with no clue why.
+        try:
+            await self.connect()
+        except Exception:
+            self.requested_model = None
+            store.update_subproject(self.package, self.slug, model=None)
+            await self.connect()
+            raise
+        return {"ok": True, "model": self.model, "model_label": self.model_label}
+
     async def interrupt(self) -> bool:
-        """Stop button. The CLI finishes the tool in flight, then ends the turn."""
+        """Stop button.
+
+        Two halves, because `interrupt()` alone was not a stop. It asks the CLI to end the
+        turn *after* the tool in flight returns — and the tools that make Stop worth pressing
+        are the slow ones: `wait_for_ui` blocks up to 120s, a settle poll runs for tens of
+        seconds. Pressing Stop and watching the agent keep tapping for two minutes is why this
+        read as broken.
+
+        So the device session is cancelled first: that flips a flag the long-running device
+        tools poll, and they return "cancelled" at their next check instead of running to
+        term. Then the CLI is asked to end the turn, which it now can do promptly.
+        """
         if self._client is None or not self.busy:
+            # Still worth cancelling the device: a tool can be mid-flight in the window
+            # between the turn ending and `busy` clearing.
+            self.device.cancel()
             return False
+        self.device.cancel()
         try:
             await self._client.interrupt()
             return True
@@ -274,6 +335,10 @@ class AgentSession:
 
         store.append_chat(self.package, self.slug, {"role": "user", "text": text})
         async with self._lock:
+            # A Stop from the previous turn leaves the cancel flag raised. Without clearing it
+            # here, every device tool in the *next* turn would return "stopped" immediately and
+            # the agent would look permanently broken after one press of the button.
+            self.device.resume()
             self.busy = True
             await self.emit({"slug": self.slug, "type": "agent_busy", "busy": True})
             try:

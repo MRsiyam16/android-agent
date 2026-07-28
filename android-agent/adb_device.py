@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 
 import re
 import time
@@ -61,6 +62,37 @@ def list_serials() -> list[str]:
         if state.strip() == "device":
             serials.append(serial)
     return serials
+
+
+def describe_serial(serial: str) -> dict[str, str]:
+    """Brand and model for a serial, straight from `getprop`.
+
+    Deliberately not via `u2.connect()`: that starts the uiautomator server on the phone,
+    which is far too much to do just to put a name in the title bar — and it would fight the
+    agent's own session for the device. Two `adb shell getprop` calls cost nothing and cannot
+    disturb a run in progress.
+    """
+    out: dict[str, str] = {"serial": serial}
+    for prop, key in (("ro.product.manufacturer", "brand"), ("ro.product.model", "model")):
+        try:
+            result = subprocess.run(
+                [config.ADB_PATH, "-s", serial, "shell", "getprop", prop],
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            value = result.stdout.strip()
+            if value:
+                out[key] = value
+        except (OSError, subprocess.SubprocessError):
+            continue
+    brand, model = out.get("brand", ""), out.get("model", "")
+    # A model name often already carries the brand ("Galaxy S21" does not, "Pixel 7" does).
+    # Prefixing unconditionally produces "Google Pixel 7" from one phone and "Samsung SM-G991B"
+    # from another; checking avoids the first being wrong in the other direction.
+    if brand and model and not model.lower().startswith(brand.lower()):
+        out["label"] = f"{brand} {model}"
+    else:
+        out["label"] = model or brand or serial
+    return out
 
 
 class AdbDevice:
@@ -281,7 +313,8 @@ class AdbDevice:
         return False
 
     def wait_for_ui(self, package: str, timeout: float | None = None,
-                    poll: float = 1.0) -> tuple[str, float]:
+                    poll: float = 1.0,
+                    cancelled: "threading.Event | None" = None) -> tuple[str, float]:
         """Block until `package` actually owns the screen with rendered content.
 
         Returns (xml, seconds_waited). This exists because an empty or foreign UI dump is
@@ -292,6 +325,10 @@ class AdbDevice:
 
         The wait budget and the observed duration both feed system memory, so the timeout
         converges on what this machine really needs instead of a hardcoded guess.
+
+        `cancelled`, when given, is polled each pass and cuts the wait short. This is the
+        longest single block the agent can be inside — up to two minutes on a cold Flutter
+        start — so without it the Stop button has nothing to interrupt and appears dead.
         """
         toolkit_guess = sysmem.environment("last_toolkit", "unknown")
         budget = timeout if timeout is not None else max(
@@ -301,6 +338,11 @@ class AdbDevice:
         deadline = started + budget
         last_xml = ""
         while True:
+            if cancelled is not None and cancelled.is_set():
+                # Not recorded as a launch observation: the wait was cut short by the user, so
+                # the elapsed time says nothing about how long this app takes to settle, and
+                # feeding it to system memory would teach it a number that is simply wrong.
+                return last_xml, round(time.monotonic() - started, 2)
             try:
                 last_xml = self.dump_xml()
             except DeviceError:
@@ -332,7 +374,12 @@ class AdbDevice:
                     evidence=f"waited {elapsed:.0f}s for {package} with no readable dump",
                 )
                 return last_xml, round(elapsed, 2)
-            time.sleep(poll)
+            # Wakes immediately on Stop instead of sleeping out the poll interval.
+            if cancelled is not None:
+                if cancelled.wait(poll):
+                    return last_xml, round(time.monotonic() - started, 2)
+            else:
+                time.sleep(poll)
 
     # -- crash / ANR detection -----------------------------------------------------------
     def clear_logs(self) -> None:

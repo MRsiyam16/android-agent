@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test files & logs
+# `test_*.py` here means the ad-hoc driver scripts that accumulate at the top level
+# (test_yt_recheck.py, test_meta_probe.py…) — one-off scripts pointed at one app on one day,
+# not source. The real unit tests live in tests/ and must be tracked, hence the negation:
+# without it, `git add tests/` silently does nothing and the suite exists only on one machine.
+*.log
+test_*.py
+*_test.py
+!tests/test_*.py
+.coverage
+.pytest_cache/
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+.session_*
+
+# Project-specific
+# Board snapshots are multi-MB blobs of screenshots — local safety nets, not source.
+project_backups/
+flow-graph*.json
+*.adb_log
+server.log
+notes_test.log
+run-*.log
+projects/
+
+# Output from the ad-hoc driver scripts (which are themselves ignored via test_*.py):
+# findings dumps and screenshot folders from one particular run against one particular app.
+# Evidence of a run, not source — the durable copy lives under projects/<package>/.
+*_findings.json
+*_findings_*.json
+*_shots/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS-specific
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride

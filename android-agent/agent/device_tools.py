@@ -20,12 +20,17 @@ already produced (see SYSTEM_MEMORY.md):
 * `wait_until_gone` exists so a verdict is never read while a request is in flight.
 * `record_finding` refuses to file a defect without a screenshot. Every false defect this
   harness produced was a dump misread that a screenshot would have caught.
+* `record_finding` also refuses a verdict read off a stale screen — one the agent has acted
+  on since last reading, or one still showing loading text (see `finding_block_reason`). The
+  prompt has always carried that rule as prose, and the harness violated it twice anyway;
+  prose is advice to a model sixty turns deep, a refusing tool is not.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -44,6 +49,15 @@ _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 # Soft keyboards contribute ~180 nodes whenever a text field has focus. Counting them in the
 # "who owns the screen" ranking would trip the wrong-app guard on every single search flow.
 _IME_HINTS = ("inputmethod", ".ime", "keyboard", "latin")
+
+
+class DeviceCancelled(RuntimeError):
+    """Raised inside a device tool when the user has pressed Stop.
+
+    Distinct from `DeviceError` because it is not a failure: nothing is wrong with the phone,
+    the run was called off. Tools translate it into a plain "stopped" result rather than an
+    error the agent might try to work around by retrying.
+    """
 
 
 def _ok(text: str) -> dict[str, Any]:
@@ -66,6 +80,32 @@ def _is_ime(package: str) -> bool:
     return any(h in p for h in _IME_HINTS)
 
 
+# A single UI dump is read three times per `read_screen` — once for the ownership ranking,
+# once for the visible text, once for the touchable elements — and a full-screen dump is
+# hundreds of KB of XML, so parsing it three times is the most expensive thing in the tool.
+# One entry is all that is needed: the three readers are handed the same string in immediate
+# succession. Keyed on the string itself (identity first, since it is normally the very same
+# object) so a stale dump can never be served for a new one.
+#
+# The parsed tree is only ever iterated and read here, never mutated, so sharing it is safe.
+# A racing caller costs a cache miss and a redundant parse — never a wrong answer.
+_parse_cache: tuple[str, Optional[ET.Element]] | None = None
+
+
+def _parsed(xml: str) -> Optional[ET.Element]:
+    """Parse a dump, reusing the immediately-preceding parse of the same string."""
+    global _parse_cache
+    cached = _parse_cache
+    if cached is not None and (cached[0] is xml or cached[0] == xml):
+        return cached[1]
+    try:
+        root: Optional[ET.Element] = ET.fromstring(xml)
+    except ET.ParseError:
+        root = None
+    _parse_cache = (xml, root)
+    return root
+
+
 def package_ranking(xml: str) -> list[tuple[str, int]]:
     """Packages present in a dump, by node count, most first, excluding soft keyboards.
 
@@ -73,9 +113,8 @@ def package_ranking(xml: str) -> list[tuple[str, int]]:
     bar), so reading position 0 to answer "which app is on screen" is wrong. Volume decides.
     """
     counts: dict[str, int] = {}
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
+    root = _parsed(xml)
+    if root is None:
         return []
     for node in root.iter():
         pkg = node.attrib.get("package", "")
@@ -94,9 +133,8 @@ def screen_texts(xml: str) -> list[str]:
     """
     out: list[str] = []
     seen: set[str] = set()
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
+    root = _parsed(xml)
+    if root is None:
         return []
     for node in root.iter():
         if _is_ime(node.attrib.get("package", "")):
@@ -124,9 +162,8 @@ def screen_elements(xml: str, width: int, height: int) -> list[dict[str, Any]]:
     """
     if not xml or width <= 0 or height <= 0:
         return []
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
+    root = _parsed(xml)
+    if root is None:
         return []
 
     top_bound = height * config.AGENT_EXCLUDE_TOP_PCT
@@ -193,13 +230,64 @@ class DeviceSession:
         self._section: Optional[str] = None
         self.last_elements: list[dict[str, Any]] = []
         self.last_xml: str = ""
+        self.last_texts: list[str] = []
         self.shot_count = 0
         self.tap_count = 0
+        # How many actions have been taken since the screen was last read. The prompt already
+        # says "never act twice without reading in between" and "never judge a submit while a
+        # request is in flight" — but a rule the model is merely *told* is a rule it can drop
+        # sixty turns into a run, and both of this harness's worst false defects came from
+        # exactly that. `record_finding` reads these two fields and refuses instead.
+        self.actions_since_read = 0
 
         # Set when the agent needs the user: the run parks on this future until the browser
         # answers, so "blocked" is a real pause rather than a guess written into the report.
         self.pending_question: Optional[dict[str, Any]] = None
         self._answer: Optional[asyncio.Future] = None
+
+        # Raised by Stop. `interrupt()` on the CLI only ends the turn once the tool in flight
+        # returns, and the tools worth interrupting are the slow ones — a `wait_for_ui` can
+        # hold the turn for two minutes after Stop was pressed, which is indistinguishable
+        # from the button not working. Every loop that can run long polls this and bails.
+        #
+        # threading.Event, not a bool: the polling happens on worker threads via
+        # `asyncio.to_thread`, and Event is the flag that is safe to set from the event loop
+        # and read from those threads without further ceremony.
+        self._cancelled = threading.Event()
+
+    # -- stop --------------------------------------------------------------------
+    def cancel(self) -> None:
+        """Ask everything in flight to give up at its next checkpoint."""
+        self._cancelled.set()
+        # A run parked on a question would otherwise sit there forever after a Stop, since
+        # nothing is going to answer it now.
+        if self._answer is not None and not self._answer.done():
+            self._answer.cancel()
+
+    def resume(self) -> None:
+        """Clear the flag so the next turn can run. Called when a new message arrives."""
+        self._cancelled.clear()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    @property
+    def cancel_event(self) -> threading.Event:
+        """For blocking calls that can poll it themselves on a worker thread."""
+        return self._cancelled
+
+    def raise_if_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            raise DeviceCancelled("Stopped by the user.")
+
+    def wait_cancellable(self, seconds: float) -> bool:
+        """Sleep, but wake immediately on Stop. Returns True if it was cancelled.
+
+        Every `time.sleep` in a settle loop is time the Stop button cannot take back, so the
+        waits go through here instead.
+        """
+        return self._cancelled.wait(seconds)
 
     # -- device ------------------------------------------------------------------
     def _connect(self) -> AdbDevice:
@@ -286,6 +374,53 @@ class DeviceSession:
         return path
 
 
+# Text that means a request is still in flight. Judging a submit while one of these is on
+# screen is what turned a correct credential rejection into "unknown credentials were
+# accepted", and a correct duplicate-email refusal into "a second account was created".
+_IN_FLIGHT_MARKERS = (
+    "loading", "please wait", "signing in", "signing up", "logging in", "creating",
+    "submitting", "processing", "uploading", "verifying", "authenticating", "connecting",
+    "one moment", "just a moment",
+)
+
+
+def in_flight_text(texts: list[str]) -> Optional[str]:
+    """The first on-screen string suggesting a request has not finished, if any."""
+    for text in texts:
+        lowered = text.lower()
+        for marker in _IN_FLIGHT_MARKERS:
+            if marker in lowered:
+                return text
+    return None
+
+
+def finding_block_reason(session: "DeviceSession") -> Optional[str]:
+    """Why the current screen state cannot support a verdict, or None if it can.
+
+    Kept separate from the tool so the rule is a plain function: this is the timing rule that
+    the prompt has always stated and that the harness has twice violated anyway, so it is
+    worth being able to test it directly rather than only through an MCP round trip.
+    """
+    if session.actions_since_read:
+        return (
+            f"You have acted {session.actions_since_read} time(s) since the last read_screen, "
+            f"so what you are describing is not what the screen currently shows. Call "
+            f"read_screen, confirm the app is still in the state you are reporting, and file "
+            f"it then. If the finding is about the screen *before* those actions, say so "
+            f"explicitly in `actual` — but re-read first.")
+
+    stalled = in_flight_text(session.last_texts)
+    if stalled is not None:
+        return (
+            f"The last screen you read still showed {stalled!r}, which means the request had "
+            f"not finished. A progress overlay hides the form underneath, so a verdict read "
+            f"now is about the overlay, not the result — this is exactly how a correct "
+            f"rejection has previously been filed as an acceptance. Call "
+            f"wait_until_gone(text={stalled!r}), read the screen again, and judge that.")
+
+    return None
+
+
 def _render_screen(session: DeviceSession, xml: str, w: int, h: int,
                    texts: list[str], elements: list[dict[str, Any]]) -> str:
     ranking = package_ranking(xml)
@@ -353,7 +488,8 @@ def build_device_server(session: DeviceSession):
             return _err(f"Could not read the screen: {exc}")
         texts = screen_texts(xml)
         elements = screen_elements(xml, w, h)
-        session.last_xml, session.last_elements = xml, elements
+        session.last_xml, session.last_elements, session.last_texts = xml, elements, texts
+        session.actions_since_read = 0
         return _ok(_render_screen(session, xml, w, h, texts, elements))
 
     @tool("screenshot",
@@ -384,6 +520,10 @@ def build_device_server(session: DeviceSession):
         d = await session.device()
         last: list[str] = []
         while time.monotonic() < deadline:
+            # Checked every pass, not just at entry: this loop can hold the turn for the full
+            # timeout, and that whole window is time the Stop button has to be able to reclaim.
+            if session.cancelled:
+                return _ok("Stopped before the text appeared.")
             try:
                 xml = await session.run(d.dump_xml)
             except (DeviceError, asyncio.TimeoutError):
@@ -411,6 +551,8 @@ def build_device_server(session: DeviceSession):
         deadline = time.monotonic() + float(args.get("timeout") or 30)
         d = await session.device()
         while time.monotonic() < deadline:
+            if session.cancelled:
+                return _ok("Stopped while waiting for the text to clear.")
             try:
                 xml = await session.run(d.dump_xml)
             except (DeviceError, asyncio.TimeoutError):
@@ -464,10 +606,16 @@ def build_device_server(session: DeviceSession):
             await session.run(d.start_app, pkg)
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Launch failed: {exc}")
-        xml, waited = await asyncio.to_thread(d.wait_for_ui, pkg)
+        # The one call in the whole toolkit that can hold the turn for a couple of minutes, so
+        # it gets the cancel flag directly rather than being raced from outside.
+        xml, waited = await asyncio.to_thread(d.wait_for_ui, pkg, None, 1.0, session.cancel_event)
+        if session.cancelled:
+            return _ok(f"Stopped while waiting for {pkg} to become readable.")
         w, h = await session.run(lambda: d.window_size)
         elements = screen_elements(xml, w, h)
         session.last_xml, session.last_elements = xml, elements
+        session.last_texts = screen_texts(xml)
+        session.actions_since_read = 0
         header = f"Launched {pkg}; UI became readable after {waited}s.\n"
         if pkg != session.package:
             # Otherwise the mislabelling is silent: findings and flow-graph steps are keyed to
@@ -499,6 +647,7 @@ def build_device_server(session: DeviceSession):
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Tap failed: {exc}")
         session.tap_count += 1
+        session.actions_since_read += 1
         await session._emit({"type": "agent_tap", "x": match["x"], "y": match["y"],
                              "label": match["label"]})
         return _ok(f"Tapped {match['label']!r} at ({match['x']},{match['y']}). "
@@ -538,6 +687,7 @@ def build_device_server(session: DeviceSession):
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Tap failed: {exc}")
         session.tap_count += 1
+        session.actions_since_read += 1
         await session._emit({"type": "agent_tap", "x": match["x"], "y": match["y"],
                              "label": match["label"]})
         return _ok(f"Tapped {match['label']!r} at ({match['x']},{match['y']}). "
@@ -555,6 +705,7 @@ def build_device_server(session: DeviceSession):
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Tap failed: {exc}")
         session.tap_count += 1
+        session.actions_since_read += 1
         await session._emit({"type": "agent_tap", "x": int(args["x"]), "y": int(args["y"]),
                              "label": "raw tap"})
         return _ok(f"Tapped ({args['x']},{args['y']}).")
@@ -572,6 +723,7 @@ def build_device_server(session: DeviceSession):
             await session.run(d.send_keys, str(args["text"]), bool(args.get("clear")))
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Typing failed: {exc}")
+        session.actions_since_read += 1
         return _ok(f"Typed {args['text']!r}.")
 
     @tool("use_credential",
@@ -601,6 +753,7 @@ def build_device_server(session: DeviceSession):
             await session.run(d.send_keys, secrets[name], True)
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Typing the credential failed: {exc}")
+        session.actions_since_read += 1
         return _ok(f"Typed the stored value for {name!r} (not shown here).")
 
     @tool("list_credentials", "Names of the test credentials stored for this app. Values are "
@@ -620,6 +773,7 @@ def build_device_server(session: DeviceSession):
             await session.run(d.press, str(args["key"]))
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"press failed: {exc}")
+        session.actions_since_read += 1
         return _ok(f"Pressed {args['key']}.")
 
     @tool("scroll", "Scroll the screen. Direction is the direction the *content* moves, so "
@@ -637,6 +791,7 @@ def build_device_server(session: DeviceSession):
             await session.run(d.scroll, str(args["direction"]), float(args.get("scale") or 0.6))
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"scroll failed: {exc}")
+        session.actions_since_read += 1
         return _ok(f"Scrolled {args['direction']}. Call read_screen to see what is visible now.")
 
     @tool("reset_app_data",
@@ -688,20 +843,31 @@ def build_device_server(session: DeviceSession):
         return _ok(f"Recorded step {j.step_count} of {section!r} on the flow graph.")
 
     @tool("record_finding",
-          "File a confirmed defect. Requires a screenshot path as evidence — every false "
+          "Record the outcome of a test case. Every case ends in one of these, including the "
+          "ones that pass — a module with no passes recorded is indistinguishable from a "
+          "module that was never tested. Requires a screenshot path as evidence: every false "
           "defect this harness has produced was a dump misread, and a screenshot is what "
-          "catches that. State expected vs actual concretely.",
+          "catches that. State expected vs actual concretely.\n"
+          "  pass       — you checked it and it behaved correctly\n"
+          "  warning    — it works, but something about it is questionable or fragile\n"
+          "  bug        — it is broken; expected and actual genuinely disagree\n"
+          "  suggestion — it is not wrong, but the app would be better if it did X",
           {"type": "object",
            "properties": {
                "title": {"type": "string"},
-               "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+               "kind": {"type": "string", "enum": ["pass", "warning", "bug", "suggestion"],
+                        "description": "What this outcome is. Defaults to bug for backwards "
+                                       "compatibility, but state it explicitly."},
+               "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"],
+                            "description": "How bad. Ignored for a pass; use low for a "
+                                           "suggestion unless it matters more than that."},
                "expected": {"type": "string"},
                "actual": {"type": "string"},
                "steps": {"type": "array", "items": {"type": "string"},
                          "description": "Reproduction steps, one per item"},
                "evidence": {"type": "string", "description": "Path returned by the screenshot tool"},
            },
-           "required": ["title", "severity", "expected", "actual", "evidence"],
+           "required": ["title", "expected", "actual", "evidence"],
            "additionalProperties": False})
     async def record_finding(args: dict[str, Any]) -> dict[str, Any]:
         evidence = str(args.get("evidence") or "")
@@ -709,22 +875,41 @@ def build_device_server(session: DeviceSession):
             return _err("The evidence screenshot does not exist. Call screenshot, Read the "
                         "image to confirm what it actually shows, then file the finding with "
                         "that path.")
+
+        # The timing rule, enforced rather than requested. The prompt has always said not to
+        # judge a submit mid-flight and not to act twice without reading — and the harness
+        # still shipped "unknown credentials were accepted" and "a second account was
+        # created", both because a verdict was read off a screen that had moved on. A rule the
+        # model is told can be forgotten sixty turns into a run; a tool that refuses cannot.
+        #
+        # This guards a `pass` exactly as hard as a `bug`. Both of the incidents above were
+        # *premature verdicts*, and one of them flipped to PASS once the overlay cleared —
+        # a pass read off a mid-flight screen is as wrong as a defect read off one, and
+        # "the app is fine" is the more expensive of the two to be wrong about.
+        blocked = finding_block_reason(session)
+        if blocked is not None:
+            return _err(blocked)
+
+        kind = str(args.get("kind") or "bug")
         record = await asyncio.to_thread(
             store.add_finding, session.package, session.slug,
-            {"title": args["title"], "severity": args["severity"],
+            {"title": args["title"], "kind": kind,
+             "severity": args.get("severity") or ("none" if kind == "pass" else "medium"),
              "expected": args["expected"], "actual": args["actual"],
              "steps": args.get("steps") or [], "evidence": evidence})
         await session._emit({"type": "agent_finding", "finding": record})
-        return _ok(f"Filed {record['id']}: {record['title']} ({record['severity']}).")
+        return _ok(f"Filed {record['id']} [{kind}]: {record['title']}.")
 
-    @tool("list_findings", "Findings already filed for this module — check before filing, so a "
-                           "known defect is not reported twice.",
+    @tool("list_findings", "Outcomes already recorded for this module — check before filing, so "
+                           "the same case is not recorded twice.",
           {"type": "object", "properties": {}, "additionalProperties": False})
     async def list_findings(_args: dict[str, Any]) -> dict[str, Any]:
         findings = store.list_findings(session.package, session.slug)
         if not findings:
-            return _ok("No findings filed for this module yet.")
-        return _ok("\n".join(f"{f['id']} [{f['severity']}] {f['title']}" for f in findings))
+            return _ok("Nothing recorded for this module yet.")
+        return _ok("\n".join(
+            f"{f['id']} [{f.get('kind', 'bug')}/{f.get('severity', '?')}] {f['title']}"
+            for f in findings))
 
     # ---------------------------------------------------------------- humans & modules
     @tool("ask_user",
