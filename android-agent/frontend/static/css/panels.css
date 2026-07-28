@@ -1,0 +1,267 @@
+/* panels.css — projects, modal, sheets, outcomes, attachments.
+   Split from the 1269-line dashboard.css; loaded by dashboard.html. */
+
+/* ---------------- PROJECTS (left rail panel) ---------------- */
+.chip-btn.primary {
+  background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; font-weight: 600;
+}
+.chip-btn.primary:hover { filter: brightness(1.08); background: var(--accent-blue); }
+.chip-btn.primary:disabled,
+.chip-btn:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+.projects-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
+.project-row {
+  display: flex; flex-direction: column; gap: 3px;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  padding: 8px 9px; cursor: pointer;
+}
+.project-row:hover { background: var(--surface-2); }
+.project-row.active { background: var(--surface-2); border-color: var(--accent-blue); }
+.project-row-package {
+  font-size: 12px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.project-row-meta { font-size: 10.5px; color: var(--ink-faint); }
+.project-row-stats { display: flex; gap: 5px; margin-top: 2px; }
+.project-row-stats .stat-pill { font-size: 9.5px; padding: 1px 6px; }
+
+/* ---------------- LOCK / ALERT POPUP ---------------- */
+.lock-popup-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
+  display: none; align-items: center; justify-content: center; z-index: 200;
+}
+.lock-popup-backdrop.open { display: flex; }
+
+.lock-popup {
+  width: min(380px, 90vw); background: var(--surface-1); border: 1px solid rgba(255, 174, 66, 0.4);
+  border-radius: var(--radius-xl); box-shadow: var(--elevation-float);
+  padding: 30px 26px 22px; text-align: center;
+  animation: lockPopupIn 0.18s ease-out;
+}
+.lock-popup.level-error { border-color: rgba(255, 85, 119, 0.45); }
+.lock-popup-icon { font-size: 38px; line-height: 1; margin-bottom: 14px; animation: tapPulse 1.2s ease-in-out infinite; }
+.lock-popup-message { font-size: 14px; color: var(--ink); line-height: 1.5; margin-bottom: 20px; }
+.lock-popup-dismiss {
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
+  font-size: 13px; padding: 9px 18px; border-radius: var(--radius-pill); cursor: pointer;
+}
+.lock-popup-dismiss:hover { background: var(--surface-3); }
+
+@keyframes lockPopupIn {
+  0% { opacity: 0; transform: scale(0.92); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ---------------- MODAL ---------------- */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(4px);
+  display: none; align-items: center; justify-content: center; z-index: 100;
+}
+.modal-backdrop.open { display: flex; }
+
+.modal {
+  width: min(880px, 92vw); max-height: 86vh; background: var(--surface-1);
+  border: 1px solid var(--hairline); border-radius: var(--radius-xl);
+  box-shadow: var(--elevation-float); position: relative; overflow: hidden;
+}
+.modal-close {
+  position: absolute; top: 14px; right: 14px; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-muted);
+  cursor: pointer; font-size: 14px; z-index: 2;
+}
+.modal-close:hover { color: var(--ink); }
+
+.modal-body { display: flex; max-height: 86vh; }
+.modal-image-col { flex: 1; background: #000; display: flex; align-items: center; justify-content: center; min-width: 0; }
+.modal-image-col img { max-width: 100%; max-height: 86vh; object-fit: contain; }
+
+.modal-meta-col { width: 320px; min-width: 320px; padding: 22px; overflow-y: auto; }
+.modal-title { font-family: var(--font-display); font-weight: 700; font-size: 16px; word-break: break-word; }
+.modal-sub { font-size: 12px; color: var(--ink-muted); margin-top: 4px; margin-bottom: 18px; word-break: break-word; }
+.modal-row { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-muted); margin-bottom: 14px; }
+.modal-row span:first-child { color: var(--ink-faint); text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+.modal-row code { color: var(--ink); font-size: 11px; word-break: break-all; }
+
+.modal-elements { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.modal-element-row {
+  display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
+  background: var(--surface-2); border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 7px 10px;
+}
+.modal-element-row .lbl { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-element-row .coord { color: var(--ink-faint); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+/* ---------------- NOTE MENU SLIDERS & CHIPS ---------------- */
+.note-val-label {
+  font-size: 11px;
+  color: var(--accent-blue);
+  font-weight: 600;
+  text-transform: none;
+}
+.note-slider-container {
+  padding: 2px 0 4px 0;
+}
+.note-slider {
+  width: 100%;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+  height: 4px;
+}
+
+/* ---------------- SHEETS (new project, module, outcomes) ----------------
+   One dialog treatment for every "stop and fill this in" moment. The old panel forms sat
+   open in the rail permanently, which meant two text inputs and a button competing for
+   attention with the list they were supposed to act on. */
+.sheet-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(3px);
+  display: none; align-items: center; justify-content: center; z-index: 400;
+}
+.sheet-backdrop.open { display: flex; }
+
+.sheet {
+  width: 440px; max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 80px); overflow-y: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-float);
+  padding: 22px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sheet-wide { width: 720px; }
+
+.sheet-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.sheet-close {
+  background: none; border: none; color: var(--ink-faint); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 4px; border-radius: var(--radius-sm);
+}
+.sheet-close:hover { color: var(--ink); background: var(--surface-2); }
+
+.sheet-title {
+  font-family: var(--font-display); font-weight: 600; font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.sheet-sub { font-size: 12.5px; color: var(--ink-faint); line-height: 1.5; }
+.sheet-label {
+  font-size: 11px; font-weight: 600; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-top: 6px;
+}
+.sheet-input {
+  width: 100%; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink); border-radius: var(--radius-sm); padding: 9px 11px;
+  font-family: var(--font-body); font-size: 13px; resize: vertical;
+}
+.sheet-input:focus { outline: none; border-color: var(--accent-blue); }
+.sheet-row { display: flex; gap: 8px; align-items: center; }
+.sheet-row .sheet-input { flex: 1; min-width: 0; }
+.sheet-note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.5; }
+.sheet-note.error { color: var(--danger); }
+.sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+/* ---------------- OUTCOMES (Working / Warnings / Bugs / Suggestions) ---------------- */
+.outcome-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: var(--radius-pill);
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink-muted); font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: var(--font-body);
+}
+.outcome-pill:hover { color: var(--ink); border-color: var(--ink-faint); }
+.outcome-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+/* Colour only once there is something to look at. A permanently red Bugs pill on a project
+   with no bugs trains you to ignore the colour. */
+.outcome-pill.has-items { color: var(--ink); }
+.outcome-pill.kind-pass.has-items { color: var(--success); border-color: rgba(34, 197, 94, 0.4); }
+.outcome-pill.kind-warning.has-items { color: var(--accent-orange); border-color: rgba(255, 122, 61, 0.4); }
+.outcome-pill.kind-bug.has-items { color: var(--danger); border-color: rgba(255, 85, 119, 0.4); }
+.outcome-pill.kind-suggestion.has-items { color: var(--accent-blue); border-color: rgba(0, 153, 255, 0.4); }
+.outcome-pill .count { font-variant-numeric: tabular-nums; }
+
+.outcome-list { display: flex; flex-direction: column; gap: 18px; margin-top: 6px; }
+.outcome-module-title {
+  font-size: 11px; font-weight: 700; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: 0.07em;
+  padding-bottom: 6px; border-bottom: 1px solid var(--hairline);
+}
+.outcome-item {
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); padding: 11px 13px; margin-top: 8px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.outcome-item-head { display: flex; align-items: baseline; gap: 8px; }
+.outcome-item-id { font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.outcome-item-title { font-size: 13px; font-weight: 600; flex: 1; }
+.outcome-item-sev {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--ink-faint);
+}
+.outcome-item-row { font-size: 12px; color: var(--ink-muted); line-height: 1.5; }
+.outcome-item-row b { color: var(--ink-faint); font-weight: 600; }
+.outcome-item img {
+  max-width: 130px; border-radius: var(--radius-sm); border: 1px solid var(--hairline);
+  cursor: zoom-in; margin-top: 4px;
+}
+.outcome-empty { font-size: 12.5px; color: var(--ink-faint); padding: 18px 0; }
+
+/* ---------------- MODULE ROW MENU ---------------- */
+.module-row-menu {
+  opacity: 0; background: none; border: none; color: var(--ink-faint);
+  cursor: pointer; padding: 2px 5px; border-radius: var(--radius-sm);
+  font-size: 15px; line-height: 1; flex-shrink: 0;
+}
+.agent-module:hover .module-row-menu,
+.module-row-menu.open { opacity: 1; }
+.module-row-menu:hover { color: var(--ink); background: var(--surface-3); }
+
+.module-menu {
+  position: fixed; z-index: 420; min-width: 150px;
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); box-shadow: var(--elevation-float);
+  padding: 5px; display: flex; flex-direction: column;
+}
+.module-menu button {
+  background: none; border: none; color: var(--ink); text-align: left;
+  padding: 7px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 12.5px; font-family: var(--font-body);
+}
+.module-menu button:hover { background: var(--surface-2); }
+.module-menu button.danger { color: var(--danger); }
+
+/* ---------------- TOP BAR DEVICE ---------------- */
+.device-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: var(--radius-pill);
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  font-size: 12px; color: var(--ink-muted); max-width: 210px;
+}
+.device-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); flex-shrink: 0; }
+.device-pill.online { color: var(--ink); }
+.device-pill.online .dot { background: var(--success); }
+.device-pill .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------- CHAT ATTACHMENTS ---------------- */
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 6px; }
+.chat-attachment {
+  position: relative; width: 52px; height: 52px; border-radius: var(--radius-sm);
+  overflow: hidden; border: 1px solid var(--hairline);
+}
+.chat-attachment img { width: 100%; height: 100%; object-fit: cover; }
+.chat-attachment button {
+  position: absolute; top: 1px; right: 1px; width: 16px; height: 16px;
+  border-radius: 50%; border: none; background: rgba(0, 0, 0, 0.75);
+  color: #fff; font-size: 10px; line-height: 1; cursor: pointer; padding: 0;
+}
+/* Scoped to the row on purpose: `.chat-input-row button` above styles every button in there
+   as the solid white Send button, and it out-specifies a bare class — so an unqualified
+   `.chat-attach-btn` rule loses and the attach control renders as a second Send. */
+.chat-input-row .chat-attach-btn {
+  background: none; border: 1px solid var(--hairline); color: var(--ink-faint);
+  border-radius: var(--radius-md); cursor: pointer; padding: 0 12px;
+  font-size: 17px; line-height: 1; font-weight: 400; align-self: stretch;
+}
+.chat-input-row .chat-attach-btn:hover {
+  background: var(--surface-2); color: var(--ink); border-color: var(--ink-faint);
+}
+.chat-msg img.chat-msg-image {
+  max-width: 160px; border-radius: var(--radius-sm);
+  border: 1px solid var(--hairline); margin-top: 6px; cursor: zoom-in; display: block;
+}

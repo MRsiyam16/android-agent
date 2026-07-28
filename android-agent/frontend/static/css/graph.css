@@ -1,0 +1,179 @@
+/* graph.css — graph canvas, connectors, node cards, the dock.
+   Split from the 1269-line dashboard.css; loaded by dashboard.html. */
+
+/* ---------------- GRAPH BODY (graph canvas + right dock + live sidebar) ---------------- */
+.graph-wrap { position: relative; flex: 1; min-height: 0; }
+#network {
+  width: 100%; height: 100%;
+  background-color: var(--canvas);
+  background-image: radial-gradient(circle, var(--hairline) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+#network.no-grid { background-image: none; }
+
+.empty-state {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; pointer-events: none; text-align: center;
+}
+.empty-state.hidden { display: none; }
+.empty-title { font-family: var(--font-display); font-weight: 600; font-size: 18px; color: var(--ink-muted); }
+.empty-sub { font-size: 13px; color: var(--ink-faint); }
+.empty-sub code { background: var(--surface-2); padding: 2px 6px; border-radius: 4px; color: var(--ink-muted); }
+
+/* ---------------- CONNECTORS (Framer App Flow Canvas style) ---------------- */
+@keyframes tapPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+.connector-svg,
+.connector-layer {
+  position: absolute; inset: 0; z-index: 5; pointer-events: none;
+  width: 100%; height: 100%;
+  overflow: visible;
+}
+
+.connector-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  background: var(--surface-2);
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-family: var(--font-body);
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  border: 1px solid var(--hairline);
+}
+
+.connector-tap-marker { position: absolute; width: 12px; height: 12px; margin: -6px; }
+.connector-tap-marker .ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: rgba(0, 153, 255, 0.4); animation: tapPulse 1.6s ease-out infinite;
+}
+.connector-tap-marker .dot {
+  position: absolute; left: 3px; top: 3px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent-blue); box-shadow: 0 0 0 2px rgba(9, 9, 9, 0.9);
+}
+
+/* Node header (status dot + screen name) — rendered as a synced DOM overlay, not baked
+   into the thumbnail, so "Observe flow" mode can hide it without re-baking images. */
+.node-header {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500; color: var(--ink);
+  padding-bottom: 6px;
+}
+.node-header .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.node-header-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+
+/* Section heading — one per row/flow (e.g. "Main", "History", "Keypad") */
+.section-heading {
+  position: absolute;
+  transform: translateY(-100%);
+  font-family: var(--font-display); font-weight: 600; font-size: 13px;
+  color: var(--ink-muted); letter-spacing: 0.02em; text-transform: uppercase;
+  padding-bottom: 10px; display: flex; align-items: center; gap: 8px;
+}
+.section-heading::before {
+  content: ""; width: 6px; height: 6px; border-radius: 1px; background: var(--accent-blue);
+}
+
+/* Observe-flow mode: hide every label/heading/marker, keep only screens + connector lines */
+.graph-wrap.observe-mode .connector-label,
+.graph-wrap.observe-mode .connector-tap-marker,
+.graph-wrap.observe-mode .node-header,
+.graph-wrap.observe-mode .section-heading {
+  display: none;
+}
+
+/* ---------------- NODE CARDS (native &lt;img&gt; overlay — crisp, correct aspect ratio) ---------------- */
+.node-card {
+  position: absolute; border-radius: 16px; overflow: hidden;
+  background: var(--surface-2); border: 1.5px solid var(--hairline);
+  z-index: 3; cursor: pointer; pointer-events: auto;
+}
+.node-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.node-card.selected { outline: 2px solid var(--accent-blue); outline-offset: 3px; border-radius: 18px; }
+
+/* Screens carrying a verified defect. Only confirmed findings mark a screen — an
+   informational note or a retracted false positive leaves the card clean, so a coloured
+   outline always means "something is actually wrong here". */
+.node-card.status-fail { outline: 3px solid #f43f5e; outline-offset: 2px; border-radius: 18px; }
+.node-card.status-warn { outline: 3px solid #f59e0b; outline-offset: 2px; border-radius: 18px; }
+.node-card.status-fail::after,
+.node-card.status-warn::after {
+  content: attr(data-status-badge);
+  position: absolute; top: 6px; left: 6px; z-index: 4;
+  font: 600 10px/1 var(--font-body); letter-spacing: 0.04em;
+  padding: 4px 6px; border-radius: 6px; color: #18181b;
+}
+.node-card.status-fail::after { background: #f43f5e; }
+.node-card.status-warn::after { background: #f59e0b; }
+
+/* ---------------- BOTTOM PILL DOCK ---------------- */
+.dock {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  display: flex; flex-direction: row; align-items: center; gap: 4px;
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill); padding: 8px; z-index: 25;
+}
+.dock-btn {
+  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-muted); cursor: pointer; position: relative;
+}
+.dock-btn:hover { color: var(--ink); background: var(--surface-2); }
+.dock-btn.active { background: var(--accent-blue); color: #ffffff; }
+.dock-btn.danger { color: var(--danger); }
+.dock-btn.danger:hover { background: rgba(255, 85, 119, 0.12); }
+.dock-sep { width: 1px; height: 20px; background: var(--hairline); margin: 0 4px; flex-shrink: 0; }
+.dock-zoom { font-size: 10px; color: var(--ink-muted); padding: 0 2px; flex-shrink: 0; }
+
+.dock-popover {
+  display: none;
+  position: absolute; bottom: 60px;
+  background: var(--surface-1); border: 1px solid var(--hairline); border-radius: var(--radius-lg);
+  padding: 14px 16px; box-shadow: var(--elevation-float); z-index: 26; width: 230px;
+}
+.dock-popover.open { display: block; }
+.popover-section-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint);
+  margin: 12px 0 8px; font-weight: 600;
+}
+.popover-section-title:first-child { margin-top: 0; }
+.popover-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-muted); margin-bottom: 10px; }
+.popover-row:last-child { margin-bottom: 0; }
+.popover-row label { flex-shrink: 0; width: 90px; }
+.popover-row span { width: 30px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.popover-toggle {
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-muted);
+  margin-bottom: 8px; cursor: pointer;
+}
+.popover-toggle:last-child { margin-bottom: 0; }
+.popover-toggle input { accent-color: var(--accent-blue); cursor: pointer; }
+.popover-action {
+  width: 100%; margin-top: 6px; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink); font-size: 12px; padding: 8px; border-radius: var(--radius-md); cursor: pointer;
+}
+.popover-action:hover { background: var(--surface-3); }
+
+/* The separate live-preview sidebar is gone: it polled the same phone the agent rail already
+   shows, so the merged layout had two device previews fighting over one ADB connection. The
+   dock's phone button now reveals the agent rail instead. */
+.icon-x { background: none; border: none; color: var(--ink-muted); cursor: pointer; font-size: 13px; }
+.icon-x:hover { color: var(--ink); }
+
+/* ---------------- TOOL CURSOR OVERLAY / SELECTION ---------------- */
+.tool-overlay { position: absolute; inset: 0; z-index: 15; }
+#commentsLayer, #textNotesLayer { z-index: 20; }
+.graph-wrap[data-tool="select"] .tool-overlay { cursor: crosshair; pointer-events: auto; }
+.graph-wrap[data-tool="text"] .tool-overlay { cursor: text; pointer-events: auto; }
+.graph-wrap[data-tool="comment"] .tool-overlay { cursor: copy; pointer-events: auto; }
+.graph-wrap[data-tool="pan"] .tool-overlay { pointer-events: none; }
+
+.selection-box {
+  position: absolute; display: none; z-index: 16; pointer-events: none;
+  border: 1.5px dashed var(--accent-blue); background: rgba(0, 153, 255, 0.08); border-radius: 4px;
+}
+.selection-box.visible { display: block; }

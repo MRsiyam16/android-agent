@@ -6,7 +6,15 @@
 <title>QA Tester AI — Flow &amp; Agent</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-<link rel="stylesheet" href="/static/dashboard.css?v=20">
+<!-- Six files rather than one 60 KB sheet, so a styling change means opening the ~200 lines
+     that own the thing you are changing. Separate <link>s, not @import: imports load
+     serially, links load in parallel. -->
+<link rel="stylesheet" href="/static/css/base.css?v=21">
+<link rel="stylesheet" href="/static/css/layout.css?v=21">
+<link rel="stylesheet" href="/static/css/graph.css?v=21">
+<link rel="stylesheet" href="/static/css/notes.css?v=21">
+<link rel="stylesheet" href="/static/css/agent.css?v=21">
+<link rel="stylesheet" href="/static/css/panels.css?v=21">
 </head>
 <body>
 
@@ -475,6 +483,9 @@
   </div>
 </div>
 
-<script src="/static/dashboard.js?v=20"></script>
+<!-- main.js pulls in the other 22 modules. type="module" is required and also implies defer,
+     so this runs after the DOM is parsed — which the old script relied on being at the end
+     of <body> for. Native ES modules, no bundler: the browser resolves the graph itself. -->
+<script type="module" src="/static/js/main.js?v=21"></script>
 </body>
 </html>

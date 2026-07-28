@@ -1,0 +1,217 @@
+/* notes.css — text captions, sticky notes, their menus, comment pins.
+   Split from the 1269-line dashboard.css; loaded by dashboard.html. */
+
+/* ---------------- TEXT NOTES ---------------- */
+.text-note {
+  position: absolute; z-index: 8; pointer-events: auto;
+}
+/* Size is in canvas units and applied inline; the element is then scaled by the current
+   zoom, so a note holds its proportion to the screen cards at any zoom level. */
+.text-note.kind-sticky {
+  display: flex;
+  flex-direction: column;
+  background: #18181b;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.text-note.kind-sticky:focus-within {
+  border-color: rgba(0, 153, 255, 0.7);
+  box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.85), 0 0 0 3px rgba(0, 153, 255, 0.25);
+}
+
+/* ---------------- STICKY NOTE (titled card) ---------------- */
+.sticky-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 6px 10px 6px 12px;
+  cursor: grab; user-select: none;
+  border-top-left-radius: 11px;
+  border-top-right-radius: 11px;
+}
+.sticky-head:active { cursor: grabbing; }
+
+.sticky-title {
+  flex: 1 1 auto; min-width: 0;
+  font-family: var(--font-body); font-weight: 600;
+  letter-spacing: -0.01em; outline: none; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: text;
+  padding: 1px 3px; border-radius: 3px;
+}
+.sticky-title:focus {
+  background: rgba(0, 0, 0, 0.08);
+  text-overflow: clip;
+}
+
+.sticky-actions {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+
+.sticky-btn {
+  flex: 0 0 auto; width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px; opacity: 0.85; cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+.sticky-btn:hover { opacity: 1; background: rgba(0, 0, 0, 0.14); }
+.sticky-btn svg { width: 12px; height: 12px; }
+
+.sticky-body {
+  flex: 1 1 auto; min-height: 0;
+  color: #e4e4e7; font-family: var(--font-body); line-height: 1.45;
+  padding: 10px 12px 12px 12px; outline: none;
+  background: #18181b;
+  overflow-y: auto;
+  overflow-wrap: break-word; word-break: break-word;
+}
+/* Corner grip — drag to set the note's canvas size. */
+.sticky-resize {
+  position: absolute; right: 0; bottom: 0; width: 14px; height: 14px;
+  cursor: nwse-resize; opacity: 0.4;
+  background:
+    linear-gradient(135deg, transparent 0 52%, var(--ink-faint) 52% 62%, transparent 62% 74%,
+                    var(--ink-faint) 74% 84%, transparent 84%);
+}
+.text-note.kind-sticky:hover .sticky-resize { opacity: 0.8; }
+
+/* Matches .node-card.selected so a mixed selection of screens and notes reads as one. */
+.text-note.selected { outline: 2px solid var(--accent-blue); outline-offset: 3px; }
+/* Raw Markdown is shown while editing, so keep the author's line breaks visible.
+   Driven by an explicit .editing class rather than :focus — the note body sits inside a
+   transformed, absolutely-positioned overlay where :focus proved not to apply reliably,
+   which is how raw source ended up displayed as one collapsed blob. */
+.sticky-body.editing,
+.sticky-body:focus {
+  white-space: pre-wrap;
+  box-shadow: inset 0 0 0 2px var(--accent-blue);
+}
+/* Reading is the default state, so the body must not look or behave like an input. */
+.sticky-body[contenteditable="false"] { cursor: default; }
+
+/* Rendered Markdown — tuned tight, these cards are small. */
+.markdown > *:first-child { margin-top: 0; }
+.markdown > *:last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 0.4em; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  font-family: var(--font-body); font-weight: 600; line-height: 1.25;
+  letter-spacing: 0.04em; text-transform: uppercase; color: #a1a1aa; margin: 0 0 6px 0; font-size: 14px;
+}
+  margin: 0.9em 0 0.4em; letter-spacing: -0.01em;
+}
+.markdown h1 { font-size: 1.35em; }
+.markdown h2 { font-size: 1.2em; }
+.markdown h3 { font-size: 1.08em; }
+.markdown h4 { font-size: 1em; color: var(--ink-muted); }
+.markdown ul, .markdown ol { margin: 0 0 0.6em; padding-left: 1.3em; }
+.markdown li { margin: 0.15em 0; }
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
+  background: var(--surface-3); border-radius: 4px; padding: 0.1em 0.35em;
+}
+.markdown pre {
+  background: var(--surface-3); border-radius: var(--radius-sm);
+  padding: 8px 10px; margin: 0 0 0.6em; overflow-x: auto;
+}
+.markdown pre code { background: none; padding: 0; }
+.markdown blockquote {
+  margin: 0 0 0.6em; padding-left: 0.7em;
+  border-left: 2px solid var(--hairline); color: var(--ink-muted);
+}
+.markdown hr { border: 0; border-top: 1px solid var(--hairline); margin: 0.8em 0; }
+.markdown a { color: var(--accent-blue); }
+.markdown strong { font-weight: 700; }
+
+/* ---------------- NOTE SETTINGS MENU ---------------- */
+.note-menu {
+  position: absolute; z-index: 28; width: 176px;
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); box-shadow: var(--elevation-float);
+  padding: 10px; pointer-events: auto;
+}
+.note-menu-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-faint); margin: 0 0 6px;
+}
+.note-menu-label:not(:first-child) { margin-top: 12px; }
+.note-menu-swatches { display: flex; gap: 6px; }
+.note-swatch {
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+.note-swatch:hover { transform: scale(1.12); }
+.note-swatch.active { border-color: var(--ink); }
+.note-menu-row { display: flex; gap: 6px; }
+.note-menu-chip {
+  flex: 1; text-align: center; cursor: pointer;
+  font-size: 11px; padding: 5px 0; border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--ink-muted);
+  border: 1px solid var(--hairline);
+}
+.note-menu-chip:hover { color: var(--ink); }
+.note-menu-chip.active {
+  background: var(--accent-blue); border-color: var(--accent-blue); color: #fff;
+}
+/* ---------------- BARE TEXT CAPTION (T tool) ---------------- */
+/* Colour, weight and size are authored per note and applied inline; the whole element is
+   then scaled by the zoom, so the size is a canvas measurement like everything else. */
+.text-note.kind-text .text-note-content {
+  outline: none;
+  white-space: pre-wrap;
+  min-width: 24px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  letter-spacing: -0.01em;
+}
+.text-note.kind-text .text-note-content:focus {
+  box-shadow: 0 0 0 1.5px rgba(0, 153, 255, 0.75);
+  background: rgba(0, 153, 255, 0.07);
+}
+.text-note-drag {
+  position: absolute; left: -22px; top: 2px; width: 16px; height: 16px;
+  cursor: grab; opacity: 0.35; color: var(--ink-muted);
+}
+.text-note-drag:hover { opacity: 0.8; }
+.text-note-drag:active { cursor: grabbing; }
+.text-note:hover .text-note-drag, .text-note:hover .text-note-delete { opacity: 0.7; }
+
+.text-note-delete {
+  position: absolute; right: -22px; top: 2px; width: 16px; height: 16px;
+  cursor: pointer; opacity: 0.45; color: var(--ink-muted);
+}
+.text-note-delete:hover { opacity: 0.85; }
+
+/* The caption scales with zoom; its menu must not, or it becomes unusable when zoomed
+   out. Sizing is therefore fixed and independent of the note it is anchored to. */
+.text-format-menu { width: 218px; }
+.note-menu-hint {
+  margin-top: 8px; font-size: 10px; color: var(--ink-muted); opacity: 0.75;
+}
+
+/* ---------------- COMMENT PINS ---------------- */
+.comment-pin {
+  position: absolute; width: 22px; height: 22px; margin: -11px; z-index: 9;
+  border-radius: 50%; background: var(--accent-orange); border: 2px solid var(--surface-1);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  pointer-events: auto; font-size: 11px; color: #fff; font-weight: 700;
+}
+.comment-pin:hover { transform: scale(1.15); }
+.comment-popover {
+  position: absolute; z-index: 27; width: 220px; background: var(--surface-1);
+  border: 1px solid var(--hairline); border-radius: var(--radius-md); padding: 10px;
+  box-shadow: var(--elevation-float); pointer-events: auto;
+}
+.comment-popover textarea {
+  width: 100%; min-height: 60px; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink); border-radius: var(--radius-sm); padding: 8px; font-size: 12px;
+  font-family: var(--font-body); resize: vertical;
+}
+.comment-popover-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.comment-popover-actions button {
+  font-size: 11px; padding: 5px 10px; border-radius: var(--radius-pill); border: 1px solid var(--hairline);
+  background: var(--surface-2); color: var(--ink); cursor: pointer;
+}
+.comment-popover-actions button.danger { color: var(--danger); }
+.comment-popover-actions button.primary { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }

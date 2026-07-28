@@ -1,0 +1,98 @@
+/* base.css — design tokens, reset, and the top bar.
+   Split from the 1269-line dashboard.css; loaded by dashboard.html. */
+
+:root {
+  --canvas: #090909;
+  --surface-1: #141414;
+  --surface-2: #1c1c1c;
+  --surface-3: #232323;
+  --hairline: #262626;
+
+  --ink: #ffffff;
+  --ink-muted: #999999;
+  --ink-faint: #5c5c5c;
+
+  --accent-blue: #0099ff;
+  --accent-orange: #ff7a3d;
+  --success: #22c55e;
+  --danger: #ff5577;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 15px;
+  --radius-xl: 20px;
+  --radius-pill: 100px;
+
+  --elevation-float: inset 0 0.5px 0 rgba(255, 255, 255, 0.08), 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  --font-display: "Space Grotesk", "Mona Sans", system-ui, sans-serif;
+  --font-body: "Inter", "Inter Variable", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-body);
+  overflow: hidden;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 10px; }
+::-webkit-scrollbar-track { background: var(--canvas); }
+
+.shell {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------------- TOP BAR ---------------- */
+.topbar {
+  height: 60px;
+  min-height: 60px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  /* Above the rails (40), which are in turn above the canvas — so a panel dropped from the
+     top bar hangs over both, rather than being clipped behind the sidebar under it. */
+  z-index: 50;
+}
+
+.topbar-left, .topbar-right { display: flex; align-items: center; gap: 14px; }
+
+.brand {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-display); font-weight: 700; font-size: 16px; letter-spacing: -0.01em;
+}
+.brand-mark {
+  width: 10px; height: 10px; border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent-blue), #6a4cf5);
+}
+
+.divider { width: 1px; height: 22px; background: var(--hairline); }
+
+.tabs { display: flex; gap: 4px; background: var(--surface-2); border-radius: var(--radius-pill); padding: 3px; }
+.tab {
+  border: none; background: transparent; color: var(--ink-muted);
+  font-family: var(--font-body); font-size: 13px; font-weight: 500;
+  padding: 7px 16px; border-radius: var(--radius-pill); cursor: pointer;
+}
+.tab.active { background: var(--surface-3); color: var(--ink); }
+.tab:hover:not(.active) { color: var(--ink); }
+
+.stat-pill {
+  font-size: 12px; color: var(--ink-muted); background: var(--surface-2);
+  border: 1px solid var(--hairline); padding: 6px 12px; border-radius: var(--radius-pill);
+}
+
+.conn-indicator { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-muted); }
+.conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+.conn-indicator.online .conn-dot { background: var(--success); box-shadow: 0 0 0 3px rgba(34,197,94,0.15); }
+.conn-indicator.offline .conn-dot { background: var(--danger); box-shadow: 0 0 0 3px rgba(255,85,119,0.15); }
