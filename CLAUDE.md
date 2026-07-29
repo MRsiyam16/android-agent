@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repository.
 
 This file is loaded into **every** session before you type anything, so it holds only what
 changes what you do: where things live, and the rules that were bought with a wrong bug
-report. Everything explanatory is in `README.md` and `docs/`.
+report. Everything explanatory is in `README.md` (repo root) and `app/docs/`.
 
 ---
 
@@ -27,17 +27,28 @@ own transcript, memory, findings and session under `<project>/agent/<module>/`.
 
 ## Running it
 
+Everything below runs from `app/`, and every path in this file is relative to it. The repo
+root holds only `README.md` and the launcher — what someone opening the project needs — and
+`app/` holds the rest, so the GitHub page is a front door rather than a file dump.
+
 ```bash
+cd app
 python start.py                                    # server + device check + browser
 python run_agent.py --package <pkg> --steps 30     # autonomous exploration
-python -m pytest                                   # 163 tests, no device, a few seconds
+python -m pytest                                   # 283 tests, no device, a few seconds
 ```
 
-`Start QA Tester AI.bat` in the repo root does the same as `start.py`.
+`pytest.ini` lives in `app/` too, so `python -m pytest` from the repo root collects nothing
+and exits clean — which looks like a passing suite. Run it from `app/`.
+
+`Start QA Tester AI.bat` in the repo root does the same as `start.py`; it cds into `app/`
+itself, so double-clicking still works from wherever the repo sits.
 
 ---
 
 ## Where the code is
+
+Paths are relative to `app/`.
 
 | Area | Files |
 |---|---|
@@ -136,15 +147,17 @@ here and an assertion in `tests/`, not just a corrected report.
 
 ## Git
 
-One repo, rooted here, remote `MRsiyam16/android-agent`. It used to be a workspace with the
-project nested under `android-agent/`, which is why the GitHub page opened on a folder rather
-than the code; the tree was flattened so the repo root and the project root are the same
-directory. Commit and push after a completed feature, not per file edit. Tag milestones
+One repo, remote `MRsiyam16/android-agent`. The root deliberately holds almost nothing —
+`README.md`, the launcher, this file and `.claude/` — with the whole project under `app/`, so
+opening the repo shows a front door instead of thirty files. It got here in two steps: the
+project used to be nested under `android-agent/` inside a workspace, which made the GitHub
+page open on a folder; that was flattened, and then everything but the two things a user
+actually needs was moved back down into `app/`. Commit and push after a completed feature, not per file edit. Tag milestones
 `v0.1`, `v0.2`, … — run `git tag -l` first and continue from the highest; `git push` does
 not push tags. This is standing permission: no need to re-confirm each time. Never
 `--no-verify`, never force-push to main without asking.
 
-`prototype/` is the standalone ShopFlow canvas mockup the dashboard's visual language came
+`app/prototype/` is the standalone ShopFlow canvas mockup the dashboard's visual language came
 from. It is a static page with no build and nothing imports it — it lives here as a reference,
 not as part of the app.
 
@@ -152,6 +165,6 @@ not as part of the app.
 
 ## Further reading
 
-- `README.md` — the full guide
+- `README.md` (repo root) — the full guide
 - `docs/ARCHITECTURE.md` — state hashing and exploration algorithms
 - `docs/SETUP.md`, `docs/EXAMPLES.md`

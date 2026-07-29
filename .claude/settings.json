@@ -7,12 +7,12 @@
       "Bash(curl -s http://localhost:8000/map)"
     ],
     "deny": [
-      "Read(./projects/**/flow-graph.json)",
-      "Read(./projects/**/screenshots/**)",
-      "Read(./projects/**/shots/**)",
-      "Read(./projects/**/chat.jsonl)",
-      "Read(./**/*.jpg)",
-      "Read(./**/*.png)"
+      "Read(./app/projects/**/flow-graph.json)",
+      "Read(./app/projects/**/screenshots/**)",
+      "Read(./app/projects/**/shots/**)",
+      "Read(./app/projects/**/chat.jsonl)",
+      "Read(./app/**/*.jpg)",
+      "Read(./app/**/*.png)"
     ]
   }
 }

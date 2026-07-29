@@ -26,6 +26,27 @@ Given an Android app package name, the agent:
 
 ---
 
+## Where things are
+
+The repo root holds only what you need to get going; everything else lives under `app/`.
+
+```
+README.md                 you are here
+Start QA Tester AI.bat    double-click on Windows — brings the whole system up
+app/                      the project: source, tests, docs, dependencies
+```
+
+Every command below runs from `app/`, and every path in this file is relative to it. On
+Windows you can skip that entirely and use the launcher, which cds there itself.
+
+```bash
+cd app
+pip install -r requirements.txt
+python start.py
+```
+
+---
+
 ## Setup (One-Time)
 
 ### Prerequisites
@@ -511,7 +532,7 @@ Each needs its own server port (edit `config.py` `SERVER_PORT`).
 
 ## File Structure
 ```
-.
+app/
 ├── start.py              # One command to bring the whole system up
 ├── run_agent.py          # Autonomous exploration loop
 ├── server.py             # FastAPI telemetry + agent server

@@ -12,7 +12,7 @@ rem ---------------------------------------------------------------------------
 
 setlocal
 title QA Tester AI - server
-cd /d "%~dp0"
+cd /d "%~dp0app"
 
 rem App labels are not all Latin and the Windows console is cp1252; without this a
 rem non-ASCII label raises UnicodeEncodeError and takes the whole run down.
