@@ -737,6 +737,44 @@ def build_device_server(session: DeviceSession):
         await session._emit({"type": "agent_finding", "finding": record})
         return _ok(f"Filed {record['id']} [{kind}]: {record['title']}.")
 
+    @tool("add_note",
+          "Pin a note beside the current test case on the flow graph, in your own words: "
+          "what you did here and what the app did back. The note's colour and the colour of "
+          "the case's arrows come from `kind` — green for pass, amber for warning or "
+          "suggestion, red for bug — so someone can read the shape of a run without opening "
+          "anything.\n"
+          "Write it for a person who was not watching: name the screen, the input and the "
+          "wording the app answered with. One note per case, at the end of it; writing again "
+          "for the same case replaces the earlier note rather than stacking up.",
+          {"type": "object",
+           "properties": {
+               "text": {"type": "string",
+                        "description": "The note body. A few sentences of plain prose, or a "
+                                       "short Markdown list. No screenshots — the screens are "
+                                       "already on the board next to it."},
+               "kind": {"type": "string", "enum": ["pass", "warning", "bug", "suggestion"],
+                        "description": "How this case ended. Drives the colour."},
+               "title": {"type": "string",
+                         "description": "Optional heading. Defaults to the case name."},
+           },
+           "required": ["text", "kind"], "additionalProperties": False})
+    async def add_note(args: dict[str, Any]) -> dict[str, Any]:
+        # A note is anchored to the case it is about, and the case is whatever journey_step
+        # is currently filing under. Without one there is nowhere on the board to put it —
+        # better to say so than to drop a note into the corner where nobody will connect it
+        # to anything.
+        if not session._section:
+            return _err("Record the case's steps with journey_step first — a note is pinned "
+                        "beside its case on the flow graph, and there is no case yet.")
+        kind = str(args["kind"])
+        record = await asyncio.to_thread(
+            store.add_note, session.package, session.slug,
+            {"section": session._section, "kind": kind,
+             "title": str(args.get("title") or "").strip(),
+             "text": str(args["text"])})
+        await session._emit({"type": "agent_note", "note": record})
+        return _ok(f"Pinned {record['id']} [{kind}] beside {session._section!r}.")
+
     @tool("list_findings", "Outcomes already recorded for this module — check before filing, so "
                            "the same case is not recorded twice.",
           {"type": "object", "properties": {}, "additionalProperties": False})
@@ -794,7 +832,8 @@ def build_device_server(session: DeviceSession):
         tools=[read_screen, screenshot, wait_for_text, wait_until_gone, check_crash,
                launch, tap_element, tap_text, tap_xy, type_text, use_credential,
                list_credentials, press, scroll, reset_app_data,
-               journey_step, record_finding, list_findings, ask_user, propose_subprojects],
+               journey_step, record_finding, add_note, list_findings, ask_user,
+               propose_subprojects],
     )
 
 
@@ -805,6 +844,7 @@ DEVICE_TOOL_NAMES = [
     "mcp__device__tap_element", "mcp__device__tap_text", "mcp__device__tap_xy",
     "mcp__device__type_text", "mcp__device__use_credential", "mcp__device__list_credentials",
     "mcp__device__press", "mcp__device__scroll", "mcp__device__reset_app_data",
-    "mcp__device__journey_step", "mcp__device__record_finding", "mcp__device__list_findings",
+    "mcp__device__journey_step", "mcp__device__record_finding", "mcp__device__add_note",
+    "mcp__device__list_findings",
     "mcp__device__ask_user", "mcp__device__propose_subprojects",
 ]

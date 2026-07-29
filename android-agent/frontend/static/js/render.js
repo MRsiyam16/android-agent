@@ -4,7 +4,7 @@ import { escapeHtml } from './markdown.js';
 import { renderComments } from './comments.js';
 import { openModal } from './modal.js';
 import { renderTextNotes } from './notes.js';
-import { renderSectionNotes } from './sectionnotes.js';
+import { flowLevel, renderSectionNotes } from './sectionnotes.js';
 import { CARD_H, CARD_W, nodeHeaderLabel, resetCardAspect, sectionLayout, setCardAspect } from './sections.js';
 import { PLACEHOLDER_IMG, cardElements, edgeMeta, nodeMeta, nodeStatus, nodesData, sections, ui } from './state.js';
 import { CARD_MAX_W, requestScaled, shotAspect, truncate } from './util.js';
@@ -285,19 +285,24 @@ function renderConnectors() {
       ? `M${start.x},${start.y} C${start.x},${start.y + 40} ${end.x},${end.y - 40} ${end.x},${end.y}`
       : `M${start.x},${start.y} C${start.x + 50},${start.y} ${end.x - 50},${end.y} ${end.x},${end.y}`;
 
-    // A connector inherits the status of the screen it lands on: the transition that
-    // reaches a defective screen is the one a reader wants to trace back.
-    const dstStatus = nodeStatus.get(meta.to);
-    const stroke = dstStatus?.level === 'fail' ? '#f43f5e'
-      : dstStatus?.level === 'warn' ? '#f59e0b' : '#0099ff';
-    const marker = dstStatus?.level === 'fail' ? 'arrowRed'
-      : dstStatus?.level === 'warn' ? 'arrowAmber' : 'arrowBlue';
+    // A connector is coloured by the *flow* it belongs to, not by the one screen it lands
+    // on. Blue is a case that worked, amber one with a warning or a suggestion against it,
+    // red one with a bug — so a whole failing chain reads as failing. Colouring only the
+    // hop into the flagged screen left a red arrow at the end of a run of blue ones, which
+    // says "the last step went wrong" when the truth is "this case failed".
+    //
+    // Falls back to the landing screen's own status, which is what marks a defect on a
+    // board whose flows carry no note — an exploration run has no cases to colour.
+    const level = flowLevel(meta.to) || flowLevel(meta.from) || nodeStatus.get(meta.to)?.level;
+    const stroke = level === 'fail' ? '#f43f5e' : level === 'warn' ? '#f59e0b' : '#0099ff';
+    const marker = level === 'fail' ? 'arrowRed'
+      : level === 'warn' ? 'arrowAmber' : 'arrowBlue';
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', d);
     path.setAttribute('fill', 'none');
     path.setAttribute('stroke', stroke);
-    path.setAttribute('stroke-width', dstStatus ? '3' : '2');
+    path.setAttribute('stroke-width', level ? '3' : '2');
     path.setAttribute('marker-end', `url(#${marker})`);
     svgPaths.appendChild(path);
 

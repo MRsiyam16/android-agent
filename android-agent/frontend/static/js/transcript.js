@@ -4,7 +4,7 @@ import { ui } from './state.js';
 import { agent, agentEl, agentFetch, appendChat, scrollChatToEnd, setAgentBusy, setAgentModel, setAgentState, startWorking, syncComposerEnabled } from './chat.js';
 import { refreshFrame, sendToAgent } from './compose.js';
 import { loadModules, renderModuleHighlight } from './modules.js';
-import { refreshOutcomes } from './outcomes.js';
+import { refreshOutcomes, refreshSectionNotes } from './outcomes.js';
 import { chatLog } from './phone.js';
 
 async function loadTranscript() {
@@ -38,6 +38,7 @@ async function loadTranscript() {
       + 'I hit something I cannot get past on my own.');
   }
   refreshOutcomes();
+  refreshSectionNotes();
   setAgentBusy(!!data.busy);
   if (data.blocked) showBlocked(data.blocked);
   else hideBlocked();
@@ -187,6 +188,10 @@ function handleAgentEvent(msg) {
       break;
     case 'agent_journey_step':
       appendChat('tool', `flow graph · ${msg.section} · ${msg.label}`);
+      break;
+    case 'agent_note':
+      appendChat('tool', `note · ${msg.note.kind} · ${msg.note.section}`);
+      refreshSectionNotes();
       break;
     case 'agent_finding':
       appendFinding(msg.finding);

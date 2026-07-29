@@ -382,6 +382,71 @@ def add_finding(package: str, slug: str, finding: dict[str, Any]) -> dict[str, A
 
 
 # --------------------------------------------------------------------------------------
+# Board notes
+#
+# What the agent wants to say about a test case, in its own words, pinned beside that case
+# on the flow graph. A finding is a verdict in a fixed shape — expected, actual, evidence —
+# and it lives in a list you open. A note is prose on the board itself, which is where
+# someone actually looks when they are trying to understand a run rather than audit it.
+#
+# Kept here rather than in the board file, for the same reason findings are: the board is
+# written by the browser's autosave, so a note the agent filed while no tab was open would
+# be lost, and one filed while a tab *was* open would race the autosave for the same file.
+# The browser reads these and draws them; it never writes them back.
+# --------------------------------------------------------------------------------------
+def _notes_path(package: str, slug: str) -> Path:
+    return subproject_dir(package, slug) / "notes.json"
+
+
+#: Green, amber, red — the note's colour and the colour of its flow's connectors. Matches
+#: FINDING_KINDS so a case's note and its verdicts cannot disagree about what happened.
+NOTE_KINDS = ("bug", "warning", "suggestion", "pass")
+
+
+def list_notes(package: str, slug: str) -> list[dict[str, Any]]:
+    data = _read_json(_notes_path(package, slug), [])
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        out.append({**item, "kind": kind if kind in NOTE_KINDS else "pass"})
+    return out
+
+
+def list_all_notes(package: str) -> list[dict[str, Any]]:
+    """Every module's notes for one project, tagged with the module they came from."""
+    out: list[dict[str, Any]] = []
+    for entry in list_subprojects(package):
+        slug = str(entry.get("slug") or "")
+        if not slug:
+            continue
+        title = str(entry.get("title") or slug)
+        for note in list_notes(package, slug):
+            out.append({**note, "module_slug": slug, "module_title": title})
+    return out
+
+
+def add_note(package: str, slug: str, note: dict[str, Any]) -> dict[str, Any]:
+    # Same lock and the same reason as add_finding: the id comes from the current count, so
+    # two notes written in one breath would otherwise both be N002 and one would vanish.
+    with _LOCK:
+        notes = list_notes(package, slug)
+        # Re-writing the note for a section replaces it. A case gets one note; an agent that
+        # revises its conclusion after seeing more should not leave the earlier, wrong one
+        # sitting on the board underneath the new one.
+        section = note.get("section")
+        if section:
+            notes = [n for n in notes if n.get("section") != section]
+        record = {"id": f"N{len(notes) + 1:03d}", "ts": _now(), **note}
+        notes.append(record)
+        _write_json_atomic(_notes_path(package, slug), notes)
+        return record
+
+
+# --------------------------------------------------------------------------------------
 # Test credentials
 # --------------------------------------------------------------------------------------
 def get_secrets(package: str) -> dict[str, str]:

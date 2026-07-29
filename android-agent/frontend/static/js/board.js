@@ -7,6 +7,7 @@ import { relayoutAll } from './layout.js';
 import { startProjectOnboarding } from './main.js';
 import { network, scheduleRenderOverlay } from './render.js';
 import { comments, edgeMeta, nodeMeta, nodeStatus, nodesData, sectionOrder, sections, textNotes, ui } from './state.js';
+import { refreshSectionNotes } from './outcomes.js';
 import { setSessionLabel, showStatus } from './status.js';
 import { CARD_MAX_W, requestScaled } from './util.js';
 
@@ -196,6 +197,9 @@ async function openProject(pkg) {
     const project = await resp.json();
     loadProject(project);
     ui.boardPackage = pkg;
+    // After boardPackage is set, or the fetch keys off whichever project the agent
+    // happens to be pointed at rather than the board that just loaded.
+    refreshSectionNotes();
   } catch (err) {
     showStatus('Could not open project: ' + err.message, 'error');
   }

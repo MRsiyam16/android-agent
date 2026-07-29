@@ -174,3 +174,14 @@ async def project_outcomes(package: str):
                            "modules": list(buckets[kind]["modules"].values())}
                     for kind in agent_store.FINDING_KINDS},
     }
+
+
+@router.get("/projects/{package}/notes")
+async def project_notes(package: str):
+    """The notes the agent pinned to this project's board, across every module.
+
+    Flat and unbucketed, unlike outcomes: each note already names the section it belongs
+    beside, and the board places it from that. Served separately from the board file because
+    the browser owns that file — these are the agent's, and read-only to the page.
+    """
+    return {"package": package, "notes": agent_store.list_all_notes(package)}

@@ -67,6 +67,10 @@ const ui = {
   // question meant pressing Stop first. One misplaced `let`, three reported symptoms.
   transcriptRequest: 0,      // newest in-flight transcript load (transcript.js)
   outcomeRequest: 0,         // newest in-flight outcomes load (outcomes.js)
+  // A token per endpoint, never one shared between two. Two fetches counting on the same
+  // number invalidate each other's replies, which is the same stale-response bug the tokens
+  // exist to prevent, only harder to see.
+  noteRequest: 0,            // newest in-flight board-notes load (outcomes.js)
 };
 
 const PLACEHOLDER_IMG =

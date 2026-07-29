@@ -4,7 +4,25 @@ import { agent, agentFetch } from './chat.js';
 import { OUTCOME_KINDS } from './modules.js';
 import { scheduleRenderOverlay } from './render.js';
 import { renderScreenList } from './screens.js';
+import { setSectionNotes } from './sectionnotes.js';
 import { nodeMeta, nodeStatus, ui } from './state.js';
+
+/** The agent's board notes for the open project. Same cadence as the pills. */
+async function refreshSectionNotes() {
+  const pkg = ui.boardPackage || agent.package;
+  if (!pkg) return;
+  const token = ++ui.noteRequest;
+  let data;
+  try {
+    data = await agentFetch(`/projects/${encodeURIComponent(pkg)}/notes`);
+  } catch {
+    return;   // as with the counts, a blip must not blank notes that were right a moment ago
+  }
+  if (token !== ui.noteRequest) return;
+  if (pkg !== (ui.boardPackage || agent.package)) return;
+  setSectionNotes(data.notes);
+  scheduleRenderOverlay();   // the connector colours come from these too
+}
 
 async function refreshOutcomes() {
   // Keyed on the board's project, so the pills describe the app you are looking at.
@@ -195,4 +213,4 @@ outcomeBackdrop.addEventListener('click', (e) => {
   if (e.target === outcomeBackdrop) outcomeBackdrop.classList.remove('open');
 });
 
-export { markFindingScreens, openOutcomes, outcomeBackdrop, outcomeItem, outcomeList, refreshOutcomes };
+export { markFindingScreens, openOutcomes, outcomeBackdrop, outcomeItem, outcomeList, refreshOutcomes, refreshSectionNotes };

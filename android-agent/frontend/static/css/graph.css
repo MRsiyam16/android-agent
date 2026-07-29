@@ -79,41 +79,51 @@
   content: ""; width: 6px; height: 6px; border-radius: 1px; background: var(--accent-blue);
 }
 
-/* ---------------- SECTION NOTES ----------------
-   One per section, in the gutter to the left of its first screen: the steps the agent walked
-   through that case, in the order it walked them, and how the case ended.
+/* ---------------- AGENT BOARD NOTES ----------------
+   One per test case, in the gutter to the left of its first screen: what the agent did there
+   and what the app did back, in the agent's own words. Green passed, amber warning or
+   suggestion, red bug — the same three colours its connectors take, so a case reads as one
+   thing rather than as a note and some arrows that happen to be near each other.
 
    Sized in `em` throughout, with the px font-size set per note from the zoom (see
    sectionnotes.js). That is what lets one number scale the whole thing — padding, rules,
-   indents — so a note keeps its proportion to the screens beside it instead of ballooning
-   into the board as you zoom out, the way fixed-size headings do. */
+   the header — so a note keeps its proportion to the screens beside it instead of
+   ballooning into the board as you zoom out, the way fixed-size headings do. */
 .section-note {
   position: absolute;
-  background: var(--surface-1); border: 1px solid var(--hairline);
-  border-left: 0.25em solid var(--hairline);
+  background: var(--surface-1);
+  border: 1px solid var(--hairline); border-left: 0.3em solid var(--ink-faint);
   border-radius: 0.5em; padding: 0.9em 1em;
-  color: var(--ink-muted); line-height: 1.45;
+  color: var(--ink-muted); line-height: 1.5;
   /* Text only — the screens and the tool overlay underneath stay clickable through it. */
   pointer-events: none;
 }
+.section-note-head {
+  display: flex; align-items: baseline; gap: 0.6em;
+  margin-bottom: 0.7em; padding-bottom: 0.6em; border-bottom: 1px solid var(--hairline);
+}
+.section-note-kind {
+  flex-shrink: 0; font-weight: 700; font-size: 0.85em; letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .section-note-title {
-  font-family: var(--font-display); font-weight: 600; font-size: 1.1em;
-  color: var(--ink); margin-bottom: 0.6em;
+  font-family: var(--font-display); font-weight: 600; font-size: 1.05em; color: var(--ink);
 }
-.section-note-steps { margin: 0; padding-left: 1.4em; }
-.section-note-steps li { margin-bottom: 0.4em; }
-.section-note-steps li:last-child { margin-bottom: 0; }
-.section-note-more { margin-top: 0.5em; color: var(--ink-faint); font-style: italic; }
-.section-note-outcome {
-  margin-top: 0.7em; padding-top: 0.6em; border-top: 1px solid var(--hairline);
-  color: var(--ink-faint);
-}
-/* The same two colours the screens use, so a row that carries a defect reads as one thing
-   at a glance rather than as a note and an outline that happen to be near each other. */
-.section-note.has-fail { border-left-color: #f43f5e; }
-.section-note.has-fail .section-note-outcome { color: #f43f5e; }
-.section-note.has-warn { border-left-color: #f59e0b; }
-.section-note.has-warn .section-note-outcome { color: #f59e0b; }
+/* The body is the agent's Markdown. Margins collapsed to the note's own rhythm so a list or
+   a paragraph does not push the card open. */
+.section-note-body > :first-child { margin-top: 0; }
+.section-note-body > :last-child { margin-bottom: 0; }
+.section-note-body p { margin: 0 0 0.6em; }
+.section-note-body ul, .section-note-body ol { margin: 0 0 0.6em; padding-left: 1.3em; }
+.section-note-body li { margin-bottom: 0.3em; }
+.section-note-body code { font-size: 0.92em; }
+
+.section-note.level-ok { border-left-color: #22c55e; }
+.section-note.level-ok .section-note-kind { color: #22c55e; }
+.section-note.level-warn { border-left-color: #f59e0b; }
+.section-note.level-warn .section-note-kind { color: #f59e0b; }
+.section-note.level-fail { border-left-color: #f43f5e; }
+.section-note.level-fail .section-note-kind { color: #f43f5e; }
 
 /* Observe-flow mode: hide every label/heading/marker, keep only screens + connector lines */
 .graph-wrap.observe-mode .connector-label,
