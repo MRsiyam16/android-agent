@@ -273,10 +273,26 @@ div.vis-tooltip {
   border-radius: var(--radius-md);
 }
 .agent-blocked.open { display: block; }
+.agent-blocked-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 5px;
+}
 .agent-blocked-label {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em;
-  color: var(--accent-orange); margin-bottom: 5px;
+  color: var(--accent-orange);
 }
+/* Sits in the corner of the question itself rather than beside the message box: the answer
+   belongs to the question you are reading, and a button down by the composer reads as
+   "send whatever I typed". */
+.agent-blocked-done {
+  flex-shrink: 0; font: 600 11.5px/1 var(--font-body); cursor: pointer;
+  padding: 5px 10px; border-radius: var(--radius-pill);
+  color: var(--accent-orange); background: rgba(255, 122, 61, 0.12);
+  border: 1px solid rgba(255, 122, 61, 0.45);
+}
+.agent-blocked-done:hover { background: rgba(255, 122, 61, 0.22); color: var(--ink); }
+.agent-blocked-done:disabled { opacity: 0.5; cursor: default; }
+.agent-blocked-done.hidden { display: none; }
 .agent-blocked-question { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
 
 .chat-input-row { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--hairline); background: var(--surface-1); align-items: flex-end; }

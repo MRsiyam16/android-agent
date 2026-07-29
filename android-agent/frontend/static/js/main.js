@@ -6,6 +6,7 @@ import { initAgent, initComposerAttachments, loadSecretNames, refreshFrame, send
 import { updateStats } from './feed.js';
 import { loadModules, selectModule } from './modules.js';
 import { chatLog, phoneScreen, ripple } from './phone.js';
+import { initBlockedDone } from './transcript.js';
 import { initToolOverlay, setTool } from './tools.js';
 import { connectWs } from './socket.js';
 import { initModal } from './modal.js';
@@ -182,6 +183,7 @@ initModal();
 initScreenSearch();
 initChatScroll();
 initComposerAttachments();
+initBlockedDone();
 
 setTool('pan');
 refreshDeviceInfo();

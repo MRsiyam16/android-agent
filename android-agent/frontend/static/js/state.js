@@ -54,6 +54,18 @@ const ui = {
   outcomeData: null,         // cached /outcomes response behind the four pills
   screenFilter: '',          // the screen-list search box
   statusHideTimer: null,     // pending auto-dismiss of the status banner
+
+  // Two more of the same kind, and the reason this list is worth keeping honest.
+  //
+  // `transcriptRequest` was left as a `let` in outcomes.js and incremented from
+  // transcript.js — `const token = ++transcriptRequest`. An imported binding is read-only,
+  // so that line threw `TypeError: Assignment to constant variable.` on the *first* line of
+  // loadTranscript, every time, and took the whole function with it: no chat history when
+  // you clicked a module, no findings on the pills when a project opened, and no restored
+  // "the agent is waiting for you" box after a reload — which is why answering a parked
+  // question meant pressing Stop first. One misplaced `let`, three reported symptoms.
+  transcriptRequest: 0,      // newest in-flight transcript load (transcript.js)
+  outcomeRequest: 0,         // newest in-flight outcomes load (outcomes.js)
 };
 
 const PLACEHOLDER_IMG =

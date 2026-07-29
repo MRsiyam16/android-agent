@@ -1,5 +1,16 @@
 // socket.js — extracted verbatim from the old dashboard.js IIFE.
 
+// Every one of these is used inside the ws callbacks below. They were dropped when the dock
+// wiring moved to main.js, which left `ingest`, `setConnState` and the rest undefined: the
+// page still parsed and booted, so the failure was invisible, but `onopen` and `onmessage`
+// threw a ReferenceError on every frame and the graph never received a single node. The one
+// import that survived, `handleAgentEvent`, is exactly why the Agent transcript kept working
+// while screenshots and the flow graph stayed empty.
+import { restoreSavedAnnotations } from './board.js';
+import { ingest, resetGraph } from './feed.js';
+import { network, scheduleRenderOverlay } from './render.js';
+import { ui } from './state.js';
+import { hideLockPopup, setConnState, setSessionLabel, showLockPopup, showStatus } from './status.js';
 import { handleAgentEvent } from './transcript.js';
 
 function connectWs() {

@@ -23,11 +23,11 @@ window.addEventListener('keydown', (e) => {
   // while a caption is being typed into. Graph screens are deliberately left alone —
   // they come from telemetry and would simply reappear on the next run.
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    const doomed = [...selectedIds].filter((id) => textNotes.has(id));
+    const doomed = [...ui.selectedIds].filter((id) => textNotes.has(id));
     if (doomed.length) {
       e.preventDefault();
       doomed.forEach((id) => textNotes.delete(id));
-      ui.selectedIds = new Set([...selectedIds].filter((id) => !doomed.includes(id)));
+      ui.selectedIds = new Set([...ui.selectedIds].filter((id) => !doomed.includes(id)));
       closeTextFormatMenu();
       scheduleRenderOverlay();
       scheduleAutoSave();

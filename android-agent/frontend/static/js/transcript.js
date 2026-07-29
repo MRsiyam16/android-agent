@@ -1,10 +1,10 @@
 // transcript.js — extracted verbatim from the old dashboard.js IIFE.
 
 import { ui } from './state.js';
-import { agent, agentEl, agentFetch, appendChat, scrollChatToEnd, setAgentBusy, setAgentModel, setAgentState, startWorking } from './chat.js';
-import { refreshFrame } from './compose.js';
+import { agent, agentEl, agentFetch, appendChat, scrollChatToEnd, setAgentBusy, setAgentModel, setAgentState, startWorking, syncComposerEnabled } from './chat.js';
+import { refreshFrame, sendToAgent } from './compose.js';
 import { loadModules, renderModuleHighlight } from './modules.js';
-import { refreshOutcomes, transcriptRequest } from './outcomes.js';
+import { refreshOutcomes } from './outcomes.js';
 import { chatLog } from './phone.js';
 
 async function loadTranscript() {
@@ -12,7 +12,7 @@ async function loadTranscript() {
   // Two loads can be in flight at once (switching project and module in quick succession).
   // Without this guard each clears the log and then appends its own history, so the two
   // interleave and you end up reading one module's conversation under another's name.
-  const token = ++transcriptRequest;
+  const token = ++ui.transcriptRequest;
   const forPackage = agent.package;
   const forSlug = agent.slug;
   chatLog.innerHTML = '';
@@ -20,10 +20,10 @@ async function loadTranscript() {
   try {
     data = await agentFetch(`/agent/${encodeURIComponent(forPackage)}/${forSlug}/chat`);
   } catch (err) {
-    if (token === transcriptRequest) appendChat('error', 'Could not load the transcript: ' + err.message);
+    if (token === ui.transcriptRequest) appendChat('error', 'Could not load the transcript: ' + err.message);
     return;
   }
-  if (token !== transcriptRequest) return;   // a newer selection won; discard this one
+  if (token !== ui.transcriptRequest) return;   // a newer selection won; discard this one
   chatLog.innerHTML = '';
   (data.messages || []).forEach((m) => {
     if (m.role === 'user') appendChat('user', m.text || '');
@@ -47,6 +47,19 @@ async function loadTranscript() {
   scrollChatToEnd(true);
 }
 
+// What the tick sends, per kind of question. A credential has no default — there is a value
+// only the user knows — so it gets no button at all rather than one that would answer wrongly.
+const DONE_REPLIES = {
+  approval: { label: '✓ Approve', text: 'Approved — go ahead.' },
+  question: {
+    label: '✓ Done',
+    // Phrased as a report of an action rather than a bare "done": the agent is resuming a
+    // tool call with this as the reply, and "done" alone leaves it guessing what was done.
+    text: 'Done — I have done what you asked on the phone. Carry on from here, and check the '
+      + 'current screen yourself rather than assuming what it is.',
+  },
+};
+
 function showBlocked(question) {
   agentEl.blocked.classList.add('open');
   agentEl.blockedLabel.textContent = question.kind === 'credential'
@@ -55,12 +68,36 @@ function showBlocked(question) {
       ? 'The agent is waiting for your approval'
       : 'The agent needs an answer';
   agentEl.blockedQuestion.textContent = question.question || '';
+  const reply = DONE_REPLIES[question.kind === 'approval' ? 'approval' : 'question'];
+  const offerDone = question.kind !== 'credential';
+  agentEl.blockedDone.classList.toggle('hidden', !offerDone);
+  agentEl.blockedDone.disabled = false;
+  if (offerDone) {
+    agentEl.blockedDone.textContent = reply.label;
+    agentEl.blockedDone.dataset.reply = reply.text;
+  }
   setAgentState('blocked', 'blocked');
+  syncComposerEnabled();   // the run is still busy; being blocked is what re-opens the composer
   agentEl.input.focus();
 }
 
 function hideBlocked() {
   agentEl.blocked.classList.remove('open');
+  syncComposerEnabled();
+}
+
+// Deferred out of module scope for the reason main.js explains: this reads `sendToAgent`
+// across an import cycle, so registering it here at evaluation time can hit a dead zone.
+function initBlockedDone() {
+  agentEl.blockedDone.addEventListener('click', async () => {
+    const text = agentEl.blockedDone.dataset.reply;
+    if (!text || agentEl.blockedDone.disabled) return;
+    // Disabled, not hidden: a second click while the first is in flight would post the same
+    // answer twice, and the second one arrives after the tool has resumed — where it is no
+    // longer an answer but a new instruction mid-turn.
+    agentEl.blockedDone.disabled = true;
+    await sendToAgent(text);   // hides the box itself, and unblocks the parked tool
+  });
 }
 
 function appendShot(path, note) {
@@ -224,4 +261,4 @@ function renderAttachments() {
   });
 }
 
-export { appendFinding, appendShot, attachmentsEl, chatImageInput, handleAgentEvent, hideBlocked, loadTranscript, renderAttachments, showBlocked, updateMeters };
+export { appendFinding, appendShot, attachmentsEl, chatImageInput, handleAgentEvent, hideBlocked, initBlockedDone, loadTranscript, renderAttachments, showBlocked, updateMeters };

@@ -69,7 +69,10 @@ function renderScreenList() {
   // Reveal the selected screen — but only when the selection actually changed. Doing it on
   // every render would yank the list back during a live run, which re-renders on each
   // telemetry post and would make the panel impossible to read while exploring.
-  const selected = ui.selectedIds.size === 1 ? [...selectedIds][0] : null;
+  // `ui.selectedIds`, not the bare name the old closure used: unqualified, this threw a
+  // ReferenceError the moment exactly one screen was selected, which took the rest of the
+  // render — the count, the empty-state text — down with it every time you clicked a row.
+  const selected = ui.selectedIds.size === 1 ? [...ui.selectedIds][0] : null;
   if (selected && selected !== lastRevealed) {
     screenListEl.querySelector('.screen-row.active')
       ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });

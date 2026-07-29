@@ -372,9 +372,20 @@
         <span class="agent-working-timer" id="agentWorkingTimer">0:00</span>
       </div>
 
-      <!-- Shown only while a tool is parked waiting on the user -->
+      <!-- Shown only while a tool is parked waiting on the user.
+
+           The tick is here because most of what the agent parks on is not a question with an
+           answer — it is "unlock the phone", "grant the permission", "put the app back on the
+           login screen". The work happens on the device, and all the agent needs back is that
+           it is done. Typing a sentence to say so is friction on the one interaction that is
+           already an interruption. Hidden for a credential, where there is a value to type
+           and nothing a tick could stand for. -->
       <div class="agent-blocked" id="agentBlocked">
-        <div class="agent-blocked-label" id="agentBlockedLabel">The agent needs an answer</div>
+        <div class="agent-blocked-head">
+          <div class="agent-blocked-label" id="agentBlockedLabel">The agent needs an answer</div>
+          <button type="button" class="agent-blocked-done" id="agentBlockedDone"
+                  title="Tell the agent you have done it and let it carry on">✓ Done</button>
+        </div>
         <div class="agent-blocked-question" id="agentBlockedQuestion"></div>
       </div>
 

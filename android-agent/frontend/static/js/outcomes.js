@@ -8,12 +8,20 @@ async function refreshOutcomes() {
   // Keyed on the board's project, so the pills describe the app you are looking at.
   const pkg = ui.boardPackage || agent.package;
   if (!pkg) return;
+  // Opening the dashboard starts two independent chains that both end here: `initAgent`
+  // points the agent at the *first* project in the list, while `/agent/status` opens the
+  // last-used one. Both called this without a token, so whichever response landed second
+  // wrote the pills — and an empty project answering after the real one is how a module
+  // with 13 findings displayed 0/0/0/0. Same guard loadTranscript already uses.
+  const token = ++ui.outcomeRequest;
   let data;
   try {
     data = await agentFetch(`/projects/${encodeURIComponent(pkg)}/outcomes`);
   } catch {
     return;   // a transient failure must not blank counts that were correct a second ago
   }
+  if (token !== ui.outcomeRequest) return;          // a newer project's request won
+  if (pkg !== (ui.boardPackage || agent.package)) return;   // the board moved under us
   ui.outcomeData = data;
   Object.entries(OUTCOME_KINDS).forEach(([kind, spec]) => {
     const count = (data.counts && data.counts[kind]) || 0;
@@ -120,6 +128,4 @@ outcomeBackdrop.addEventListener('click', (e) => {
   if (e.target === outcomeBackdrop) outcomeBackdrop.classList.remove('open');
 });
 
-let transcriptRequest = 0;
-
-export { openOutcomes, outcomeBackdrop, outcomeItem, outcomeList, refreshOutcomes, transcriptRequest };
+export { openOutcomes, outcomeBackdrop, outcomeItem, outcomeList, refreshOutcomes };

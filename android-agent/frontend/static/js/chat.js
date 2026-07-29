@@ -55,6 +55,7 @@ const agentEl = {
   blocked: document.getElementById('agentBlocked'),
   blockedLabel: document.getElementById('agentBlockedLabel'),
   blockedQuestion: document.getElementById('agentBlockedQuestion'),
+  blockedDone: document.getElementById('agentBlockedDone'),
   moduleList: document.getElementById('agentModuleList'),
   secretNames: document.getElementById('agentSecretNames'),
   meterStepper: document.getElementById('meterStepper'),
@@ -181,16 +182,30 @@ function stopWorking() {
   if (agent.workTimer) { clearInterval(agent.workTimer); agent.workTimer = null; }
 }
 
+// Sending mid-run would just be rejected, so don't offer it — unless the agent is parked on
+// a question, which is exactly when a reply is needed.
+//
+// Its own function because both inputs move independently. This used to live inside
+// setAgentBusy, which only runs on a busy event — so when the agent went on to *block*, the
+// composer was still disabled from the last `setAgentBusy(true)` and nothing recomputed it.
+// The box said "the agent needs an answer" above a Send button that would not send, and the
+// only way to answer was to press Stop first and end the run you were trying to help.
+function syncComposerEnabled() {
+  const blocked = agentEl.blocked.classList.contains('open');
+  const locked = agent.busy && !blocked;
+  agentEl.send.disabled = locked;
+  agentEl.input.placeholder = locked
+    ? 'The agent is working — press Stop to redirect it'
+    : blocked
+      ? 'Answer the agent, or press ✓ if you have done what it asked'
+      : 'Tell the agent what to test — e.g. “test the login module: empty submit, wrong password, valid login, session persistence”';
+}
+
 function setAgentBusy(busy) {
   agent.busy = busy;
   agentEl.stop.disabled = !busy;
-  // Sending mid-run would just be rejected, so don't offer it — unless the agent is parked
-  // on a question, which is exactly when a reply is needed.
   const blocked = agentEl.blocked.classList.contains('open');
-  agentEl.send.disabled = busy && !blocked;
-  agentEl.input.placeholder = (busy && !blocked)
-    ? 'The agent is working — press Stop to redirect it'
-    : 'Tell the agent what to test — e.g. “test the login module: empty submit, wrong password, valid login, session persistence”';
+  syncComposerEnabled();
   if (busy) { setAgentState('working', 'busy'); startWorking(agentEl.workingText.textContent); }
   else {
     stopWorking();
@@ -205,4 +220,4 @@ async function agentFetch(url, options) {
   return data;
 }
 
-export { initChatScroll, agent, agentEl, agentFetch, appendChat, loadModelPicker, prettyModel, scrollChatToEnd, setAgentBusy, setAgentModel, setAgentState, startWorking, stopWorking, tickWorkTimer };
+export { initChatScroll, agent, agentEl, agentFetch, appendChat, loadModelPicker, prettyModel, scrollChatToEnd, setAgentBusy, setAgentModel, setAgentState, startWorking, stopWorking, syncComposerEnabled, tickWorkTimer };
