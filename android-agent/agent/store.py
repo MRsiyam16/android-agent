@@ -381,6 +381,103 @@ def add_finding(package: str, slug: str, finding: dict[str, Any]) -> dict[str, A
         return record
 
 
+def link_finding(package: str, slug: str, finding_id: str,
+                 node: str) -> Optional[dict[str, Any]]:
+    """Point an already-filed finding at the screen it was about. None if there is no such id.
+
+    Filing and knowing which node to name do not always happen at the same moment: the agent
+    often records the verdict before it records the step that shows it, and a whole run can
+    be reviewed after the fact, when every screen is on the board and the right one is
+    obvious. Without this the only way to outline a screen would be to file the finding
+    again, which would leave two verdicts for one case and inflate the counts.
+    """
+    with _LOCK:
+        findings = list_findings(package, slug)
+        found = None
+        for item in findings:
+            if item.get("id") == finding_id:
+                item["node"] = node
+                found = item
+        if found is None:
+            return None
+        _write_json_atomic(_findings_path(package, slug), findings)
+        return found
+
+
+# --------------------------------------------------------------------------------------
+# Flow-graph steps
+#
+# A thin index of what this module has drawn: node id, label, section. The screens themselves
+# live on the board and their screenshots in the project — this is only what is needed to
+# answer "which node was that?", which is the question between filing a finding and
+# outlining the screen it was about.
+#
+# Written here rather than read back off flow-graph.json, which is megabytes of base64 JPEG
+# (the deskclock board is 6.5 MB) and is not even guaranteed to exist: the board is saved by
+# the browser, so a run with no tab open draws nothing and still needs its steps recorded.
+# --------------------------------------------------------------------------------------
+def _steps_path(package: str, slug: str) -> Path:
+    return subproject_dir(package, slug) / "steps.json"
+
+
+def _recorded_steps(package: str, slug: str) -> list[dict[str, Any]]:
+    """Only what this module wrote. Never the board fallback — see record_step."""
+    data = _read_json(_steps_path(package, slug), [])
+    if not isinstance(data, list):
+        return []
+    return [s for s in data if isinstance(s, dict) and s.get("node")]
+
+
+def list_steps(package: str, slug: str) -> list[dict[str, Any]]:
+    return _recorded_steps(package, slug) or _steps_from_board(package, slug)
+
+
+def _steps_from_board(package: str, slug: str) -> list[dict[str, Any]]:
+    """Recover a module's steps from the saved board, for runs that predate steps.json.
+
+    The board already holds every node this module drew, each carrying the section it was
+    filed under and the name built from its step label — so this reads the run's own record
+    rather than reconstructing one. Nothing is inferred: a node is this module's if its
+    section says so.
+
+    Parsed here and not by the agent. The file is mostly base64 JPEG — the deskclock board is
+    6.5 MB, about 1.6M tokens — which is why `.claude/settings.json` denies reading it and
+    `tools/inspect_board.py` exists. Server-side the screenshots are simply ignored.
+    """
+    path = project_dir(package) / "flow-graph.json"
+    if not path.is_file():
+        return []
+    try:
+        with path.open(encoding="utf-8") as fh:
+            board = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    steps: list[dict[str, Any]] = []
+    for node in board.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        section = str(node.get("section") or "")
+        if section != slug and not section.startswith(f"{slug} / "):
+            continue
+        steps.append({"node": node.get("hash"), "section": section,
+                      "label": str(node.get("screenName") or ""), "ts": ""})
+    return [s for s in steps if s["node"]]
+
+
+def record_step(package: str, slug: str, node: str, label: str, section: str) -> None:
+    """Append one step. Re-posting the same node id updates it rather than duplicating.
+
+    Reads `_recorded_steps`, not `list_steps`. Going through the public one would fold the
+    board fallback into the file on the very first step of a re-run — writing every node the
+    module drew in some earlier session into this one's index, undated and possibly long
+    since gone from the board. The fallback answers a question; it is not a starting point.
+    """
+    with _LOCK:
+        steps = [s for s in _recorded_steps(package, slug) if s.get("node") != node]
+        steps.append({"node": node, "label": label, "section": section, "ts": _now()})
+        _write_json_atomic(_steps_path(package, slug), steps)
+
+
 # --------------------------------------------------------------------------------------
 # Board notes
 #

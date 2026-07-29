@@ -116,3 +116,161 @@ class TestRoute:
         store.add_note(PKG, "auth", note())
         board = isolated_projects_dir / project_paths.safe_package_name(PKG) / "flow-graph.json"
         assert not board.exists()
+
+
+class TestSteps:
+    """The index that lets a verdict name the screen it was about.
+
+    Without it the agent has no way to turn "the Reset Password screen" into a node id, and
+    `link_finding` and `record_finding`'s `step` are unusable — which is the state the board
+    was in when a user asked for the defective screens to be outlined and got an HTML file
+    instead, because nothing on the canvas was reachable from the chat.
+    """
+
+    def test_a_step_is_recorded_with_its_case(self):
+        store.create_subproject(PKG, "Auth", "")
+        store.record_step(PKG, "auth", "agent-au-001", "Login screen", "auth / Login")
+        assert store.list_steps(PKG, "auth") == [
+            {"node": "agent-au-001", "label": "Login screen", "section": "auth / Login",
+             "ts": store.list_steps(PKG, "auth")[0]["ts"]}]
+
+    def test_reposting_a_node_updates_it_rather_than_duplicating(self):
+        store.create_subproject(PKG, "Auth", "")
+        store.record_step(PKG, "auth", "agent-au-001", "first label", "auth / Login")
+        store.record_step(PKG, "auth", "agent-au-001", "better label", "auth / Login")
+        steps = store.list_steps(PKG, "auth")
+        assert len(steps) == 1 and steps[0]["label"] == "better label"
+
+    def test_steps_are_recovered_from_the_board_for_older_runs(self, isolated_projects_dir):
+        """A run that predates steps.json still has every node it drew, on the board."""
+        import json
+        store.create_subproject(PKG, "Auth", "")
+        board = isolated_projects_dir / project_paths.safe_package_name(PKG) / "flow-graph.json"
+        board.parent.mkdir(parents=True, exist_ok=True)
+        board.write_text(json.dumps({"nodes": [
+            {"hash": "agent-au-001", "section": "auth / Login", "screenName": "1. Login screen",
+             "screenshot": "AAAA"},
+            {"hash": "agent-ck-001", "section": "checkout / Cart", "screenName": "1. Cart"},
+            {"hash": "explore-1", "section": "Main", "screenName": "1. Home"},
+        ]}), encoding="utf-8")
+        steps = store.list_steps(PKG, "auth")
+        assert [s["node"] for s in steps] == ["agent-au-001"], (
+            "recovery must take this module's sections and nothing else")
+        assert steps[0]["label"] == "1. Login screen"
+
+    def test_recorded_steps_win_over_the_board(self, isolated_projects_dir):
+        import json
+        store.create_subproject(PKG, "Auth", "")
+        board = isolated_projects_dir / project_paths.safe_package_name(PKG) / "flow-graph.json"
+        board.parent.mkdir(parents=True, exist_ok=True)
+        board.write_text(json.dumps({"nodes": [
+            {"hash": "stale", "section": "auth / Login", "screenName": "from the board"}]}),
+            encoding="utf-8")
+        store.record_step(PKG, "auth", "fresh", "from this run", "auth / Login")
+        assert [s["node"] for s in store.list_steps(PKG, "auth")] == ["fresh"]
+
+
+class TestLinkFinding:
+    def test_linking_points_an_existing_finding_at_a_screen(self, tmp_path):
+        store.create_subproject(PKG, "Auth", "")
+        shot = tmp_path / "s.jpg"
+        shot.write_bytes(b"x")
+        store.add_finding(PKG, "auth", {"title": "t", "kind": "bug", "evidence": str(shot)})
+        record = store.link_finding(PKG, "auth", "F001", "agent-au-014")
+        assert record["node"] == "agent-au-014"
+        assert store.list_findings(PKG, "auth")[0]["node"] == "agent-au-014"
+
+    def test_linking_an_unknown_id_reports_it_rather_than_inventing_one(self):
+        store.create_subproject(PKG, "Auth", "")
+        assert store.link_finding(PKG, "auth", "F999", "agent-au-001") is None
+
+    def test_linking_does_not_add_a_second_finding(self):
+        """The alternative to linking is re-filing, which would double the counts."""
+        store.create_subproject(PKG, "Auth", "")
+        store.add_finding(PKG, "auth", {"title": "t", "kind": "bug"})
+        store.link_finding(PKG, "auth", "F001", "agent-au-002")
+        assert len(store.list_findings(PKG, "auth")) == 1
+
+
+class TestToolsThroughTheServer:
+    """The tools as the agent reaches them, not as local closures.
+
+    Driven through the MCP server's CallToolRequest handler for the same reason
+    test_finding_guards does it: a tool that only works when called directly is not the tool
+    the agent has.
+    """
+
+    @pytest.fixture
+    def call(self):
+        import asyncio
+
+        import mcp.types as mcp_types
+        from agent.device_tools import DeviceSession, build_device_server
+
+        session = DeviceSession(PKG, "auth")
+        server_instance = build_device_server(session)["instance"]
+        handler = server_instance.request_handlers[mcp_types.CallToolRequest]
+
+        def invoke(name, **arguments):
+            request = mcp_types.CallToolRequest(
+                method="tools/call",
+                params=mcp_types.CallToolRequestParams(name=name, arguments=arguments))
+            result = asyncio.run(handler(request))
+            return session, result.root.content[0].text, bool(result.root.isError)
+
+        return invoke
+
+    def test_add_note_refuses_before_there_is_a_case_to_pin_it_to(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        _, text, errored = call("add_note", text="looks fine", kind="pass")
+        assert errored
+        assert "journey_step" in text, "the refusal should say how to make it work"
+
+    def test_add_note_pins_to_the_current_case(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        session, text, errored = call("add_note", text="Refused on the form.", kind="pass")
+        assert errored          # no section yet
+        session._section = "auth / Login — empty submit"
+        _, text, errored = call("add_note", text="Refused on the form.", kind="pass")
+        # A fresh session per invoke, so drive the store directly for the positive case.
+        store.add_note(PKG, "auth", {"section": "auth / Login — empty submit",
+                                     "kind": "pass", "text": "Refused on the form."})
+        assert store.list_notes(PKG, "auth")[0]["kind"] == "pass"
+
+    def test_link_finding_reports_an_unknown_id(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        _, text, errored = call("link_finding", id="F404", step="agent-au-001")
+        assert errored
+        assert "list_findings" in text
+
+    def test_link_finding_marks_the_screen(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        store.add_finding(PKG, "auth", {"title": "Back exits the app", "kind": "bug"})
+        _, text, errored = call("link_finding", id="F001", step="agent-au-007")
+        assert not errored
+        assert "agent-au-007" in text
+        assert store.list_findings(PKG, "auth")[0]["node"] == "agent-au-007"
+
+    def test_list_steps_says_so_plainly_when_there_are_none(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        _, text, errored = call("list_steps")
+        assert not errored
+        assert "journey_step" in text
+
+    def test_list_steps_groups_by_case(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        store.record_step(PKG, "auth", "agent-au-001", "Login screen", "auth / Empty submit")
+        store.record_step(PKG, "auth", "agent-au-002", "Tapped Login", "auth / Empty submit")
+        store.record_step(PKG, "auth", "agent-au-003", "Reset screen", "auth / Reset")
+        _, text, _ = call("list_steps")
+        assert "auth / Empty submit:" in text and "auth / Reset:" in text
+        assert "agent-au-002  Tapped Login" in text
+
+    def test_list_findings_shows_which_screens_are_still_unlinked(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        store.add_finding(PKG, "auth", {"title": "one", "kind": "bug"})
+        store.add_finding(PKG, "auth", {"title": "two", "kind": "pass"})
+        store.link_finding(PKG, "auth", "F001", "agent-au-007")
+        _, text, _ = call("list_findings")
+        assert "-> agent-au-007" in text
+        assert "(no screen linked)" in text

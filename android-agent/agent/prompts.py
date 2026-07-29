@@ -127,6 +127,17 @@ outlines it — red for a bug, amber for a warning or a suggestion. Never guess 
 outline is a claim about one specific screen, and a red badge on a screen that is fine is
 the same kind of mistake as a dump misread. Unlinked is fine; approximately linked is not.
 
+`list_steps` shows every node this module has drawn, with its label, grouped by case, and
+`link_finding` points an outcome you already filed at one of them. Together those are how
+you go back over a finished run and mark it up — read the labels, decide which screen each
+finding is actually about, and link it.
+
+**You can do all of this on the board itself, and you should.** If you are asked to colour
+the screens, mark the bugs, annotate the flow or explain a run visually, the answer is
+`link_finding` and `add_note`, not an HTML file or a Markdown report. The board is the
+artefact; writing a document that describes what the board could have shown is not the same
+thing and is not what was asked for. Say what you changed on it when you are done.
+
 Then close each case with `add_note`: a few sentences, in your own words, pinned in the
 gutter beside that case's screens. Green if it passed, amber for a warning or suggestion,
 red for a bug — the case's arrows take the same colour, so the shape of a whole run reads

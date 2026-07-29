@@ -652,6 +652,10 @@ def build_device_server(session: DeviceSession):
                                            None, session.last_xml or None)
         except Exception as exc:  # noqa: BLE001
             return _err(f"Could not post the step: {exc}")
+        # Indexed so the agent can find this node again by its label — see list_steps. The
+        # board has the screen, but nothing else records which id it was given.
+        await asyncio.to_thread(store.record_step, session.package, session.slug,
+                                node, str(args["label"]), section)
         await session._emit({"type": "agent_journey_step", "label": args["label"],
                              "section": section, "node": node})
         # The id is returned because record_finding takes it: it is the only way to say
@@ -775,6 +779,50 @@ def build_device_server(session: DeviceSession):
         await session._emit({"type": "agent_note", "note": record})
         return _ok(f"Pinned {record['id']} [{kind}] beside {session._section!r}.")
 
+    @tool("link_finding",
+          "Point an outcome you already filed at the screen it was about, so the board "
+          "outlines that screen — red for a bug, amber for a warning or a suggestion. Use it "
+          "when you filed the verdict before recording the step, or when reviewing a finished "
+          "run where every screen is on the board. Only ever name a screen you have actually "
+          "identified: the outline is a claim, and a red badge on a screen that is fine is "
+          "the same kind of mistake as a dump misread.",
+          {"type": "object",
+           "properties": {
+               "id": {"type": "string", "description": "Finding id, e.g. F007"},
+               "step": {"type": "string", "description": "Node id from journey_step, e.g. agent-au-014"},
+           },
+           "required": ["id", "step"], "additionalProperties": False})
+    async def link_finding(args: dict[str, Any]) -> dict[str, Any]:
+        record = await asyncio.to_thread(
+            store.link_finding, session.package, session.slug,
+            str(args["id"]).strip(), str(args["step"]).strip())
+        if record is None:
+            return _err(f"No finding {args['id']!r} in this module. Call list_findings to "
+                        f"see the ids.")
+        await session._emit({"type": "agent_finding", "finding": record})
+        return _ok(f"{record['id']} now points at {args['step']}; the board outlines that "
+                   f"screen as {record.get('kind', 'bug')}.")
+
+    @tool("list_steps",
+          "The screens this module has put on the flow graph, as node id and label, grouped "
+          "by test case. This is how you find the id to hand to link_finding or to "
+          "record_finding's `step` — read the labels and pick the screen the outcome is "
+          "actually about rather than assuming the most recent one.",
+          {"type": "object", "properties": {}, "additionalProperties": False})
+    async def list_steps(_args: dict[str, Any]) -> dict[str, Any]:
+        steps = store.list_steps(session.package, session.slug)
+        if not steps:
+            return _ok("This module has not recorded any flow-graph steps yet — "
+                       "call journey_step as you walk a case.")
+        lines: list[str] = []
+        section = None
+        for step in steps:
+            if step.get("section") != section:
+                section = step.get("section")
+                lines.append(f"\n{section}:")
+            lines.append(f"  {step['node']}  {step['label']}")
+        return _ok("\n".join(lines).strip())
+
     @tool("list_findings", "Outcomes already recorded for this module — check before filing, so "
                            "the same case is not recorded twice.",
           {"type": "object", "properties": {}, "additionalProperties": False})
@@ -784,6 +832,7 @@ def build_device_server(session: DeviceSession):
             return _ok("Nothing recorded for this module yet.")
         return _ok("\n".join(
             f"{f['id']} [{f.get('kind', 'bug')}/{f.get('severity', '?')}] {f['title']}"
+            + (f"  -> {f['node']}" if f.get("node") else "  (no screen linked)")
             for f in findings))
 
     # ---------------------------------------------------------------- humans & modules
@@ -832,8 +881,8 @@ def build_device_server(session: DeviceSession):
         tools=[read_screen, screenshot, wait_for_text, wait_until_gone, check_crash,
                launch, tap_element, tap_text, tap_xy, type_text, use_credential,
                list_credentials, press, scroll, reset_app_data,
-               journey_step, record_finding, add_note, list_findings, ask_user,
-               propose_subprojects],
+               journey_step, record_finding, add_note, link_finding, list_steps,
+               list_findings, ask_user, propose_subprojects],
     )
 
 
@@ -845,6 +894,6 @@ DEVICE_TOOL_NAMES = [
     "mcp__device__type_text", "mcp__device__use_credential", "mcp__device__list_credentials",
     "mcp__device__press", "mcp__device__scroll", "mcp__device__reset_app_data",
     "mcp__device__journey_step", "mcp__device__record_finding", "mcp__device__add_note",
-    "mcp__device__list_findings",
+    "mcp__device__link_finding", "mcp__device__list_steps", "mcp__device__list_findings",
     "mcp__device__ask_user", "mcp__device__propose_subprojects",
 ]
