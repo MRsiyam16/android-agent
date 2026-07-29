@@ -2,7 +2,9 @@
 
 import { agent, agentFetch } from './chat.js';
 import { OUTCOME_KINDS } from './modules.js';
-import { ui } from './state.js';
+import { scheduleRenderOverlay } from './render.js';
+import { renderScreenList } from './screens.js';
+import { nodeMeta, nodeStatus, ui } from './state.js';
 
 async function refreshOutcomes() {
   // Keyed on the board's project, so the pills describe the app you are looking at.
@@ -23,12 +25,77 @@ async function refreshOutcomes() {
   if (token !== ui.outcomeRequest) return;          // a newer project's request won
   if (pkg !== (ui.boardPackage || agent.package)) return;   // the board moved under us
   ui.outcomeData = data;
+  markFindingScreens(data);
   Object.entries(OUTCOME_KINDS).forEach(([kind, spec]) => {
     const count = (data.counts && data.counts[kind]) || 0;
     document.getElementById(spec.el).textContent = count;
     document.querySelector(`.outcome-pill[data-kind="${kind}"]`)
       .classList.toggle('has-items', count > 0);
   });
+}
+
+// How an outcome shows on the screen it was judged from. A pass is deliberately absent:
+// most cases pass, and outlining every one of them would leave the board a wall of colour
+// with nothing standing out — which is the whole job of the outline. See the note in
+// graph.css: a coloured screen always means something is actually wrong here.
+const SCREEN_MARKS = {
+  bug: { level: 'fail', badge: 'BUG', rank: 3 },
+  warning: { level: 'warn', badge: 'WARN', rank: 2 },
+  suggestion: { level: 'warn', badge: 'NOTE', rank: 1 },
+};
+
+/**
+ * Outline the screens that findings were filed against.
+ *
+ * Derived from the findings every time rather than read back from the saved board: the
+ * findings are what a run actually wrote, and a status baked into flow-graph.json is a
+ * second copy that goes stale the moment a finding is retracted or re-filed.
+ *
+ * A finding carries `node` only if the module posted journey steps while it ran — the
+ * agent's own screenshots are evidence, not flow-graph nodes, and a finding filed by a
+ * module that never called journey_step has no screen on the board to point at. Those are
+ * skipped rather than guessed at: putting a red outline on approximately the right screen
+ * is worse than putting it on none, because the outline is the claim.
+ */
+// Only the entries this function put there. `nodeStatus` is shared — a saved board restores
+// its own, and a reporting run writes them directly — so clearing the whole map to rebuild
+// would quietly delete somebody else's work every time the pills refreshed.
+let markedByFindings = new Set();
+
+function markFindingScreens(data) {
+  const worst = new Map();   // node id -> the most serious mark filed against it
+  Object.values((data && data.buckets) || {}).forEach((bucket) => {
+    ((bucket && bucket.modules) || []).forEach((mod) => {
+      (mod.items || []).forEach((f) => {
+        const mark = SCREEN_MARKS[f.kind];
+        // `nodeMeta.has` because the node has to be on *this* board. A finding from a module
+        // whose steps were never saved would otherwise leave a status keyed to nothing.
+        if (!mark || !f.node || !nodeMeta.has(f.node)) return;
+        const held = worst.get(f.node);
+        if (held && held.mark.rank >= mark.rank) return;
+        worst.set(f.node, { mark, finding: f, module: mod.title });
+      });
+    });
+  });
+
+  let changed = false;
+  markedByFindings.forEach((node) => {
+    if (!worst.has(node)) { nodeStatus.delete(node); changed = true; }
+  });
+  worst.forEach(({ mark, finding, module }, node) => {
+    const next = {
+      level: mark.level,
+      badge: mark.badge,
+      summary: `${finding.id} · ${module} — ${finding.title}`,
+    };
+    const held = nodeStatus.get(node);
+    if (held && held.level === next.level && held.badge === next.badge
+        && held.summary === next.summary) return;
+    nodeStatus.set(node, next);
+    changed = true;
+  });
+  markedByFindings = new Set(worst.keys());
+  if (changed) { scheduleRenderOverlay(); renderScreenList(); }
 }
 
 const outcomeBackdrop = document.getElementById('outcomeBackdrop');
@@ -128,4 +195,4 @@ outcomeBackdrop.addEventListener('click', (e) => {
   if (e.target === outcomeBackdrop) outcomeBackdrop.classList.remove('open');
 });
 
-export { openOutcomes, outcomeBackdrop, outcomeItem, outcomeList, refreshOutcomes };
+export { markFindingScreens, openOutcomes, outcomeBackdrop, outcomeItem, outcomeList, refreshOutcomes };

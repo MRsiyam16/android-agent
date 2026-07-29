@@ -629,7 +629,9 @@ def build_device_server(session: DeviceSession):
     # ---------------------------------------------------------------- recording
     @tool("journey_step",
           "Record the current screen as the next step of the test case on the dashboard's "
-          "Flow Graph. Call once per meaningful step so the case renders as a readable chain.",
+          "Flow Graph. Call once per meaningful step so the case renders as a readable chain. "
+          "Returns the node id — record the screen a verdict is about *before* filing it, and "
+          "pass that id to record_finding as `step`, so the board can outline the screen.",
           {"type": "object",
            "properties": {
                "label": {"type": "string", "description": "What this step did, e.g. \"Submit empty form\""},
@@ -652,7 +654,12 @@ def build_device_server(session: DeviceSession):
             return _err(f"Could not post the step: {exc}")
         await session._emit({"type": "agent_journey_step", "label": args["label"],
                              "section": section, "node": node})
-        return _ok(f"Recorded step {j.step_count} of {section!r} on the flow graph.")
+        # The id is returned because record_finding takes it: it is the only way to say
+        # *which* screen a verdict is about, and the agent cannot pass back a value it was
+        # never told.
+        return _ok(f"Recorded step {j.step_count} of {section!r} on the flow graph "
+                   f"as node {node}. Pass step=\"{node}\" to record_finding if the outcome "
+                   f"you file next is about this screen.")
 
     @tool("record_finding",
           "Record the outcome of a test case. Every case ends in one of these, including the "
@@ -678,6 +685,12 @@ def build_device_server(session: DeviceSession):
                "steps": {"type": "array", "items": {"type": "string"},
                          "description": "Reproduction steps, one per item"},
                "evidence": {"type": "string", "description": "Path returned by the screenshot tool"},
+               "step": {"type": "string",
+                        "description": "Node id returned by journey_step for the screen this "
+                                       "verdict is about. Pass it and the board outlines that "
+                                       "screen — red for a bug, amber for a warning or a "
+                                       "suggestion. Omit it if this outcome is not about one "
+                                       "particular screen you recorded; do not guess an id."},
            },
            "required": ["title", "expected", "actual", "evidence"],
            "additionalProperties": False})
@@ -703,12 +716,24 @@ def build_device_server(session: DeviceSession):
             return _err(blocked)
 
         kind = str(args.get("kind") or "bug")
+        # Which flow-graph node this verdict is about, so the board can outline the screen a
+        # defect was found on — how a reader gets from "1 bug" to *where* without opening
+        # anything.
+        #
+        # Taken from the argument and nowhere else. The obvious shortcut is the journey's
+        # last posted node, and it is wrong: read a transcript and the agent files the
+        # verdict *before* recording the step that shows it about as often as after, so
+        # "most recent node" lands on the previous test case. An outline is a claim about a
+        # specific screen, and a red badge on a screen that is fine is the same category of
+        # mistake as the dump misreads the screenshot rule exists to stop. Unlinked is
+        # honest; approximately linked is not.
+        node = str(args.get("step") or "").strip() or None
         record = await asyncio.to_thread(
             store.add_finding, session.package, session.slug,
             {"title": args["title"], "kind": kind,
              "severity": args.get("severity") or ("none" if kind == "pass" else "medium"),
              "expected": args["expected"], "actual": args["actual"],
-             "steps": args.get("steps") or [], "evidence": evidence})
+             "steps": args.get("steps") or [], "evidence": evidence, "node": node})
         await session._emit({"type": "agent_finding", "finding": record})
         return _ok(f"Filed {record['id']} [{kind}]: {record['title']}.")
 

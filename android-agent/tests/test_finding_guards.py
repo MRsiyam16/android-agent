@@ -254,3 +254,45 @@ class TestActionCounter:
         # Nothing happened to the phone, so nothing about the read is stale — blocking a
         # verdict here would be a false alarm.
         assert session.actions_since_read == 0
+
+
+class TestFindingScreenLink:
+    """Which screen on the board a verdict points at.
+
+    The board outlines the screen a finding was filed against — red for a bug, amber for a
+    warning or suggestion. That outline is a claim about one specific screen, so the link
+    has to be stated, never inferred.
+
+    The tempting shortcut is the journey's most recently posted node. Read a real transcript
+    and it does not hold: the agent files the verdict *before* recording the step that shows
+    it about as often as after, so "most recent" lands on the previous test case. A red badge
+    on a screen that is fine is the same category of mistake as the dump misreads the
+    screenshot rule exists to stop — and it is worse than no badge, because a reader who
+    trusts the outline goes and looks at the wrong screen.
+    """
+
+    def test_the_named_step_is_what_gets_recorded(self, file_finding, evidence):
+        file_finding(evidence=evidence, kind="bug", step="agent-au-014")
+        assert store.list_findings(PKG, SLUG)[0]["node"] == "agent-au-014"
+
+    def test_a_finding_with_no_step_is_left_unlinked(self, file_finding, evidence):
+        file_finding(evidence=evidence, kind="bug")
+        assert store.list_findings(PKG, SLUG)[0]["node"] is None, (
+            "an unlinked finding must stay unlinked — the board skips it, which is the "
+            "honest outcome")
+
+    def test_the_last_posted_node_is_not_used_as_a_fallback(self, session, file_finding,
+                                                            evidence):
+        """The shortcut this class exists to rule out."""
+        from journey import Journey
+
+        session._journey = Journey.__new__(Journey)
+        session._journey._prev_node = "agent-au-003"
+        file_finding(evidence=evidence, kind="bug")
+        assert store.list_findings(PKG, SLUG)[0]["node"] is None, (
+            "record_finding fell back to the journey's last node; that node is whatever step "
+            "happened to be posted most recently, which is routinely a different test case")
+
+    def test_a_blank_step_is_treated_as_absent(self, file_finding, evidence):
+        file_finding(evidence=evidence, kind="bug", step="   ")
+        assert store.list_findings(PKG, SLUG)[0]["node"] is None
