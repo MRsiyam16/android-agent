@@ -79,10 +79,47 @@
   content: ""; width: 6px; height: 6px; border-radius: 1px; background: var(--accent-blue);
 }
 
+/* ---------------- SECTION NOTES ----------------
+   One per section, in the gutter to the left of its first screen: the steps the agent walked
+   through that case, in the order it walked them, and how the case ended.
+
+   Sized in `em` throughout, with the px font-size set per note from the zoom (see
+   sectionnotes.js). That is what lets one number scale the whole thing — padding, rules,
+   indents — so a note keeps its proportion to the screens beside it instead of ballooning
+   into the board as you zoom out, the way fixed-size headings do. */
+.section-note {
+  position: absolute;
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-left: 0.25em solid var(--hairline);
+  border-radius: 0.5em; padding: 0.9em 1em;
+  color: var(--ink-muted); line-height: 1.45;
+  /* Text only — the screens and the tool overlay underneath stay clickable through it. */
+  pointer-events: none;
+}
+.section-note-title {
+  font-family: var(--font-display); font-weight: 600; font-size: 1.1em;
+  color: var(--ink); margin-bottom: 0.6em;
+}
+.section-note-steps { margin: 0; padding-left: 1.4em; }
+.section-note-steps li { margin-bottom: 0.4em; }
+.section-note-steps li:last-child { margin-bottom: 0; }
+.section-note-more { margin-top: 0.5em; color: var(--ink-faint); font-style: italic; }
+.section-note-outcome {
+  margin-top: 0.7em; padding-top: 0.6em; border-top: 1px solid var(--hairline);
+  color: var(--ink-faint);
+}
+/* The same two colours the screens use, so a row that carries a defect reads as one thing
+   at a glance rather than as a note and an outline that happen to be near each other. */
+.section-note.has-fail { border-left-color: #f43f5e; }
+.section-note.has-fail .section-note-outcome { color: #f43f5e; }
+.section-note.has-warn { border-left-color: #f59e0b; }
+.section-note.has-warn .section-note-outcome { color: #f59e0b; }
+
 /* Observe-flow mode: hide every label/heading/marker, keep only screens + connector lines */
 .graph-wrap.observe-mode .connector-label,
 .graph-wrap.observe-mode .connector-tap-marker,
 .graph-wrap.observe-mode .node-header,
+.graph-wrap.observe-mode .section-note,
 .graph-wrap.observe-mode .section-heading {
   display: none;
 }

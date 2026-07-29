@@ -81,6 +81,10 @@ document.getElementById('toggleHeadings').addEventListener('change', (e) => {
   ui.showHeadings = e.target.checked;
   scheduleRenderOverlay();
 });
+document.getElementById('toggleSectionNotes').addEventListener('change', (e) => {
+  ui.showSectionNotes = e.target.checked;
+  scheduleRenderOverlay();
+});
 document.getElementById('toggleGridBg').addEventListener('change', (e) => {
   container.classList.toggle('no-grid', !e.target.checked);
 });

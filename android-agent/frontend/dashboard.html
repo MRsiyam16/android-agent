@@ -201,6 +201,10 @@
         </svg>
 
         <div class="connector-layer" id="sectionHeadings"></div>
+        <!-- One per section, in the empty gutter to the left of its first screen: the steps
+             the agent walked there, in order, and how the case ended. Derived from the run,
+             never authored — the sticky notes on textNotesLayer are the ones you write. -->
+        <div class="connector-layer" id="sectionNotes"></div>
         <div class="connector-layer" id="nodeCards"></div>
         <div class="connector-layer" id="nodeHeaders"></div>
         <div class="connector-layer" id="connectorLabels"></div>
@@ -289,6 +293,7 @@
           <div class="popover-section-title">Display</div>
           <label class="popover-toggle"><input type="checkbox" id="toggleTapMarkers" checked> Tap markers</label>
           <label class="popover-toggle"><input type="checkbox" id="toggleHeadings" checked> Section headings</label>
+          <label class="popover-toggle"><input type="checkbox" id="toggleSectionNotes" checked> Section notes</label>
           <label class="popover-toggle"><input type="checkbox" id="toggleGridBg" checked> Background grid</label>
           <label class="popover-toggle"><input type="checkbox" id="toggleAutoFit"> Auto-fit on new state</label>
         </div>

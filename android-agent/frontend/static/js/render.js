@@ -4,6 +4,7 @@ import { escapeHtml } from './markdown.js';
 import { renderComments } from './comments.js';
 import { openModal } from './modal.js';
 import { renderTextNotes } from './notes.js';
+import { renderSectionNotes } from './sectionnotes.js';
 import { CARD_H, CARD_W, nodeHeaderLabel, resetCardAspect, sectionLayout, setCardAspect } from './sections.js';
 import { PLACEHOLDER_IMG, cardElements, edgeMeta, nodeMeta, nodeStatus, nodesData, sections, ui } from './state.js';
 import { CARD_MAX_W, requestScaled, shotAspect, truncate } from './util.js';
@@ -138,6 +139,7 @@ function labelsVisible() {
 function renderOverlay() {
   renderNodeCards();
   renderHeadersAndHeadings();
+  renderSectionNotes();
   renderConnectors();
   renderComments();
   renderTextNotes();

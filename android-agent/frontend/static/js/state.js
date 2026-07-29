@@ -43,6 +43,7 @@ const ui = {
   autoSaveTimer: null,
   showTapMarkers: true,
   showHeadings: true,
+  showSectionNotes: true,
   autoFitOnNewState: false,
 
   // These five were declared beside the code that reads them and written from somewhere
