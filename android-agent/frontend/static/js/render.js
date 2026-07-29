@@ -4,16 +4,20 @@ import { escapeHtml } from './markdown.js';
 import { renderComments } from './comments.js';
 import { openModal } from './modal.js';
 import { renderTextNotes } from './notes.js';
-import { CARD_H, CARD_W, nodeHeaderLabel, sectionLayout } from './sections.js';
+import { CARD_H, CARD_W, nodeHeaderLabel, resetCardAspect, sectionLayout, setCardAspect } from './sections.js';
 import { PLACEHOLDER_IMG, cardElements, edgeMeta, nodeMeta, nodeStatus, nodesData, sections, ui } from './state.js';
-import { CARD_MAX_W, requestScaled, truncate } from './util.js';
+import { CARD_MAX_W, requestScaled, shotAspect, truncate } from './util.js';
 
-const TRANSPARENT_PLACEHOLDER = (() => {
+// The node box vis lays out and hit-tests by. Read the note in layout.js: a node is an
+// invisible transparent image, and vis sizes it to that image's native pixels, so this
+// is how the card's shape is declared.
+function cardBoxImage() {
   const c = document.createElement('canvas');
   c.width = CARD_W;
   c.height = CARD_H;
   return c.toDataURL('image/png');
-})();
+}
+let TRANSPARENT_PLACEHOLDER = cardBoxImage();
 
 const container = document.getElementById('network');
 const network = new vis.Network(container, { nodes: nodesData }, {
@@ -27,6 +31,56 @@ const network = new vis.Network(container, { nodes: nodesData }, {
     borderWidth: 0,
   },
 });
+
+// ---------------------------------------------------------------------------
+// Card shape
+//
+// 9:20 is the default and it is right for every device this harness has run against, so
+// the common path never gets here. It exists for the other ones — a 16:9 phone or a
+// tablet — where leaving the box at 9:20 would letterbox every screen instead of cropping
+// it. Better than a crop, but still not the screen.
+//
+// Once per board, off the first screenshot that decodes. Not per screenshot: a project
+// tested across two devices has two ratios in it, and re-shaping on each would leave the
+// board reflowing under the reader. The odd ones out letterbox, which is what `contain`
+// in graph.css is for.
+//
+// Re-measuring is why this is once-only rather than free. vis fixes a node's size when
+// its image loads and then never revisits it: handing setOptions a new default image does
+// nothing to nodes that already exist (measured — the box stayed 150x300), so each node
+// has to be given the new image by hand, and vis reports a 50x50 box for the frame or two
+// its decode takes. vis redraws when the image lands, and that redraw drives our own
+// overlay through the afterDrawing hook below, so the cards catch up on their own.
+//
+// Node *positions* are deliberately left alone. A live run relayouts on every new screen,
+// so it picks the new width up by itself; a loaded board's positions were saved by hand
+// and are not ours to recompute — relayoutAll here would throw away the arrangement the
+// board was dragged into. The cost is that a board loaded from an unusually shaped device
+// sits at the spacing the old width implied, which is a slightly wider or tighter gutter
+// and nothing more.
+let aspectAdopted = false;
+
+function adoptShotAspect(hash) {
+  if (aspectAdopted) return;
+  const ratio = shotAspect.get(hash);
+  if (!ratio) return;
+  aspectAdopted = true;
+  if (!setCardAspect(ratio)) return;   // already the right shape — nothing to reflow
+  reshapeNodeBoxes();
+}
+
+function reshapeNodeBoxes() {
+  TRANSPARENT_PLACEHOLDER = cardBoxImage();
+  network.setOptions({ nodes: { image: TRANSPARENT_PLACEHOLDER } });
+  const ids = nodesData.getIds();
+  if (ids.length) nodesData.update(ids.map((id) => ({ id, image: TRANSPARENT_PLACEHOLDER })));
+}
+
+/** Called from resetGraph, after the nodes are gone and before the next board arrives. */
+function resetCardShape() {
+  aspectAdopted = false;
+  if (resetCardAspect()) reshapeNodeBoxes();
+}
 
 let renderQueued = false;
 function scheduleRenderOverlay() {
@@ -132,12 +186,16 @@ function renderNodeCards() {
     // multi-megabyte data URI was decoding.
     const hash = n.id;
     const wantSrc = (meta && meta.screenshot)
-      ? (requestScaled(hash, meta.screenshot, CARD_MAX_W, (url) => {
+      ? (requestScaled(hash, meta.screenshot, CARD_MAX_W, (url, decodedHash) => {
+          adoptShotAspect(decodedHash);
           const live = cardElements.get(hash)?.querySelector('img');
           if (live && live.dataset.src !== url) { live.src = url; live.dataset.src = url; }
         }) || PLACEHOLDER_IMG)
       : PLACEHOLDER_IMG;
     if (img.dataset.src !== wantSrc) { img.src = wantSrc; img.dataset.src = wantSrc; }
+    // The loading tile is a plain dark rectangle drawn at the old 1:2 shape; letterboxing
+    // it inside the card would show bars where there is nothing to show.
+    img.classList.toggle('is-placeholder', wantSrc === PLACEHOLDER_IMG);
   });
 
   cardElements.forEach((card, hash) => {
@@ -309,4 +367,4 @@ const toolOverlay = document.getElementById('toolOverlay');
 const selectionBox = document.getElementById('selectionBox');
 
 
-export { ANCHOR, LABEL_VISIBILITY_SCALE, TRANSPARENT_PLACEHOLDER, anchorPoint, container, drawSelfLoop, graphWrap, hitTestNode, labelsVisible, network, nodeDomRect, onNodeCardClick, renderConnectors, renderHeadersAndHeadings, renderNodeCards, renderOverlay, renderQueued, scheduleRenderOverlay, selectionBox, toolOverlay };
+export { ANCHOR, LABEL_VISIBILITY_SCALE, TRANSPARENT_PLACEHOLDER, adoptShotAspect, anchorPoint, container, drawSelfLoop, graphWrap, hitTestNode, labelsVisible, network, nodeDomRect, onNodeCardClick, renderConnectors, renderHeadersAndHeadings, renderNodeCards, renderOverlay, renderQueued, resetCardShape, scheduleRenderOverlay, selectionBox, toolOverlay };

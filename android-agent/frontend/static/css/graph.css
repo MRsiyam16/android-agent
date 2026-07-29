@@ -93,7 +93,13 @@
   background: var(--surface-2); border: 1.5px solid var(--hairline);
   z-index: 3; cursor: pointer; pointer-events: auto;
 }
-.node-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* `contain`, never `cover`. The card box is shaped to the screenshot (see sections.js), so
+   in the normal case there is nothing to fit and the two agree exactly. When they don't —
+   a board holding screens from two devices — this letterboxes the odd one out instead of
+   clipping it, and a QA thumbnail that shows less than the screen is worse than one with
+   a bar down the side. `cover` here is what cut 10% off every card. */
+.node-card img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.node-card img.is-placeholder { object-fit: cover; }
 .node-card.selected { outline: 2px solid var(--accent-blue); outline-offset: 3px; border-radius: 18px; }
 
 /* Screens carrying a verified defect. Only confirmed findings mark a screen — an

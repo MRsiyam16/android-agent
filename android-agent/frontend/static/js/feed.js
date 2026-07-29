@@ -3,7 +3,7 @@
 import { scheduleAutoSave } from './board.js';
 import { emptyState } from './comments.js';
 import { relayoutAll } from './layout.js';
-import { network, scheduleRenderOverlay } from './render.js';
+import { network, resetCardShape, scheduleRenderOverlay } from './render.js';
 import { renderScreenList } from './screens.js';
 import { assignSection, isSectionTrigger, sectionLayout } from './sections.js';
 import { cardElements, comments, edgeMeta, nodeMeta, nodeStatus, nodesData, sectionOrder, sections, textNotes, ui } from './state.js';
@@ -108,6 +108,9 @@ function resetGraph() {
   emptyState.classList.remove('hidden');
   setSessionLabel(null);
   hideStatus();
+  // After the nodes are gone, so the next board's first screenshot shapes the card box
+  // from scratch and nothing has to be re-measured on the way out.
+  resetCardShape();
 }
 
 // ---------------------------------------------------------------------------

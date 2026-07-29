@@ -123,8 +123,10 @@
 .screen-row:hover { background: var(--surface-2); }
 .screen-row.active { background: var(--surface-2); border-color: var(--accent-blue); }
 .screen-row.flagged .screen-row-name { color: var(--accent-red, #f43f5e); }
+/* 9:20, the same shape as a card on the canvas, and `contain` for the same reason: at
+   26x46 (≈9:16) `cover` filled the height and threw away a fifth of the screen's width. */
 .screen-thumb {
-  width: 26px; height: 46px; border-radius: 4px; object-fit: cover; flex-shrink: 0;
+  width: 21px; height: 46px; border-radius: 4px; object-fit: contain; flex-shrink: 0;
   background: var(--surface-3); border: 1px solid var(--hairline);
 }
 /* An <img> with no src draws the broken-image glyph; the tile should just be empty until

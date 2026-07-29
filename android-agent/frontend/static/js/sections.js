@@ -42,10 +42,41 @@ function assignSection(hash, sectionName) {
 // ---------------------------------------------------------------------------
 // Layout — one row per section, wrapping within a section if it grows too wide.
 // ---------------------------------------------------------------------------
-const CARD_W = 150;
+// A card is a screen thumbnail, so its box has to carry the *screenshot's* aspect ratio.
+// It was a flat 150x300 (1:2) while every device this harness has tested is 9:20 —
+// 720x1600 and 1080x2400 both — and `object-fit: cover` settles that mismatch by filling
+// the width and clipping whatever overflows. 10% of every screen was being cut away, 5%
+// off each end: the status bar and app bar off the top, the bottom row of controls off
+// the bottom. Screens were read, and defects judged, from a thumbnail that did not show
+// all of the screen.
+//
+// The *height* is the fixed dimension and the width follows the ratio, not the other way
+// round. Row pitch in relayoutAll is (CARD_H + 60), and every board saved before this
+// change carries absolute node positions computed from that pitch; growing the height to
+// fix the ratio would have pushed each saved row down into the header of the one below it.
 const CARD_H = 300;
+const DEFAULT_CARD_ASPECT = 9 / 20;
+let cardAspect = DEFAULT_CARD_ASPECT;
+let CARD_W = Math.round(CARD_H * cardAspect);
 const NODES_PER_ROW = 6;
 const sectionLayout = new Map();
 
+/**
+ * Adopt a real screenshot's width/height ratio as the card shape.
+ * Returns true if the card box actually changed, which is the caller's cue to re-measure.
+ */
+function setCardAspect(ratio) {
+  if (!Number.isFinite(ratio) || ratio <= 0) return false;
+  if (Math.abs(ratio - cardAspect) < 0.005) return false;   // same shape, no reflow
+  cardAspect = ratio;
+  CARD_W = Math.round(CARD_H * ratio);
+  return true;
+}
 
-export { CARD_H, CARD_W, GENERIC_LABELS, NODES_PER_ROW, assignSection, isSectionTrigger, nodeHeaderLabel, sectionLayout };
+/** Back to the 9:20 default — called when a board is cleared, before the next one loads. */
+function resetCardAspect() {
+  return setCardAspect(DEFAULT_CARD_ASPECT);
+}
+
+
+export { CARD_H, CARD_W, DEFAULT_CARD_ASPECT, GENERIC_LABELS, NODES_PER_ROW, assignSection, isSectionTrigger, nodeHeaderLabel, resetCardAspect, sectionLayout, setCardAspect };

@@ -31,6 +31,12 @@ const CARD_MAX_W = 360;          // node cards: ~2x their on-screen width at nor
 const DECODE_CONCURRENCY = 2;
 
 const scaledCache = new Map();   // `${hash}@${maxW}` -> small data URL
+// state_hash -> naturalWidth / naturalHeight of the *stored* screenshot. The downscale
+// below preserves the ratio, so this is equally the ratio of the scaled copy — but it is
+// the only place the number is ever known, since nothing else in the frontend decodes a
+// screenshot. The card box is shaped from it (see render.js), which is what keeps the
+// thumbnail from being cropped to fit a box of the wrong shape.
+const shotAspect = new Map();
 const scaleQueue = [];
 let scaleWorkers = 0;
 
@@ -47,7 +53,12 @@ function decodeScaled(b64, maxW) {
         canvas.width = Math.max(1, Math.round((img.naturalWidth || maxW) * scale));
         canvas.height = Math.max(1, Math.round((img.naturalHeight || maxW) * scale));
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.82));
+        resolve({
+          url: canvas.toDataURL('image/jpeg', 0.82),
+          aspect: (img.naturalWidth && img.naturalHeight)
+            ? img.naturalWidth / img.naturalHeight
+            : null,
+        });
       } catch {
         resolve(null);   // tainted or malformed — the caller keeps its placeholder
       } finally {
@@ -63,10 +74,11 @@ function pumpScaleQueue() {
   while (scaleWorkers < DECODE_CONCURRENCY && scaleQueue.length) {
     const job = scaleQueue.shift();
     scaleWorkers += 1;
-    decodeScaled(job.b64, job.maxW).then((url) => {
-      if (url) {
-        scaledCache.set(job.key, url);
-        job.apply(url);
+    decodeScaled(job.b64, job.maxW).then((res) => {
+      if (res) {
+        if (res.aspect) shotAspect.set(job.hash, res.aspect);
+        scaledCache.set(job.key, res.url);
+        job.apply(res.url, job.hash);
       }
       scaleWorkers -= 1;
       pumpScaleQueue();
@@ -79,7 +91,7 @@ function requestScaled(hash, b64, maxW, apply) {
   if (!b64) return null;
   const key = `${hash}@${maxW}`;
   const hit = scaledCache.get(key);
-  if (hit) { apply(hit); return hit; }
+  if (hit) { apply(hit, hash); return hit; }
   if (!scaleQueue.some((j) => j.key === key)) {
     scaleQueue.push({ key, hash, b64, maxW, apply });
     pumpScaleQueue();
@@ -88,4 +100,4 @@ function requestScaled(hash, b64, maxW, apply) {
 }
 
 
-export { CARD_MAX_W, DECODE_CONCURRENCY, decodeScaled, pumpScaleQueue, requestScaled, scaleQueue, scaleWorkers, scaledCache, screenshotSrc, truncate };
+export { CARD_MAX_W, DECODE_CONCURRENCY, decodeScaled, pumpScaleQueue, requestScaled, scaleQueue, scaleWorkers, scaledCache, screenshotSrc, shotAspect, truncate };
