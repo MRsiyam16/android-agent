@@ -66,6 +66,22 @@ function flowLevel(hash) {
   return spec && spec.level !== 'ok' ? spec.level : null;
 }
 
+/**
+ * How much vertical room this case takes on the board, in screen pixels.
+ *
+ * Measured from the case's own screens rather than from the layout grid, so it is right for
+ * a board that was dragged into a custom arrangement as well as one laid out automatically.
+ * A case that wraps onto two rows gets two rows' worth of note.
+ */
+function sectionExtent(hashes, firstRect) {
+  let bottom = firstRect.top + firstRect.height;
+  hashes.forEach((hash) => {
+    const r = nodeDomRect(hash);
+    if (r) bottom = Math.max(bottom, r.top + r.height);
+  });
+  return Math.max(bottom - firstRect.top, firstRect.height);
+}
+
 // The module prefix is already the heading above the row, so repeating it in the note is
 // noise: "auth-login-password-reset / Login — wrong password" becomes "Login — wrong password".
 function caseTitle(name) {
@@ -95,6 +111,11 @@ function renderSectionNotes() {
     el.style.width = (NOTE_W * scale) + 'px';
     el.style.left = (rect.left - (NOTE_W + GUTTER) * scale) + 'px';
     el.style.top = rect.top + 'px';
+    // Bounded by the room its own case occupies. Asked for "a few sentences" the agent
+    // writes paragraphs, and an unbounded note ran to 1128px against a 240px row — 14 of 15
+    // notes on this board overlapped the one below. A note that covers its neighbour is
+    // worse than one that is cut off, because it takes a second note with it.
+    el.style.maxHeight = sectionExtent(hashes, rect) + 'px';
     // One knob for everything inside. Sizes in the stylesheet are in em, so this single
     // number scales the padding, the rules and the indents together and the note keeps its
     // proportion to the screens beside it.
@@ -107,6 +128,11 @@ function renderSectionNotes() {
       + `</div>`
       + `<div class="section-note-body markdown">${renderChatMarkdown(note.text || '')}</div>`;
     layer.appendChild(el);
+    // Marked once it is in the document, because whether it overflows is a question only
+    // layout can answer. The class draws a fade and a "more in the transcript" footer: a
+    // note that is quietly cut off reads as a note that finished, and a reader would have
+    // no idea there was more of it.
+    if (el.scrollHeight > el.clientHeight + 1) el.classList.add('is-clipped');
   });
 }
 

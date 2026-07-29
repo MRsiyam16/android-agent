@@ -7,7 +7,7 @@ import { relayoutAll } from './layout.js';
 import { startProjectOnboarding } from './main.js';
 import { network, scheduleRenderOverlay } from './render.js';
 import { comments, edgeMeta, nodeMeta, nodeStatus, nodesData, sectionOrder, sections, textNotes, ui } from './state.js';
-import { refreshSectionNotes } from './outcomes.js';
+import { refreshOutcomes, refreshSectionNotes } from './outcomes.js';
 import { setSessionLabel, showStatus } from './status.js';
 import { CARD_MAX_W, requestScaled } from './util.js';
 
@@ -199,6 +199,15 @@ async function openProject(pkg) {
     ui.boardPackage = pkg;
     // After boardPackage is set, or the fetch keys off whichever project the agent
     // happens to be pointed at rather than the board that just loaded.
+    //
+    // Both, and this is the only place both are guaranteed correct. `markFindingScreens`
+    // can only outline a screen that is already on the board — it drops a finding whose
+    // node it does not recognise, which is right when a module's steps were never saved and
+    // catastrophic one moment earlier, when `nodeMeta` is simply still empty. Boot reaches
+    // refreshOutcomes through loadModules long before the flow graph arrives, so every
+    // linked finding was being discarded and the board came up with 26 findings pointing at
+    // screens and not one outline on it.
+    refreshOutcomes();
     refreshSectionNotes();
   } catch (err) {
     showStatus('Could not open project: ' + err.message, 'error');

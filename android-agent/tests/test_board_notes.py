@@ -274,3 +274,61 @@ class TestToolsThroughTheServer:
         _, text, _ = call("list_findings")
         assert "-> agent-au-007" in text
         assert "(no screen linked)" in text
+
+
+class TestNoteSection:
+    """Which case a note is pinned beside, and why it is an argument.
+
+    `session._section` is set only by journey_step, so it is None for the whole of a review
+    pass — going back over a finished run to mark it up, which is exactly when notes are most
+    wanted. The first version read only that field, and every add_note call in a review
+    refused. The agent stopped and said so, which is the right behaviour and also the reason
+    this is a parameter now.
+    """
+
+    @pytest.fixture
+    def call(self):
+        import asyncio
+
+        import mcp.types as mcp_types
+        from agent.device_tools import DeviceSession, build_device_server
+
+        session = DeviceSession(PKG, "auth")
+        server_instance = build_device_server(session)["instance"]
+        handler = server_instance.request_handlers[mcp_types.CallToolRequest]
+
+        def invoke(name, **arguments):
+            request = mcp_types.CallToolRequest(
+                method="tools/call",
+                params=mcp_types.CallToolRequestParams(name=name, arguments=arguments))
+            result = asyncio.run(handler(request))
+            return result.root.content[0].text, bool(result.root.isError)
+
+        return invoke
+
+    def test_a_named_case_is_pinned_without_a_live_run(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        store.record_step(PKG, "auth", "agent-au-001", "Login screen", "auth / Empty submit")
+        text, errored = call("add_note", text="Refused on the form.", kind="pass",
+                             section="auth / Empty submit")
+        assert not errored, text
+        assert store.list_notes(PKG, "auth")[0]["section"] == "auth / Empty submit"
+
+    def test_a_case_that_is_not_on_the_board_is_refused_with_the_real_names(self, call):
+        """Silently accepting it would pin the note to a row that does not exist.
+
+        Nothing downstream errors on that — the page just never finds a section to put it
+        beside, so the note is written, reported as written, and invisible.
+        """
+        store.create_subproject(PKG, "Auth", "")
+        store.record_step(PKG, "auth", "agent-au-001", "Login screen", "auth / Empty submit")
+        text, errored = call("add_note", text="...", kind="bug", section="Empty submit")
+        assert errored
+        assert "auth / Empty submit" in text, "the refusal must show the spelling that works"
+        assert store.list_notes(PKG, "auth") == []
+
+    def test_with_no_case_and_no_argument_it_says_which_two_ways_out_there_are(self, call):
+        store.create_subproject(PKG, "Auth", "")
+        text, errored = call("add_note", text="...", kind="pass")
+        assert errored
+        assert "section" in text and "journey_step" in text

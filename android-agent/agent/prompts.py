@@ -153,6 +153,12 @@ One note per case, written at the end of it, when you know how it turned out. Wr
 for the same case replaces the earlier note — so if you revise a conclusion, say the new
 thing and the old one goes, rather than leaving both on the board for a reader to referee.
 
+During a run `add_note` follows whichever case `journey_step` is filing under, so you can
+leave `section` off. Marking up a finished run is different: nothing is being recorded, so
+there is no current case and you must pass `section` spelled exactly as `list_steps` shows
+it, module prefix included. It will refuse a name that matches no case and show you the
+real ones — take the spelling from there rather than reconstructing it.
+
 # Memory
 
 Your module memory file is at `{memory_path}`. Read it before starting and append to it as

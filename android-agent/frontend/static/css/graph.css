@@ -95,8 +95,18 @@
   border: 1px solid var(--hairline); border-left: 0.3em solid var(--ink-faint);
   border-radius: 0.5em; padding: 0.9em 1em;
   color: var(--ink-muted); line-height: 1.5;
+  /* Capped to its case's own height in sectionnotes.js. Hidden rather than scrolled: the
+     note takes no pointer events, so a scrollbar here would be one nothing could move. */
+  overflow: hidden;
   /* Text only — the screens and the tool overlay underneath stay clickable through it. */
   pointer-events: none;
+}
+/* Says so when there is more of it, instead of just ending mid-sentence. */
+.section-note.is-clipped::after {
+  content: "… full note in the module transcript";
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 1.6em 1em 0.6em; font-size: 0.9em; color: var(--ink-faint);
+  background: linear-gradient(to bottom, transparent, var(--surface-1) 55%);
 }
 .section-note-head {
   display: flex; align-items: baseline; gap: 0.6em;

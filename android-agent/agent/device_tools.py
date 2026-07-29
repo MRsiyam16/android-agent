@@ -760,24 +760,39 @@ def build_device_server(session: DeviceSession):
                         "description": "How this case ended. Drives the colour."},
                "title": {"type": "string",
                          "description": "Optional heading. Defaults to the case name."},
+               "section": {"type": "string",
+                           "description": "Which case to pin it beside, exactly as list_steps "
+                                          "spells it. Omit during a live run and it uses the "
+                                          "case you are currently recording steps under."},
            },
            "required": ["text", "kind"], "additionalProperties": False})
     async def add_note(args: dict[str, Any]) -> dict[str, Any]:
-        # A note is anchored to the case it is about, and the case is whatever journey_step
-        # is currently filing under. Without one there is nowhere on the board to put it —
-        # better to say so than to drop a note into the corner where nobody will connect it
-        # to anything.
-        if not session._section:
-            return _err("Record the case's steps with journey_step first — a note is pinned "
-                        "beside its case on the flow graph, and there is no case yet.")
+        # A note is anchored to a case, because that is where on the board it gets pinned.
+        #
+        # `session._section` is only set by journey_step, so it is None for the whole of a
+        # review pass — going back over a finished run to mark it up, which is exactly when
+        # notes are most wanted. Taking the name as an argument is what makes that possible;
+        # falling back to the live section is what keeps it a one-liner during a run.
+        section = str(args.get("section") or "").strip() or session._section
+        if not section:
+            return _err("Which case? Pass `section` spelled as list_steps shows it, or call "
+                        "journey_step first and this will follow the case you are recording.")
+        # Checked against the board rather than trusted. A note whose section matches no case
+        # is not an error anywhere downstream — the page simply never finds a row to put it
+        # beside, so it silently does not exist, which is the worst way for this to fail.
+        known = {s["section"] for s in store.list_steps(session.package, session.slug)}
+        if known and section not in known:
+            listed = "\n".join(f"  {name}" for name in sorted(known))
+            return _err(f"No case named {section!r} on this module's board. It must match "
+                        f"exactly, including the module prefix. These exist:\n{listed}")
         kind = str(args["kind"])
         record = await asyncio.to_thread(
             store.add_note, session.package, session.slug,
-            {"section": session._section, "kind": kind,
+            {"section": section, "kind": kind,
              "title": str(args.get("title") or "").strip(),
              "text": str(args["text"])})
         await session._emit({"type": "agent_note", "note": record})
-        return _ok(f"Pinned {record['id']} [{kind}] beside {session._section!r}.")
+        return _ok(f"Pinned {record['id']} [{kind}] beside {section!r}.")
 
     @tool("link_finding",
           "Point an outcome you already filed at the screen it was about, so the board "
