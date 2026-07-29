@@ -1,6 +1,7 @@
-# Root-level ignores. The android-agent/ subtree has its own .gitignore, which still
-# applies to everything under it — patterns there are relative to that file, so
-# `projects/`, `.env` and `test_*.py` keep working unchanged after the repo root moved up.
+# The project lives at the repo root, so these patterns apply from here. They moved up with
+# everything else when android-agent/ was flattened away — before that they sat in
+# android-agent/.gitignore and were relative to it, which is why `projects/` and `scratch/`
+# need no prefix now and did not need one then either.
 
 # Claude Code local state: settings.json is shared project config and IS tracked;
 # the rest is per-machine and would only cause conflicts.
@@ -11,18 +12,84 @@
 # Python
 __pycache__/
 *.py[cod]
-.venv/
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
 venv/
 env/
+ENV/
 
-# IDE / editors
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.DS_Store
 
-# OS
+# Test files & logs
+# The ad-hoc driver scripts — one-off flows pointed at one app on one day, not source —
+# now live in scratch/ rather than accumulating at the top level, where twenty of them
+# added ~50k tokens to every codebase-wide grep. The `test_*.py` patterns stay as a
+# backstop for new ones that land at the root before being filed away.
+# The real unit tests live in tests/ and must be tracked, hence the negation: without it,
+# `git add tests/` silently does nothing and the suite exists only on one machine.
+scratch/
+*.log
+test_*.py
+*_test.py
+!tests/test_*.py
+.coverage
+.pytest_cache/
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+.session_*
+
+# Project-specific
+# Board snapshots are multi-MB blobs of screenshots — local safety nets, not source.
+project_backups/
+flow-graph*.json
+*.adb_log
+server.log
+notes_test.log
+run-*.log
+projects/
+
+# Output from the ad-hoc driver scripts (which are themselves ignored via test_*.py):
+# findings dumps and screenshot folders from one particular run against one particular app.
+# Evidence of a run, not source — the durable copy lives under projects/<package>/.
+*_findings.json
+*_findings_*.json
+*_shots/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS-specific
 Thumbs.db
 .DS_Store
-desktop.ini
+.AppleDouble
+.LSOverride

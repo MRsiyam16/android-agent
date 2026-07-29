@@ -1,7 +1,7 @@
 """Where the served files live.
 
 One place, so moving the frontend is a two-line change rather than a hunt through the
-route modules. `BASE_DIR` is android-agent/, not backend/ — these point out of this
+route modules. `BASE_DIR` is the repo root, not backend/ — these point out of this
 package into its sibling.
 """
 from __future__ import annotations

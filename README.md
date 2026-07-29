@@ -36,7 +36,6 @@ Given an Android app package name, the agent:
 
 ### Quick Install
 ```bash
-cd android-agent
 pip install -r requirements.txt
 ```
 
@@ -148,7 +147,7 @@ agent › Plan: 4 cases. Starting with empty submit.
 
 That is the whole setup. One model does everything — it reads its own screenshots, so there is
 no second vision model to configure. If long runs start hitting the subscription's rate-limit
-window, `AGENT_USE_CHEAP_TIER=true` plus an `OPENROUTER_API_KEY` in `android-agent/.env`
+window, `AGENT_USE_CHEAP_TIER=true` plus an `OPENROUTER_API_KEY` in `.env`
 (gitignored) hands the high-volume mechanical calls to a cheap vision model instead. Off by
 default.
 
@@ -161,7 +160,7 @@ planner calls per token. `start.py` warns if it finds one.
 root — screenshots, findings, per-module memory and the flow graph all go inside it, so a
 project can live on whatever drive you keep work on rather than inside this repo. Browse opens
 the machine's own folder dialog; leaving the field empty keeps the default
-`android-agent/projects/<package>/`. The mapping is recorded in `projects/registry.json`, and
+`projects/<package>/`. The mapping is recorded in `projects/registry.json`, and
 a package with no entry there keeps the default location, so nothing that already exists has
 to move.
 
@@ -439,7 +438,7 @@ import subprocess
 import time
 
 # 1. Start server
-subprocess.Popen(["python", "server.py"], cwd="android-agent")
+subprocess.Popen(["python", "server.py"], cwd=".")
 time.sleep(2)
 
 # 2. Run exploration
@@ -447,7 +446,7 @@ result = subprocess.run([
     "python", "run_agent.py",
     "--package", "com.target.app",
     "--steps", "50"
-], cwd="android-agent", capture_output=True, text=True)
+], cwd=".", capture_output=True, text=True)
 
 # 3. Parse output
 if "Exploration finished" in result.stdout:
@@ -512,7 +511,7 @@ Each needs its own server port (edit `config.py` `SERVER_PORT`).
 
 ## File Structure
 ```
-android-agent/
+.
 ├── start.py              # One command to bring the whole system up
 ├── run_agent.py          # Autonomous exploration loop
 ├── server.py             # FastAPI telemetry + agent server

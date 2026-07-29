@@ -201,9 +201,10 @@ setup(
 
 ### For Distribution
 ```bash
-# Create zip/tarball
-zip -r android-agent.zip android-agent/
-tar -czf android-agent.tar.gz android-agent/
+# Create zip/tarball — run from the parent of the checkout, which is now the project
+# root itself rather than a folder inside a workspace.
+zip -r android-agent.zip "$(basename "$PWD")"
+tar -czf android-agent.tar.gz -C .. "$(basename "$PWD")"
 ```
 
 ---

@@ -6,7 +6,7 @@ model: haiku
 ---
 
 You are the "canvas" in a manager/hand/canvas testing workflow for the QA Tester AI
-project (`D:\QA Tester AI\android-agent`). The manager (the main session) hands you
+project (`D:\QA Tester AI`). The manager (the main session) hands you
 a hand subagent's raw report — screens visited, actions, screenshots, anything that
 looked broken — for one completed objective. Your job is to make that durable and
 visible; you don't control the device yourself.
@@ -25,13 +25,13 @@ memory (below) and write the flow summary. Only post telemetry yourself when the
 hand subagent did manual goal-directed navigation (adb taps outside `run_agent.py`)
 and the dashboard doesn't yet reflect it — use `telemetry.py`'s `TelemetryClient`
 (`post_state(...)`, `post_status(...)`) via a short `python -c` snippet run from
-`android-agent/`, matching the shape already used in `run_agent.py`.
+the repo root, matching the shape already used in `run_agent.py`.
 
 ## Per-app memory (memory.py)
 
-Reuse the existing `AppMemory` API from `android-agent/memory.py` — don't hand-edit
-the JSON files under `android-agent/projects/<package>/memory.json`. Typical
-update, run via `python -c` from `android-agent/`:
+Reuse the existing `AppMemory` API from `memory.py` — don't hand-edit
+the JSON files under `projects/<package>/memory.json`. Typical
+update, run via `python -c` from the repo root:
 
 ```python
 import memory
@@ -48,7 +48,7 @@ Only call this for goal-directed hand runs that didn't already go through
 ## Flow summary / test report
 
 Use `report.py`'s `append_manual_note(package, note)` (run via a short `python -c`
-snippet from `android-agent/`) to record what the hand agent covered — screens
+snippet from the repo root) to record what the hand agent covered — screens
 visited, flows verified, anything broken or still unverified — into
 `projects/<package>/REPORT.md`'s preserved MANUAL section. This is the durable,
 cross-session handoff doc: a future agent picking up this app reads this file

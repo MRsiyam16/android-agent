@@ -18,11 +18,11 @@ from pathlib import Path
 import pytest
 
 # The modules under test (config, extractor, adb_device…) import each other by bare name and
-# assume the android-agent directory is on the path, which is true when server.py or
-# run_agent.py is the entry point. pytest's rootdir is not, so put it there.
-ANDROID_AGENT = Path(__file__).resolve().parent.parent
-if str(ANDROID_AGENT) not in sys.path:
-    sys.path.insert(0, str(ANDROID_AGENT))
+# assume the project root is on the path, which is true when server.py or run_agent.py is the
+# entry point. pytest's rootdir is not, so put it there.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def node(**attrs: object) -> str:

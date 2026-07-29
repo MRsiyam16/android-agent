@@ -429,7 +429,7 @@ def explore_app(package, steps=50, device_serial=None):
     if device_serial:
         cmd.extend(["--serial", device_serial])
     
-    result = subprocess.run(cmd, cwd="android-agent", capture_output=True, text=True)
+    result = subprocess.run(cmd, cwd=".", capture_output=True, text=True)
     
     if result.returncode != 0:
         raise RuntimeError(f"Exploration failed: {result.stderr}")

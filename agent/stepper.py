@@ -46,7 +46,7 @@ class Stepper:
     async def _chat(self, messages: list[dict[str, Any]], max_tokens: int = 400) -> str:
         if not config.OPENROUTER_API_KEY:
             raise StepperUnavailable(
-                "OPENROUTER_API_KEY is not set — add it to android-agent/.env")
+                "OPENROUTER_API_KEY is not set — add it to .env")
         payload = {"model": self.model, "messages": messages, "max_tokens": max_tokens}
         headers = {
             "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
