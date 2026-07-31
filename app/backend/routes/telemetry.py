@@ -11,6 +11,8 @@ import time
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 
+import config
+
 from .. import naming, projects, state
 from ..schemas import StatusPayload, TelemetryPayload
 
@@ -133,8 +135,34 @@ async def text_map():
     return "\n".join(lines) + "\n"
 
 
+def _origin_allowed(origin: str) -> bool:
+    """Whether a browser at `origin` may open the telemetry socket.
+
+    WebSocket handshakes are not subject to CORS: any page the user happens to have open can
+    call `new WebSocket("ws://localhost:8000/ws")` and receive whatever it sends. What this
+    one sends first is `history_for_replay()` — every screenshot of the app under test, as
+    base64. Binding to loopback (see config.SERVER_HOST) does not help here, because the
+    connection comes from the user's own browser, which is already inside the loopback.
+
+    A missing Origin is allowed: non-browser clients (scripts, the tests) do not send one,
+    and they are not the vector — a browser always sends it, and cannot forge it.
+    """
+    if not origin:
+        return True
+    allowed = {f"http://localhost:{config.SERVER_PORT}",
+               f"http://127.0.0.1:{config.SERVER_PORT}",
+               f"http://[::1]:{config.SERVER_PORT}",
+               config.SERVER_URL.rstrip("/")}
+    return origin.rstrip("/") in allowed
+
+
 @router.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    origin = websocket.headers.get("origin", "")
+    if not _origin_allowed(origin):
+        logger.warning("refused a websocket from origin %r", origin)
+        await websocket.close(code=1008)   # policy violation
+        return
     await state.manager.connect(websocket)
     try:
         await websocket.send_json({"type": "history", "items": state.history_for_replay()})

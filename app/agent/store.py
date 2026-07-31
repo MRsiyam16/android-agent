@@ -63,6 +63,21 @@ PROJECTS_DIR = project_paths.DEFAULT_PROJECTS_DIR
 _LOCK = threading.RLock()
 
 
+class StoreWriteError(OSError):
+    """A mutation could not be persisted.
+
+    Raised rather than logged because the caller is usually an agent tool, and a tool that
+    returns "Filed F003" for a write that never landed is the harness telling the model
+    something it has not verified — the exact thing `record_finding` refuses to let the
+    model do. The finding is lost, `finding_count` disagrees with the file, and the only
+    trace is a warning nobody reads. An error the agent can retry is strictly better: the
+    write is all-or-nothing, so a retry after a failure cannot double-file.
+
+    Realistic trigger, not a hypothetical: a project may live on any drive (see
+    project_paths), so an unplugged external disk or a Windows AV file lock lands here.
+    """
+
+
 # Shared with server.py through project_paths, so the two can no longer drift apart.
 _safe_name = project_paths.safe_package_name
 
@@ -116,7 +131,12 @@ def _last_opened_path() -> Path:
 
 def set_last_opened(package: str, slug: str) -> None:
     """Remember which module was last in use, so the server can pre-warm its Claude Code
-    session at startup and the first message of the day is instant."""
+    session at startup and the first message of the day is instant.
+
+    One of the two writers here that deliberately ignores a failure: losing this costs a
+    cold first message, nothing else. Nothing downstream reports it as having happened, so
+    there is no claim for a swallowed failure to falsify.
+    """
     _write_json_atomic(_last_opened_path(), {"package": package, "slug": slug, "at": now()})
 
 
@@ -137,7 +157,7 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
-def _write_json_atomic(path: Path, payload: Any) -> None:
+def _write_json_atomic(path: Path, payload: Any) -> bool:
     """Write via a temp file + replace, so a crash mid-write can't truncate the original.
 
     The temp name carries the writer's pid and thread id. A fixed `.tmp` suffix is a shared
@@ -146,21 +166,78 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
     permission denial on open. `_LOCK` already serialises writers inside this process; this
     keeps a second process (or a future one that skips the lock) from turning a benign race
     into a write that silently does not happen.
+
+    Returns whether the write landed. The bool is not decoration: callers that persist a
+    verdict raise `StoreWriteError` on False, because a swallowed failure here is how a
+    finding gets lost while the agent is told it was filed.
     """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         tmp.replace(path)
+        return True
     except OSError as exc:
         logger.warning("Could not write %s: %s", path, exc)
         with contextlib.suppress(OSError, NameError):
             tmp.unlink(missing_ok=True)   # don't leave a half-written temp behind
+        return False
+
+
+def _write_or_raise(path: Path, payload: Any) -> None:
+    """Persist, or raise so the caller can tell the agent the truth."""
+    if not _write_json_atomic(path, payload):
+        raise StoreWriteError(f"Could not write {path}. The change was not saved.")
 
 
 # --------------------------------------------------------------------------------------
 # Sub-projects
 # --------------------------------------------------------------------------------------
+#: Every status a module can be in, in lifecycle order. A tuple here for the same reason
+#: FINDING_KINDS and NOTE_KINDS are: the vocabulary had been written as a comment, and the
+#: comment drifted — it documented `running` and `done`, neither of which anything ever
+#: wrote, while the value actually written on completion (`tested`) was absent from it. The
+#: authority is the frontend, which styles one badge per status (css/agent.css) and branches
+#: on `proposed`; these are the three it knows.
+SUBPROJECT_STATUSES = ("proposed", "approved", "tested")
+
+#: The manager module, created with the project. It owns the breakdown — it interviews the
+#: user, looks at the app, creates modules and reads back what they found — and it is the one
+#: module that never files a finding of its own.
+MAIN_SLUG = "main"
+
+#: What the manager module was called before it was one. Projects created earlier have their
+#: setup interview under `onboarding/`, and the folder name is the slug: renaming it would
+#: mean moving the transcript, so instead both names resolve to the manager. Kept as a
+#: separate constant rather than a string literal in four places because the whole point is
+#: that every caller agrees on which slug is the manager.
+LEGACY_MAIN_SLUG = "onboarding"
+
+
+def is_main_slug(slug: str) -> bool:
+    """Whether this module is the project's manager, under either of its names."""
+    return slug in (MAIN_SLUG, LEGACY_MAIN_SLUG)
+
+
+def main_slug(package: str) -> str:
+    """The slug this project's manager module actually lives under.
+
+    A project made today has `main/`; one made before the manager existed has `onboarding/`
+    and keeps it. Returns `MAIN_SLUG` when there is no manager yet, which is what a caller
+    about to create one wants — so "find it" and "where would it go" are the same call and
+    cannot disagree.
+
+    Prefers `main` when a project somehow has both, because that is the one the current code
+    creates and writes to.
+    """
+    slugs = {str(s.get("slug") or "") for s in list_subprojects(package)}
+    if MAIN_SLUG in slugs:
+        return MAIN_SLUG
+    if LEGACY_MAIN_SLUG in slugs:
+        return LEGACY_MAIN_SLUG
+    return MAIN_SLUG
+
+
 def list_subprojects(package: str) -> list[dict[str, Any]]:
     data = _read_json(_subprojects_path(package), {})
     items = data.get("subprojects", []) if isinstance(data, dict) else []
@@ -172,6 +249,14 @@ def get_subproject(package: str, slug: str) -> Optional[dict[str, Any]]:
 
 
 def save_subprojects(package: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The module list. The other deliberate non-raiser, and the reasoning is asymmetric.
+
+    `add_finding` writes findings.json first and only then bumps `finding_count` through
+    here. If this write is the one that fails, the count reads low while the verdict itself
+    is safely on disk — the report and the pills are rebuilt from the per-module findings
+    files (`list_all_findings`), so nothing is lost and nothing is over-claimed. Raising
+    would undo a filing that actually succeeded, which is the worse of the two errors.
+    """
     _write_json_atomic(_subprojects_path(package), {"package": package,
                                                     "updated_at": _now(),
                                                     "subprojects": items})
@@ -200,7 +285,7 @@ def create_subproject(package: str, title: str, scope: str = "",
             "slug": slug,
             "title": title.strip(),
             "scope": scope.strip(),
-            "status": status,          # proposed | approved | running | done
+            "status": status,          # one of SUBPROJECT_STATUSES
             "screens": screens or [],
             "finding_count": 0,
             "created_at": _now(),
@@ -370,13 +455,19 @@ def list_all_findings(package: str) -> list[dict[str, Any]]:
 
 
 def add_finding(package: str, slug: str, finding: dict[str, Any]) -> dict[str, Any]:
+    """File an outcome. Raises StoreWriteError if it could not be persisted.
+
+    The count is bumped only after the findings file is safely on disk. Bumping first is
+    how `finding_count` ends up claiming a verdict that `findings.json` does not contain —
+    the pill in the top bar would show it and the report would not.
+    """
     # Held across the whole sequence: the id is derived from the current count, so an
     # interleaved second filing would otherwise hand out F002 twice and drop one of them.
     with _LOCK:
         findings = list_findings(package, slug)
         record = {"id": f"F{len(findings) + 1:03d}", "ts": _now(), **finding}
         findings.append(record)
-        _write_json_atomic(_findings_path(package, slug), findings)
+        _write_or_raise(_findings_path(package, slug), findings)
         update_subproject(package, slug, finding_count=len(findings))
         return record
 
@@ -400,7 +491,7 @@ def link_finding(package: str, slug: str, finding_id: str,
                 found = item
         if found is None:
             return None
-        _write_json_atomic(_findings_path(package, slug), findings)
+        _write_or_raise(_findings_path(package, slug), findings)
         return found
 
 
@@ -475,7 +566,7 @@ def record_step(package: str, slug: str, node: str, label: str, section: str) ->
     with _LOCK:
         steps = [s for s in _recorded_steps(package, slug) if s.get("node") != node]
         steps.append({"node": node, "label": label, "section": section, "ts": _now()})
-        _write_json_atomic(_steps_path(package, slug), steps)
+        _write_or_raise(_steps_path(package, slug), steps)
 
 
 # --------------------------------------------------------------------------------------
@@ -539,7 +630,7 @@ def add_note(package: str, slug: str, note: dict[str, Any]) -> dict[str, Any]:
             notes = [n for n in notes if n.get("section") != section]
         record = {"id": f"N{len(notes) + 1:03d}", "ts": _now(), **note}
         notes.append(record)
-        _write_json_atomic(_notes_path(package, slug), notes)
+        _write_or_raise(_notes_path(package, slug), notes)
         return record
 
 
@@ -552,12 +643,18 @@ def get_secrets(package: str) -> dict[str, str]:
 
 
 def set_secret(package: str, key: str, value: str) -> None:
+    """Store a test credential. Raises StoreWriteError if it could not be persisted.
+
+    Loudly, because the value is deliberately not kept anywhere else: the transcript stores
+    a redaction, so a swallowed failure here loses the credential outright and the next
+    `use_credential` asks the user for something they already gave.
+    """
     # Two credentials answered in quick succession (the agent asks for an email, then a
     # password) would otherwise race and leave only one of them stored.
     with _LOCK:
         secrets = get_secrets(package)
         secrets[key] = value
-        _write_json_atomic(_secrets_path(package), secrets)
+        _write_or_raise(_secrets_path(package), secrets)
 
 
 def secret_keys(package: str) -> list[str]:

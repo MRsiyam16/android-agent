@@ -38,6 +38,11 @@ class Journey:
         self.step_count = 0
         self.section: Optional[str] = None
         self._prev_node: Optional[str] = None
+        #: Whether the most recent `step()` actually reached the board. Exposed rather than
+        #: raised: autonomous exploration must not die because telemetry is down (see
+        #: `_post`), but the agent's `journey_step` tool needs to stop telling the model a
+        #: screen is on the flow graph when it is not.
+        self.last_step_posted: bool = True
 
     def start_section(self, title: str) -> None:
         """Group the steps that follow under a heading on the dashboard."""
@@ -61,7 +66,7 @@ class Journey:
             xml = self.device.dump_xml()
         w, h = self.device.window_size
 
-        self._post("/telemetry", {
+        self.last_step_posted = self._post("/telemetry", {
             "session_id": self.session_id,
             "device_serial": self.device.serial,
             "package_name": self.package,
@@ -79,10 +84,25 @@ class Journey:
         self._prev_node = node_id
         return node_id
 
-    def _post(self, path: str, payload: dict[str, Any]) -> None:
+    def _post(self, path: str, payload: dict[str, Any]) -> bool:
+        """Post one record. Returns whether it landed; never raises.
+
+        Telemetry is observability, never the thing under test — a server that's down must
+        not fail the run or mask the app's real result. The return value is how a caller
+        that *does* care (the agent's journey_step tool, which promises the model a screen
+        is now on the board) can tell the difference.
+
+        A non-2xx is a failure too: the run is posting to its own server, so a 422 from a
+        payload the schema rejected drops the step just as completely as a refused
+        connection, and used to look identical to success.
+        """
         try:
-            requests.post(f"{self.server}{path}", json=payload, timeout=15)
+            response = requests.post(f"{self.server}{path}", json=payload, timeout=15)
         except requests.RequestException as exc:
-            # Telemetry is observability, never the thing under test — a server that's down
-            # must not fail the run or mask the app's real result.
             print(f"[journey] telemetry post to {path} failed: {exc}", flush=True)
+            return False
+        if response.status_code >= 400:
+            print(f"[journey] telemetry post to {path} rejected: "
+                  f"{response.status_code} {response.text[:200]}", flush=True)
+            return False
+        return True

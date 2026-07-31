@@ -25,8 +25,18 @@ router = APIRouter()
 
 @router.post("/command")
 async def run_command(payload: CommandPayload):
+    """Run one remote-control command and return the frame it produced.
+
+    Every uiautomator2 call here goes through a worker thread, including the connect. They
+    are all blocking, a tap plus a screenshot is a few hundred milliseconds, and `u2.connect`
+    on a sleeping phone is far worse — `device_tools.DeviceSession.device` bounds exactly
+    that call because unbounded it "would freeze the chat with no error at all". On the event
+    loop they take the WebSocket down with them, which is what feeds the dashboard the very
+    frames this endpoint exists to produce. `/device/info` and `/device/frame` below already
+    thread their work; this endpoint was the one that did not.
+    """
     serial = payload.device_serial or state.device_serial()
-    d = devices.resolve_device(serial)
+    d = await asyncio.to_thread(devices.resolve_device, serial)
 
     raw = payload.command.strip()
     parts = raw.split()
@@ -40,7 +50,7 @@ async def run_command(payload: CommandPayload):
 
         elif verb == "tap" and len(parts) >= 3:
             x, y = int(parts[1]), int(parts[2])
-            d.click(x, y)
+            await asyncio.to_thread(d.click, x, y)
 
         elif verb == "click" and len(parts) >= 2:
             target = raw[len("click"):].strip().strip('"').strip("'")
@@ -51,21 +61,21 @@ async def run_command(payload: CommandPayload):
             )
             if not match:
                 raise HTTPException(status_code=404, detail=f"No known element matches '{target}'")
-            d.click(match["x"], match["y"])
+            await asyncio.to_thread(d.click, match["x"], match["y"])
 
         elif verb == "type" and len(parts) >= 2:
             text = raw[len("type"):].strip()
-            d.send_keys(text)
+            await asyncio.to_thread(d.send_keys, text)
 
         elif verb == "back":
-            d.press("back")
+            await asyncio.to_thread(d.press, "back")
 
         elif verb == "home":
-            d.press("home")
+            await asyncio.to_thread(d.press, "home")
 
         elif verb == "launch" and len(parts) >= 2:
             package = parts[1]
-            d.app_start(package, stop=True)
+            await asyncio.to_thread(d.app_start, package, stop=True)
 
         else:
             raise HTTPException(status_code=400, detail=f"Unrecognized command: '{raw}'")
@@ -76,7 +86,7 @@ async def run_command(payload: CommandPayload):
         raise HTTPException(status_code=502, detail=f"Command failed: {exc}") from exc
 
     try:
-        shot = devices.screenshot_b64(d)
+        shot = await asyncio.to_thread(devices.screenshot_b64, d)
     except Exception as exc:  # noqa: BLE001
         logger.warning("post-command screenshot failed: %s", exc)
         shot = ""
@@ -128,7 +138,7 @@ async def device_frame(package: str | None = None, slug: str | None = None):
             device = await session.device.device()
             b64 = await session.device.run(device.screenshot_b64)
         else:
-            d = devices.resolve_device(None)
+            d = await asyncio.to_thread(devices.resolve_device, None)
             b64 = await asyncio.to_thread(devices.screenshot_b64, d)
     except HTTPException:
         raise

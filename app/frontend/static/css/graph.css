@@ -234,6 +234,13 @@
 .graph-wrap[data-tool="text"] .tool-overlay { cursor: text; pointer-events: auto; }
 .graph-wrap[data-tool="comment"] .tool-overlay { cursor: copy; pointer-events: auto; }
 .graph-wrap[data-tool="pan"] .tool-overlay { pointer-events: none; }
+/* Space held for a temporary pan. The dock still shows the real tool, so the open hand is
+   the only signal that the next drag moves the canvas — it has to win over vis.js's own
+   cursor on the canvas, which is why it is forced. */
+.graph-wrap.space-panning,
+.graph-wrap.space-panning canvas { cursor: grab !important; }
+.graph-wrap.space-panning:active,
+.graph-wrap.space-panning canvas:active { cursor: grabbing !important; }
 
 .selection-box {
   position: absolute; display: none; z-index: 16; pointer-events: none;

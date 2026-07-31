@@ -40,6 +40,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 import config
 from adb_device import AdbDevice, DeviceError, detect_toolkit
 from agent import store
+from agent.store import StoreWriteError
 
 from agent.guards import finding_block_reason, in_flight_text
 from agent.screen import package_ranking, screen_elements, screen_texts
@@ -50,6 +51,7 @@ logger = logging.getLogger("agent.device_tools")
 # runtime.py import them from here and there is no reason to make them care.
 __all__ = [
     "DeviceCancelled", "DeviceSession", "build_device_server", "DEVICE_TOOL_NAMES",
+    "MANAGER_DEVICE_TOOL_NAMES", "VERDICT_TOOLS",
     "finding_block_reason", "in_flight_text",
     "package_ranking", "screen_elements", "screen_texts",
 ]
@@ -231,8 +233,6 @@ class DeviceSession:
         return path
 
 
-# Text that means a request is still in flight. Judging a submit while one of these is on
-
 def _render_screen(session: DeviceSession, xml: str, w: int, h: int,
                    texts: list[str], elements: list[dict[str, Any]]) -> str:
     ranking = package_ranking(xml)
@@ -281,8 +281,13 @@ def _render_screen(session: DeviceSession, xml: str, w: int, h: int,
     return "\n".join(lines)
 
 
-def build_device_server(session: DeviceSession):
-    """Build an MCP server whose tools are bound to this one session."""
+def build_device_server(session: DeviceSession, *, can_file_findings: bool = True):
+    """Build an MCP server whose tools are bound to this one session.
+
+    `can_file_findings=False` omits the verdict tools (see `VERDICT_TOOLS`) — the manager
+    module's setting. Keyword-only and defaulting to True so every existing caller, and every
+    tester session, is unaffected.
+    """
 
     # ---------------------------------------------------------------- observing
     @tool("read_screen",
@@ -558,8 +563,14 @@ def build_device_server(session: DeviceSession):
                 kind="credential", payload={"name": name})
             if not answer.strip():
                 return _err(f"No credential provided for {name!r}; cannot continue this case.")
-            store.set_secret(session.package, name, answer.strip())
-            secrets = store.get_secrets(session.package)
+            try:
+                await asyncio.to_thread(store.set_secret, session.package, name,
+                                        answer.strip())
+            except StoreWriteError as exc:
+                return _err(f"The credential was NOT saved: {exc} The transcript keeps only "
+                            f"a redaction, so the value is gone — ask the user for it again "
+                            f"once the project folder is reachable.")
+            secrets = await asyncio.to_thread(store.get_secrets, session.package)
         d = await session.device()
         try:
             await session.run(d.send_keys, secrets[name], True)
@@ -654,15 +665,32 @@ def build_device_server(session: DeviceSession):
             return _err(f"Could not post the step: {exc}")
         # Indexed so the agent can find this node again by its label — see list_steps. The
         # board has the screen, but nothing else records which id it was given.
-        await asyncio.to_thread(store.record_step, session.package, session.slug,
-                                node, str(args["label"]), section)
+        try:
+            await asyncio.to_thread(store.record_step, session.package, session.slug,
+                                    node, str(args["label"]), section)
+        except StoreWriteError as exc:
+            return _err(f"The step index was NOT saved: {exc} The screen may be on the "
+                        f"board, but list_steps will not find it, so do not rely on "
+                        f"node {node} for link_finding.")
         await session._emit({"type": "agent_journey_step", "label": args["label"],
                              "section": section, "node": node})
         # The id is returned because record_finding takes it: it is the only way to say
         # *which* screen a verdict is about, and the agent cannot pass back a value it was
         # never told.
-        return _ok(f"Recorded step {j.step_count} of {section!r} on the flow graph "
-                   f"as node {node}. Pass step=\"{node}\" to record_finding if the outcome "
+        posted = (
+            f"Recorded step {j.step_count} of {section!r} on the flow graph as node {node}."
+            if j.last_step_posted else
+            # Deliberately not `_err`, which would invite a retry: every call mints a fresh
+            # node id, so re-stepping the same screen after a failed post puts a duplicate
+            # on the board rather than replacing anything. The local index did land, so the
+            # id stays usable — the one thing this must not do is claim the board has it.
+            f"WARNING: the flow graph did NOT receive this step — the telemetry post "
+            f"failed, so node {node} is not drawn on the board. It is recorded locally and "
+            f"list_steps will show it. Do not call journey_step again for this same screen; "
+            f"a retry mints a new id and would duplicate the step rather than repair it. "
+            f"Carry on testing and mention this in your reply."
+        )
+        return _ok(f"{posted} Pass step=\"{node}\" to record_finding if the outcome "
                    f"you file next is about this screen.")
 
     @tool("record_finding",
@@ -732,12 +760,22 @@ def build_device_server(session: DeviceSession):
         # mistake as the dump misreads the screenshot rule exists to stop. Unlinked is
         # honest; approximately linked is not.
         node = str(args.get("step") or "").strip() or None
-        record = await asyncio.to_thread(
-            store.add_finding, session.package, session.slug,
-            {"title": args["title"], "kind": kind,
-             "severity": args.get("severity") or ("none" if kind == "pass" else "medium"),
-             "expected": args["expected"], "actual": args["actual"],
-             "steps": args.get("steps") or [], "evidence": evidence, "node": node})
+        # A failed write is reported as a failure. Saying "Filed F003" for a verdict that
+        # never reached the disk is the harness doing to the agent exactly what
+        # `record_finding` refuses to let the agent do to the user: assert something it has
+        # not verified. Retrying is safe — the write is all-or-nothing, so nothing was
+        # half-filed and no id was consumed.
+        try:
+            record = await asyncio.to_thread(
+                store.add_finding, session.package, session.slug,
+                {"title": args["title"], "kind": kind,
+                 "severity": args.get("severity") or ("none" if kind == "pass" else "medium"),
+                 "expected": args["expected"], "actual": args["actual"],
+                 "steps": args.get("steps") or [], "evidence": evidence, "node": node})
+        except StoreWriteError as exc:
+            return _err(f"The finding was NOT saved: {exc} Nothing was recorded, so this "
+                        f"outcome is still unfiled. Check that the project folder is "
+                        f"reachable, then file it again — retrying cannot double-file it.")
         await session._emit({"type": "agent_finding", "finding": record})
         return _ok(f"Filed {record['id']} [{kind}]: {record['title']}.")
 
@@ -786,11 +824,16 @@ def build_device_server(session: DeviceSession):
             return _err(f"No case named {section!r} on this module's board. It must match "
                         f"exactly, including the module prefix. These exist:\n{listed}")
         kind = str(args["kind"])
-        record = await asyncio.to_thread(
-            store.add_note, session.package, session.slug,
-            {"section": section, "kind": kind,
-             "title": str(args.get("title") or "").strip(),
-             "text": str(args["text"])})
+        try:
+            record = await asyncio.to_thread(
+                store.add_note, session.package, session.slug,
+                {"section": section, "kind": kind,
+                 "title": str(args.get("title") or "").strip(),
+                 "text": str(args["text"])})
+        except StoreWriteError as exc:
+            return _err(f"The note was NOT saved: {exc} Nothing was pinned to the board. "
+                        f"Writing it again is safe — a note for a section replaces the one "
+                        f"before it, so a retry cannot stack up duplicates.")
         await session._emit({"type": "agent_note", "note": record})
         return _ok(f"Pinned {record['id']} [{kind}] beside {section!r}.")
 
@@ -808,9 +851,12 @@ def build_device_server(session: DeviceSession):
            },
            "required": ["id", "step"], "additionalProperties": False})
     async def link_finding(args: dict[str, Any]) -> dict[str, Any]:
-        record = await asyncio.to_thread(
-            store.link_finding, session.package, session.slug,
-            str(args["id"]).strip(), str(args["step"]).strip())
+        try:
+            record = await asyncio.to_thread(
+                store.link_finding, session.package, session.slug,
+                str(args["id"]).strip(), str(args["step"]).strip())
+        except StoreWriteError as exc:
+            return _err(f"The link was NOT saved: {exc} The finding still points nowhere.")
         if record is None:
             return _err(f"No finding {args['id']!r} in this module. Call list_findings to "
                         f"see the ids.")
@@ -890,25 +936,50 @@ def build_device_server(session: DeviceSession):
             kind="approval", payload={"subprojects": created})
         return _ok(f"Proposed {len(created)} modules. The user said: {answer}")
 
-    return create_sdk_mcp_server(
-        name="device",
-        version="1.0.0",
-        tools=[read_screen, screenshot, wait_for_text, wait_until_gone, check_crash,
-               launch, tap_element, tap_text, tap_xy, type_text, use_credential,
-               list_credentials, press, scroll, reset_app_data,
-               journey_step, record_finding, add_note, link_finding, list_steps,
-               list_findings, ask_user, propose_subprojects],
-    )
+    tools = [read_screen, screenshot, wait_for_text, wait_until_gone, check_crash,
+             launch, tap_element, tap_text, tap_xy, type_text, use_credential,
+             list_credentials, press, scroll, reset_app_data,
+             journey_step, record_finding, add_note, link_finding, list_steps,
+             list_findings, ask_user, propose_subprojects]
+    if not can_file_findings:
+        tools = [t for t in tools if t.name not in VERDICT_TOOLS]
+    return create_sdk_mcp_server(name="device", version="1.0.0", tools=tools)
 
 
-# Tool names as the agent sees them, for the allow-list in runtime.py.
-DEVICE_TOOL_NAMES = [
-    "mcp__device__read_screen", "mcp__device__screenshot", "mcp__device__wait_for_text",
-    "mcp__device__wait_until_gone", "mcp__device__check_crash", "mcp__device__launch",
-    "mcp__device__tap_element", "mcp__device__tap_text", "mcp__device__tap_xy",
-    "mcp__device__type_text", "mcp__device__use_credential", "mcp__device__list_credentials",
-    "mcp__device__press", "mcp__device__scroll", "mcp__device__reset_app_data",
-    "mcp__device__journey_step", "mcp__device__record_finding", "mcp__device__add_note",
-    "mcp__device__link_finding", "mcp__device__list_steps", "mcp__device__list_findings",
-    "mcp__device__ask_user", "mcp__device__propose_subprojects",
-]
+#: Tools that write a verdict about a test case. Withheld from the manager module.
+#:
+#: The manager's prompt tells it plainly that it has no `record_finding`. That sentence has to
+#: be true rather than aspirational, and the difference is not cosmetic: the manager walks the
+#: app during recon and forms impressions — "the cart total looked stale" — which are exactly
+#: what a verdict is not. A finding is one named case with a screenshot behind it, and once an
+#: impression is in findings.json nothing downstream can separate the two: the project's bug
+#: count becomes partly recon guesswork, and `project_report` totals it up as fact.
+#:
+#: Left in the tester's list untouched, and enforced by *absence* rather than by the PreToolUse
+#: gate. The gate would deny the call, but the tool would still be in the manager's tool
+#: definitions — so the model would see a tool its prompt says it does not have, reach for it
+#: at the moment it most wanted to, and spend the turn discovering the refusal. This harness
+#: has already paid for that lesson once with the cheap-tier tools (see prompts._cost_section).
+VERDICT_TOOLS = ("record_finding",)
+
+
+def _device_tool_names(*, can_file_findings: bool = True) -> list[str]:
+    """The device tools as the agent sees them, for the allow-list in runtime.py.
+
+    Derived from one list rather than written out twice: an allow-list that disagrees with what
+    `build_device_server` registered is a tool the agent can see and cannot call, or one it can
+    call that nobody meant it to have.
+    """
+    short = ["read_screen", "screenshot", "wait_for_text", "wait_until_gone", "check_crash",
+             "launch", "tap_element", "tap_text", "tap_xy", "type_text", "use_credential",
+             "list_credentials", "press", "scroll", "reset_app_data",
+             "journey_step", "record_finding", "add_note", "link_finding", "list_steps",
+             "list_findings", "ask_user", "propose_subprojects"]
+    return [f"mcp__device__{name}" for name in short
+            if can_file_findings or name not in VERDICT_TOOLS]
+
+
+DEVICE_TOOL_NAMES = _device_tool_names()
+
+#: The manager module's device allow-list: everything except the verdict tools.
+MANAGER_DEVICE_TOOL_NAMES = _device_tool_names(can_file_findings=False)

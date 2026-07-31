@@ -6,6 +6,7 @@ import { refreshFrame, sendToAgent } from './compose.js';
 import { loadModules, renderModuleHighlight } from './modules.js';
 import { refreshOutcomes, refreshSectionNotes } from './outcomes.js';
 import { chatLog } from './phone.js';
+import { hidePresets, showPresets } from './presets.js';
 
 async function loadTranscript() {
   if (!agent.package || !agent.slug) return;
@@ -32,11 +33,18 @@ async function loadTranscript() {
     else if (m.role === 'tool') appendChat('tool', m.summary || m.tool || '');
     else if (m.role === 'shot' && m.path) appendShot(m.path, m.note);
   });
-  if (!(data.messages || []).length) {
+  const empty = !(data.messages || []).length;
+  if (empty) {
     appendChat('agent', 'Tell me what to test in this module and I will plan the cases, run '
       + 'them on the phone, and report what I actually observe. I will stop and ask only if '
       + 'I hit something I cannot get past on my own.');
   }
+  // The prewritten prompts, on a module that has nothing in it and nothing running. A module
+  // created by the manager and started in the same breath (see the Main module's interview)
+  // has an empty transcript *and* a live turn — offering "start from one of these" there
+  // would be offering to interrupt a run that has already begun.
+  if (empty && !data.busy && !data.blocked) showPresets();
+  else hidePresets();
   refreshOutcomes();
   refreshSectionNotes();
   setAgentBusy(!!data.busy);
@@ -145,6 +153,11 @@ function appendFinding(f) {
   scrollChatToEnd();
 }
 
+// Events that a module can emit without a conversation having started — a session warming up
+// reports its model and readiness before anything has been said to it. Everything else means
+// the agent is speaking, working, or has worked, so the preset strip is no longer offered.
+const QUIET_EVENTS = new Set(['agent_model', 'agent_ready']);
+
 function handleAgentEvent(msg) {
   // Events carry their module, so a background run cannot scribble into the chat you
   // are currently reading.
@@ -152,6 +165,12 @@ function handleAgentEvent(msg) {
     if (msg.type === 'agent_finding' || msg.type === 'agent_subprojects_proposed') loadModules();
     return;
   }
+  // Anything the agent says or does means this is no longer the start of a new chat, so the
+  // suggestion strip goes. Driven off events rather than off the transcript, because a run
+  // started from somewhere else — the Main module's interview, another tab — produces no
+  // reload here and would otherwise leave "start from one of these" under a live turn.
+  // `agent_model` and `agent_ready` are excluded: a session warming up is not a conversation.
+  if (!QUIET_EVENTS.has(msg.type)) hidePresets();
   switch (msg.type) {
     case 'agent_text':
       appendChat('agent', msg.text);

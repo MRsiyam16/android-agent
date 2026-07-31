@@ -99,8 +99,10 @@
   font-family: var(--font-body); font-weight: 600; line-height: 1.25;
   letter-spacing: 0.04em; text-transform: uppercase; color: #a1a1aa; margin: 0 0 6px 0; font-size: 14px;
 }
-  margin: 0.9em 0 0.4em; letter-spacing: -0.01em;
-}
+/* The rule above replaced an earlier one and left two of its declarations behind, orphaned
+   at the top level with a stray closing brace. That is a syntax error, and error recovery
+   for it runs to the start of the next declaration block — so the h1 rule below was liable
+   to be swallowed along with the garbage, leaving every heading at the 14px set above. */
 .markdown h1 { font-size: 1.35em; }
 .markdown h2 { font-size: 1.2em; }
 .markdown h3 { font-size: 1.08em; }
@@ -157,9 +159,21 @@
 /* ---------------- BARE TEXT CAPTION (T tool) ---------------- */
 /* Colour, weight and size are authored per note and applied inline; the whole element is
    then scaled by the zoom, so the size is a canvas measurement like everything else. */
+/* The caption sizes itself to its text and to nothing else. Left to shrink-to-fit, an
+   absolutely-positioned box takes the width still available between it and the edge of the
+   layer — so the same caption laid out 1512px wide near the left edge rewrapped to 538px
+   and doubled in height once the canvas got narrower, and every zoom or pan that moved it
+   changed where its lines broke. `max-content` takes the width from the glyphs instead, and
+   `pre` means a line breaks only where one was typed. Both are needed: without the width on
+   the wrapper, the wrapper keeps the clamped shrink-to-fit and the text spills out of the
+   selection outline and the marquee's hit rect, which are measured from it. */
+.text-note.kind-text,
+.text-note.kind-text .text-note-content {
+  width: max-content;
+}
 .text-note.kind-text .text-note-content {
   outline: none;
-  white-space: pre-wrap;
+  white-space: pre;
   min-width: 24px;
   padding: 2px 4px;
   border-radius: 4px;

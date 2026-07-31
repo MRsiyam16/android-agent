@@ -1,8 +1,8 @@
 """Optional per-app persistent memory for the exploration agent.
 
-Stored as memory.json inside that app's project folder
-(android-agent/projects/<package>/memory.json) — purely local disk state, no
-network calls of its own. This lets a run:
+Stored as memory.json inside that app's project folder — the default
+`projects/<package>/`, or wherever the project was pointed (see project_paths).
+Purely local disk state, no network calls of its own. This lets a run:
 
 - resume where a previous run left off (previously-tried actions are replayed into
   the fresh in-memory graph so they aren't re-tapped),
@@ -22,14 +22,29 @@ import logging
 import os
 from dataclasses import dataclass, field
 
+import project_paths
+
 logger = logging.getLogger("memory")
 
-PROJECTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
+#: The *default* home only, kept for scripts that print it. Never build a path from it —
+#: `_project_dir` is the one that knows where a given project actually lives.
+PROJECTS_DIR = str(project_paths.DEFAULT_PROJECTS_DIR)
 
 
 def _project_dir(package: str) -> str:
-    safe_name = "".join(c if (c.isalnum() or c in ".-_") else "_" for c in package) or "unknown"
-    return os.path.join(PROJECTS_DIR, safe_name)
+    """This app's project folder, wherever the registry says it is.
+
+    Delegated rather than composed from PROJECTS_DIR. A project can be pointed at a folder on
+    any drive, and every other file belonging to one already follows it — the board, the
+    findings, the transcripts, the credentials. These two, `memory.json` and the `REPORT.md`
+    report.py builds beside it, were the last still assembled from a module-level constant, so
+    a moved project left them behind in the repo: a run would write memory to one place and a
+    later run read it from another, and the report a future session is told to read first sat
+    somewhere nobody would look for it.
+
+    Returns `str`, not `Path`, because this module and report.py both compose with os.path.
+    """
+    return str(project_paths.project_dir(package))
 
 
 def _memory_path(package: str) -> str:

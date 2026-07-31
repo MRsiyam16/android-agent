@@ -35,8 +35,19 @@ async function loadAgentProjects() {
   await loadModules();
 }
 
+// The project's manager module, under either of its names. A project created before the
+// manager existed keeps its interview under `onboarding` — the slug is the folder name, so
+// renaming it would mean moving the transcript. Mirrors `store.is_main_slug`.
+const MAIN_SLUGS = ['main', 'onboarding'];
+const isMainModule = (mod) => MAIN_SLUGS.includes(mod.slug);
+
 function moduleBadges(mod) {
-  const badges = [`<span class="agent-badge ${mod.status}">${mod.status}</span>`];
+  const badges = [];
+  // First, and instead of the status badge: "approved" is meaningless for the module that
+  // does the approving, and what a reader needs to know about this row is that it is not a
+  // test suite — it files nothing, so an empty findings count on it is not a gap.
+  if (isMainModule(mod)) badges.push('<span class="agent-badge manager">manager</span>');
+  else badges.push(`<span class="agent-badge ${mod.status}">${mod.status}</span>`);
   if (mod.finding_count) {
     badges.push(`<span class="agent-badge defects">${mod.finding_count} finding${mod.finding_count === 1 ? '' : 's'}</span>`);
   }
@@ -52,6 +63,15 @@ async function loadModules() {
     appendChat('error', 'Could not load modules: ' + err.message);
     return;
   }
+
+  // Manager first, then the order the file has them in. It is the module you come back to
+  // between suites, and on a project with a dozen modules it would otherwise sit wherever it
+  // happened to be created.
+  //
+  // Sorted here, once, rather than in each loop below: `renderModuleHighlight` finds the
+  // active card by the *index* of the slug in the dropdown, so the dropdown and the rail have
+  // to be built from the same order or selecting one module highlights another.
+  modules = modules.slice().sort((a, b) => isMainModule(b) - isMainModule(a));
 
   document.getElementById('moduleCount').textContent = modules.length;
 
@@ -159,7 +179,11 @@ function openModuleMenu(mod, anchor) {
   add('Edit name & scope', () => openModuleSheet(mod));
   add('Open module', () => selectModule(mod.slug));
   if (mod.status === 'proposed') add('Approve', () => setModuleStatus(mod.slug, 'approved'));
-  add('Delete module', () => deleteModule(mod), 'danger');
+  // No Delete on the manager. Every project has exactly one and the server recreates it under
+  // the same slug, so removing it from the list does not remove it — it drops the row, and the
+  // next project-level action puts it back with the interview transcript still underneath.
+  // An option whose effect is "nothing you wanted" is worse than no option.
+  if (!isMainModule(mod)) add('Delete module', () => deleteModule(mod), 'danger');
 
   // Positioned fixed against the button's viewport rect: the rail scrolls, and a menu
   // absolutely positioned inside it would scroll out of view or be clipped by the rail's
@@ -302,4 +326,4 @@ const OUTCOME_KINDS = {
 // declaration runs, and refreshOutcomes is reachable from startup paths.
 
 
-export { OUTCOME_KINDS, closeModuleMenu, closeModuleSheet, deleteModule, editingModule, loadAgentProjects, loadModules, moduleBackdrop, moduleBadges, moduleSheetName, moduleSheetScope, openMenuEl, openModuleMenu, openModuleSheet, renderModuleHighlight, selectModule, setModuleStatus };
+export { MAIN_SLUGS, OUTCOME_KINDS, closeModuleMenu, closeModuleSheet, deleteModule, editingModule, isMainModule, loadAgentProjects, loadModules, moduleBackdrop, moduleBadges, moduleSheetName, moduleSheetScope, openMenuEl, openModuleMenu, openModuleSheet, renderModuleHighlight, selectModule, setModuleStatus };

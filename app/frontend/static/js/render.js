@@ -207,6 +207,7 @@ function renderNodeCards() {
 
 function onNodeCardClick(hash, e) {
   if (ui.currentTool !== 'pan') return; // select/comment tools handle their own mousedown on the overlay
+  if (ui.spacePan) return;              // space is held for a pan, not to open anything
   e.stopPropagation();
   openModal(hash);
 }

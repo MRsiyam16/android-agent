@@ -37,8 +37,10 @@ from claude_agent_sdk import (
 )
 
 import config
+import system_memory as sysmem
 from agent import device_tools, prompts, store
 from agent.device_tools import DeviceSession, build_device_server
+from agent.manager_tools import build_manager_server, manager_tool_names
 from agent.stepper import Stepper, build_stepper_server, stepper_tool_names
 
 logger = logging.getLogger("agent.runtime")
@@ -53,13 +55,35 @@ BLOCKED_TOOLS = ["Bash", "WebSearch", "WebFetch", "Task", "NotebookEdit", "KillS
                  "BashOutput", "SlashCommand"]
 
 
+def _transcript_text(question: Optional[dict[str, Any]], text: str) -> str:
+    """What a reply to a blocked question may be written into the transcript as.
+
+    A credential is redacted, because three separate places promise it is: the tool tells
+    the user it "will never be written into the transcript or the report"
+    (device_tools.use_credential), `store.secret_keys` says values are injected server-side
+    and never reach the transcript, and the secrets endpoint repeats it. The value still
+    goes to `secrets.json`, which is the only place it was ever meant to live — but until
+    this existed, the raw answer was appended to `chat.jsonl` verbatim and then replayed
+    into the chat log by `GET /chat` every time the module was reopened. A password sitting
+    in plain text in a file that, unlike secrets.json, carries no such protection.
+
+    Everything else is stored as typed: an approval or a "done" is the conversation.
+    """
+    if (question or {}).get("kind") != "credential":
+        return text
+    name = str(((question or {}).get("payload") or {}).get("name") or "").strip()
+    return f"(credential provided{f' for {name}' if name else ''} — value stored, not logged)"
+
+
 def _tool_summary(name: str, payload: dict[str, Any]) -> str:
     """A one-line, human-readable version of a tool call for the chat log."""
-    short = name.replace("mcp__device__", "").replace("mcp__cheap__", "")
-    if short in ("read_screen", "list_findings", "list_credentials", "check_crash"):
+    short = (name.replace("mcp__device__", "").replace("mcp__cheap__", "")
+             .replace("mcp__manager__", ""))
+    if short in ("read_screen", "list_findings", "list_credentials", "check_crash",
+                 "list_modules", "project_report"):
         return short
     for key in ("id", "text", "label", "expectation", "goal", "question", "note", "key",
-                "direction", "name", "title", "package"):
+                "direction", "name", "title", "package", "slug"):
         if key in payload and isinstance(payload[key], (str, int)):
             value = str(payload[key])
             return f"{short}: {value[:90]}"
@@ -109,11 +133,27 @@ class AgentSession:
         workdir = store.subproject_dir(self.package, self.slug)
         workdir.mkdir(parents=True, exist_ok=True)
 
-        allowed = device_tools.DEVICE_TOOL_NAMES + FILE_TOOLS
-        mcp_servers: dict[str, Any] = {"device": build_device_server(self.device)}
+        # The manager module is built differently from a tester in two matched ways: it gains
+        # tools over the *project* (read any module's work, create a module) and it loses the
+        # ones that file a verdict. It keeps the rest of the device tools because "does this
+        # part of the app deserve a module" is a question you answer by looking at the app.
+        #
+        # Both halves are per-session rather than global, for the reason the cheap tier is (see
+        # prompts._cost_section): the prompt is paired with a tool list, and a tool the prompt
+        # describes but the session does not have costs a whole turn discovering it is absent.
+        # The same is true in reverse — a tool the prompt says it does not have, sitting in the
+        # tool definitions, is an invitation to reach for it.
+        manager = store.is_main_slug(self.slug)
+        allowed = ((device_tools.MANAGER_DEVICE_TOOL_NAMES if manager
+                    else device_tools.DEVICE_TOOL_NAMES) + FILE_TOOLS)
+        mcp_servers: dict[str, Any] = {
+            "device": build_device_server(self.device, can_file_findings=not manager)}
         if config.AGENT_USE_CHEAP_TIER:
             mcp_servers["cheap"] = build_stepper_server(self.stepper, self.device)
             allowed += stepper_tool_names()
+        if manager:
+            mcp_servers["manager"] = build_manager_server(self.device)
+            allowed += manager_tool_names()
 
         async def gate(payload: dict[str, Any], _tool_use_id: Optional[str],
                        _ctx: Any) -> dict[str, Any]:
@@ -278,7 +318,8 @@ class AgentSession:
         if (model or None) == self.requested_model:
             return {"ok": True, "model": self.model, "unchanged": True}
         self.requested_model = model or None
-        store.update_subproject(self.package, self.slug, model=self.requested_model)
+        await asyncio.to_thread(store.update_subproject, self.package, self.slug,
+                                model=self.requested_model)
         await self.close()
         # A failed reconnect must not leave the module pointing at a model it could not start,
         # or every later message fails the same way with no clue why.
@@ -286,7 +327,8 @@ class AgentSession:
             await self.connect()
         except Exception:
             self.requested_model = None
-            store.update_subproject(self.package, self.slug, model=None)
+            await asyncio.to_thread(store.update_subproject, self.package, self.slug,
+                                    model=None)
             await self.connect()
             raise
         return {"ok": True, "model": self.model, "model_label": self.model_label}
@@ -328,17 +370,28 @@ class AgentSession:
 
         # A reply to a blocked question resolves the waiting tool instead of starting a turn.
         if self.device.pending_question is not None:
+            # Captured before `answer()`, which is what lets the waiting `ask()` clear it.
+            question = self.device.pending_question
             if self.device.answer(text):
-                store.append_chat(self.package, self.slug, {"role": "user", "text": text})
+                await asyncio.to_thread(
+                    store.append_chat, self.package, self.slug,
+                    {"role": "user", "text": _transcript_text(question, text)})
                 await self.emit({"slug": self.slug, "type": "agent_unblocked"})
                 return
 
-        store.append_chat(self.package, self.slug, {"role": "user", "text": text})
+        await asyncio.to_thread(store.append_chat, self.package, self.slug,
+                                {"role": "user", "text": text})
         async with self._lock:
             # A Stop from the previous turn leaves the cancel flag raised. Without clearing it
             # here, every device tool in the *next* turn would return "stopped" immediately and
             # the agent would look permanently broken after one press of the button.
             self.device.resume()
+            # Cleared here rather than left to the next successful result: `parked_reason`
+            # is what /agent/status and GET /chat report, and the browser renders it as a
+            # sticky "parked" state. Set once on a rate limit and never reset, a module that
+            # hit the window in the morning still claimed to be parked after runs that
+            # finished perfectly — the state outlived the condition it described.
+            self.parked_reason = None
             self.busy = True
             await self.emit({"slug": self.slug, "type": "agent_busy", "busy": True})
             try:
@@ -348,15 +401,22 @@ class AgentSession:
                 await self._pump()
             except Exception as exc:  # noqa: BLE001 - surface everything in the chat
                 logger.exception("agent turn failed")
-                store.append_chat(self.package, self.slug,
-                                  {"role": "error", "text": str(exc)})
+                await asyncio.to_thread(store.append_chat, self.package, self.slug,
+                                        {"role": "error", "text": str(exc)})
                 await self.emit({"slug": self.slug, "type": "agent_error", "message": str(exc)})
             finally:
                 self.busy = False
                 await self.emit({"slug": self.slug, "type": "agent_busy", "busy": False})
 
     async def _pump(self) -> None:
-        """Translate the SDK's message stream into browser events + transcript entries."""
+        """Translate the SDK's message stream into browser events + transcript entries.
+
+        Every `store.*` call here goes through a worker thread. This is the hottest path in
+        the server — one append per text block and one per tool call, each taking the store's
+        process-wide lock — and `device_tools` already states the rule its own `capture()`
+        follows: a blocking call on the event loop stalls the WebSocket feeding the browser,
+        so the UI would freeze exactly when the agent is busy and there is most to show.
+        """
         assert self._client is not None
         async for message in self._client.receive_response():
             if isinstance(message, AssistantMessage):
@@ -366,8 +426,8 @@ class AgentSession:
                                      "model": self.model})
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():
-                        store.append_chat(self.package, self.slug,
-                                          {"role": "agent", "text": block.text})
+                        await asyncio.to_thread(store.append_chat, self.package, self.slug,
+                                                {"role": "agent", "text": block.text})
                         await self.emit({"slug": self.slug, "type": "agent_text",
                                          "text": block.text})
                     elif isinstance(block, ThinkingBlock):
@@ -375,9 +435,9 @@ class AgentSession:
                     elif isinstance(block, ToolUseBlock):
                         summary = _tool_summary(block.name, block.input or {})
                         self.activity = summary
-                        store.append_chat(self.package, self.slug,
-                                          {"role": "tool", "tool": block.name,
-                                           "summary": summary})
+                        await asyncio.to_thread(store.append_chat, self.package, self.slug,
+                                                {"role": "tool", "tool": block.name,
+                                                 "summary": summary})
                         await self.emit({"slug": self.slug, "type": "agent_tool",
                                          "tool": block.name, "summary": summary})
 
@@ -397,20 +457,21 @@ class AgentSession:
                 await self._handle_system(message)
 
             elif isinstance(message, ResultMessage):
-                self._remember_session(message.session_id)
+                await self._remember_session(message.session_id)
                 self.turns += message.num_turns or 0
                 await self._handle_result(message)
 
-    def _remember_session(self, session_id: Optional[str]) -> None:
+    async def _remember_session(self, session_id: Optional[str]) -> None:
         if not session_id or session_id == self.session_id:
             return
         self.session_id = session_id
-        store.update_subproject(self.package, self.slug, cli_session_id=session_id)
+        await asyncio.to_thread(store.update_subproject, self.package, self.slug,
+                                cli_session_id=session_id)
 
     async def _handle_system(self, message: SystemMessage) -> None:
         data = message.data if isinstance(message.data, dict) else {}
         if message.subtype == "init":
-            self._remember_session(data.get("session_id"))
+            await self._remember_session(data.get("session_id"))
             model = data.get("model")
             if model and model != self.model:
                 self.model = model
@@ -428,26 +489,41 @@ class AgentSession:
         reason = (message.stop_reason or "") + " " + (message.terminal_reason or "")
         blob = (reason + " " + str(message.errors or "") + " " +
                 str(message.api_error_status or "")).lower()
+        parked = "rate" in blob and "limit" in blob
 
-        if "rate" in blob and "limit" in blob:
+        # One instruction carried to completion is one run, however it ended. This is the
+        # Agent tab's counterpart to run_agent.py's `sysmem.run_session`, which cannot bracket
+        # anything here — the work arrives as messages into a server that outlives it, so
+        # without this `run_count` stayed at 0 no matter how much testing happened, and the
+        # digest kept reporting that no run had ever been recorded. Threaded, like every other
+        # store write on this path: it reads and rewrites two files.
+        await asyncio.to_thread(
+            sysmem.record_run, f"agent:{self.slug}",
+            (message.duration_ms or 0) / 1000.0,
+            not (parked or message.is_error),
+            turns=message.num_turns or 0, taps=self.device.tap_count)
+
+        if parked:
             self.parked_reason = "rate_limit"
             note = (
                 "The Claude subscription window is exhausted, so I have stopped mid-run "
                 "rather than finishing this on a different model and presenting the results "
                 "as equivalent. The conversation is saved — say 'continue' once the window "
                 "resets and I will pick up from here.")
-            store.append_chat(self.package, self.slug, {"role": "error", "text": note})
+            await asyncio.to_thread(store.append_chat, self.package, self.slug,
+                                    {"role": "error", "text": note})
             await self.emit({"slug": self.slug, "type": "agent_parked", "reason": "rate_limit",
                              "text": note})
             return
 
         if message.is_error:
             detail = str(message.errors or message.result or reason).strip() or "unknown error"
-            store.append_chat(self.package, self.slug, {"role": "error", "text": detail})
+            await asyncio.to_thread(store.append_chat, self.package, self.slug,
+                                    {"role": "error", "text": detail})
             await self.emit({"slug": self.slug, "type": "agent_error", "message": detail[:500]})
             return
 
-        store.update_subproject(self.package, self.slug,
+        await asyncio.to_thread(store.update_subproject, self.package, self.slug,
                                 last_run_at=store.now(), status="tested")
         await self.emit({
             "slug": self.slug,
@@ -458,7 +534,8 @@ class AgentSession:
             "shots": self.device.shot_count,
             "stepper_calls": self.stepper.calls,
             "stepper_cost_usd": round(self.stepper.cost_usd, 4),
-            "findings": len(store.list_findings(self.package, self.slug)),
+            "findings": len(await asyncio.to_thread(store.list_findings,
+                                                    self.package, self.slug)),
         })
 
 

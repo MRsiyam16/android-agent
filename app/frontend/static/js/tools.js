@@ -7,10 +7,17 @@ import { graphWrap, hitTestNode, network, nodeDomRect, scheduleRenderOverlay, se
 import { renderScreenList } from './screens.js';
 import { nodesData, textNotes, ui } from './state.js';
 
-function setTool(tool) {
+// `transient` is the space-bar hold: the tool changes for as long as the key is down, but
+// the dock keeps highlighting the tool you actually chose and the selection survives —
+// holding space to reach part of the board should not throw away what you had selected.
+function setTool(tool, { transient = false } = {}) {
   ui.currentTool = tool;
-  document.querySelectorAll('.dock-btn[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
   graphWrap.dataset.tool = tool;
+  if (transient) return;
+  // A deliberate pick during a hold wins: the release must not drag you back to the tool
+  // you were on before you reached for the dock.
+  clearSpacePan();
+  document.querySelectorAll('.dock-btn[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
   if (tool !== 'select') { ui.selectedIds = new Set(); scheduleRenderOverlay(); }
 }
 document.querySelectorAll('.dock-btn[data-tool]').forEach((btn) => {
@@ -34,12 +41,47 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
+  // Space held = pan, the way Figma does it: whatever tool you are on gives way to the hand
+  // until you let go, then comes back. `e.repeat` matters — the key auto-repeats while held,
+  // and without that guard the second event would record 'pan' as the tool to go back to.
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (!e.repeat && spacePanFrom === null && ui.currentTool !== 'pan' && !dragState) {
+      spacePanFrom = ui.currentTool;
+      ui.spacePan = true;
+      graphWrap.classList.add('space-panning');
+      setTool('pan', { transient: true });
+    }
+    return;
+  }
   if (e.key === 'v' || e.key === 'V') setTool('pan');
   if (e.key === 's' || e.key === 'S') setTool('select');
   if (e.key === 't' || e.key === 'T') setTool('text');
   if (e.key === 'n' || e.key === 'N') setTool('sticky');
   if (e.key === 'c' || e.key === 'C') setTool('comment');
 });
+
+// The tool to restore when the space bar comes back up, or null when no hold is active.
+let spacePanFrom = null;
+
+function clearSpacePan() {
+  if (spacePanFrom === null) return null;
+  const back = spacePanFrom;
+  spacePanFrom = null;
+  ui.spacePan = false;
+  graphWrap.classList.remove('space-panning');
+  return back;
+}
+
+function endSpacePan() {
+  const back = clearSpacePan();
+  if (back !== null) setTool(back, { transient: true });
+}
+
+window.addEventListener('keyup', (e) => { if (e.code === 'Space') endSpacePan(); });
+// Alt-tabbing away with the key down means the keyup lands in another window and never
+// arrives here — without this the board would come back stuck on the hand tool.
+window.addEventListener('blur', endSpacePan);
 
 let dragState = null;
 

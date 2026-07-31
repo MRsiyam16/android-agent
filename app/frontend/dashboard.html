@@ -365,6 +365,12 @@
         </div>
       </section>
 
+      <!-- The chat log. On a module with nothing in it, presets.js appends the prewritten-prompt
+           strip in here, under the greeting — inside the log rather than as a sibling above the
+           composer, which is where it was first put. As a sibling it was a flex item competing
+           with the log for the panel's height: five presets took 314px, squeezed the log to 120px
+           and pushed the composer flush against the bottom of the viewport. In here it costs
+           nothing, scrolls away with the greeting, and the composer does not move. -->
       <div class="chat-log-wrap">
         <div class="chat-log" id="chatLog"></div>
         <button class="chat-jump" id="chatJump" hidden>↓ Jump to latest</button>

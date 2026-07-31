@@ -45,6 +45,21 @@ async def agent_status():
     }
 
 
+@router.get("/agent/prompt-presets")
+async def prompt_presets():
+    """The prewritten prompts the composer offers on an empty module.
+
+    Kept beside `/agent/status` with the other fixed paths rather than down among the
+    `/agent/{package}/...` routes. Nothing currently claims two segments with a `{package}`
+    in the second position, so there is no live conflict — but "prompt-presets" is a
+    perfectly good package name as far as the router is concerned, and grouping the literals
+    is what stops a later `/agent/{package}` from quietly capturing this one.
+    """
+    from agent.prompts import preset_prompts
+
+    return {"presets": preset_prompts()}
+
+
 @router.post("/agent/{package}/{slug}/warm")
 async def warm_agent(package: str, slug: str, payload: AgentTriggerPayload | None = None):
     """Spawn the module's Claude Code session now, without sending it anything.
@@ -175,25 +190,52 @@ async def start_recon(package: str, payload: AgentTriggerPayload | None = None):
     return {"ok": True, "slug": "recon"}
 
 
-@router.post("/agent/{package}/onboarding")
-async def start_onboarding(package: str, payload: AgentTriggerPayload | None = None):
-    """Start the new-project interview: goals, then permission, then recon, then a proposal.
+@router.post("/agent/{package}/main")
+async def start_main(package: str, payload: AgentTriggerPayload | None = None):
+    """Create the project's manager module and start it on the setup interview.
 
-    Runs in its own module so the interview has somewhere to live. It is a real conversation
-    worth keeping — what the user said they cared about is the context every later module
-    should be read against.
+    The interview — goals, then permission, then recon, then a proposal — is how the module
+    breakdown ends up answering the user's priorities rather than just enumerating screens.
+    What is new is that the module does not go quiet afterwards: it stays as this project's
+    manager, with tools to create modules and to read what the others found, so "add a module
+    for the part you have not covered" and "where does this project stand" have somewhere to
+    be asked. See `agent/manager_tools.py`.
+
+    Idempotent by construction. `create_subproject` is idempotent on slug and `main_slug`
+    resolves to whatever this project already has, so posting twice re-opens the same
+    conversation rather than starting a second one over the top of it — which matters because
+    the button that calls this is next to project creation and gets double-clicked.
     """
     from agent.prompts import onboarding_prompt
 
+    slug = agent_store.main_slug(package)
     agent_store.create_subproject(
-        package, "Onboarding",
-        "what the user wants from this app, and the module breakdown that follows from it",
+        package, "Main" if slug == agent_store.MAIN_SLUG else "Onboarding",
+        "manages this project: what the user wants from the app, the module breakdown that "
+        "follows from it, and what the modules have found",
         status="approved")
     projects.ensure_project(package)
     serial = (payload.device_serial if payload else None) or state.device_serial()
-    session = sessions.get(package, "onboarding", serial=serial)
+    session = sessions.get(package, slug, serial=serial)
     asyncio.create_task(session.send(onboarding_prompt(package)))
-    return {"ok": True, "slug": "onboarding"}
+    return {"ok": True, "slug": slug}
+
+
+@router.post("/agent/{package}/onboarding")
+async def start_onboarding(package: str, payload: AgentTriggerPayload | None = None):
+    """What `/main` used to be called, kept because a stale browser tab still posts it.
+
+    The frontend modules are cached hard (see CLAUDE.md — a hard reload is needed after any
+    change under `frontend/static/`), so the version of `main.js` that posts `/onboarding` can
+    still be the one loaded in a tab that has been open since before this rename. Without
+    this, creating a project in that tab would leave a project with no manager module and an
+    error where the interview should have been.
+
+    Not a redirect: a 307 on a POST is honoured by browsers but this is called by `fetch`
+    against a JSON API, and forwarding the call is simpler to reason about than a status code
+    the caller has to follow.
+    """
+    return await start_main(package, payload)
 
 
 @router.post("/agent/{package}/{slug}/stop")

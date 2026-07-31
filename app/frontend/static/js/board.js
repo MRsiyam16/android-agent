@@ -4,7 +4,7 @@ import { escapeHtml } from './markdown.js';
 import { emptyState } from './comments.js';
 import { resetGraph, updateStats } from './feed.js';
 import { relayoutAll } from './layout.js';
-import { startProjectOnboarding } from './main.js';
+import { startProjectMain } from './main.js';
 import { network, scheduleRenderOverlay } from './render.js';
 import { comments, edgeMeta, nodeMeta, nodeStatus, nodesData, sectionOrder, sections, textNotes, ui } from './state.js';
 import { refreshOutcomes, refreshSectionNotes } from './outcomes.js';
@@ -343,8 +343,9 @@ document.getElementById('newProjectCreate').addEventListener('click', async () =
     closeNewProjectSheet();
     await fetchProjects();
     await openProject(pkg);
-    // Straight into the interview rather than leaving an empty board with no next step.
-    startProjectOnboarding(pkg);
+    // Straight into the interview rather than leaving an empty board with no next step. This
+    // is also what creates the project's Main module, so a project always has a manager.
+    startProjectMain(pkg);
   } catch (err) {
     newProjectNote.textContent = err.message;
     newProjectNote.classList.add('error');

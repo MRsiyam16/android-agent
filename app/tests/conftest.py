@@ -58,6 +58,27 @@ def screen() -> tuple[int, int]:
     return SCREEN_W, SCREEN_H
 
 
+@pytest.fixture(autouse=True)
+def isolated_system_memory(tmp_path, monkeypatch):
+    """Keep the suite out of the tracked system-memory store.
+
+    `wait_for_ui` calls `system_memory.learn("ui-never-settled", ...)` whenever it gives up
+    waiting, and several tests make it do exactly that on purpose. So a plain
+    `python -m pytest` was writing to the real `system_memory.json`, adding ~26 hits to that
+    one lesson every run — it stood at 64, which no run had earned. Hits are what the digest
+    renders as confidence ("confirmed" from three sightings up), so the store's most-trusted
+    lesson had become an artefact of its own test suite, and the evidence line quoted a
+    fixture package. It also left two tracked files dirty in `git status` after every run.
+
+    Autouse and global rather than per-file: any test that touches a device helper can reach
+    `learn`, so opting in file by file is a list that goes stale the moment one is added.
+    """
+    import system_memory as sysmem
+
+    monkeypatch.setattr(sysmem, "STORE_PATH", str(tmp_path / "system_memory.json"))
+    monkeypatch.setattr(sysmem, "DIGEST_PATH", str(tmp_path / "SYSTEM_MEMORY.md"))
+
+
 # ---------------------------------------------------------------------------------------
 # Dumps that have each caused a wrong conclusion
 # ---------------------------------------------------------------------------------------

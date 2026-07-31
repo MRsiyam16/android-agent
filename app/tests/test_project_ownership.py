@@ -24,6 +24,7 @@ rather than by whatever is on screen.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -158,6 +159,53 @@ class TestProjectListing:
         resp = client.post("/projects", json={"package": "com.a.app",
                                               "root": str(tmp_path / "two")})
         assert resp.status_code == 409
+
+
+class TestExplorationMemoryLocation:
+    """`memory.json` and `REPORT.md` belong to the project too, wherever it lives.
+
+    Everything else that belongs to a project already follows it to a chosen folder — the
+    board, the screenshots, the findings, the transcripts, the credentials. These two were
+    the last files still composed from a module-level constant in `memory.py`, so a project
+    pointed at another drive left them behind in the repo. That splits a project in half
+    silently: exploration memory is written to one location and read from another, so a
+    `--memory` run stops resuming, and `REPORT.md` — the file report.py exists to hand to
+    the next session — is created somewhere nobody would think to look for it.
+    """
+
+    def test_memory_and_report_follow_a_registered_project(self, tmp_path):
+        import memory
+        import report
+
+        elsewhere = tmp_path / "chosen folder"
+        project_paths.register("com.moved.app", elsewhere)
+
+        mem = memory.load("com.moved.app")
+        mem.record_new_state("abc123")
+        mem.record_activity("abc123", ".MainActivity")
+        memory.save(mem)
+        report_path = report.write_report("com.moved.app", mem)
+
+        assert (elsewhere / "memory.json").is_file()
+        assert Path(report_path) == elsewhere / "REPORT.md"
+
+    def test_a_reload_reads_back_what_the_move_wrote(self, tmp_path):
+        # The failure this actually caused: the write lands in the chosen folder and the read
+        # goes to the default one, so a resumed run finds no memory and re-explores.
+        import memory
+
+        project_paths.register("com.moved.app", tmp_path / "chosen folder")
+        mem = memory.load("com.moved.app")
+        mem.record_new_state("abc123")
+        memory.save(mem)
+        assert memory.load("com.moved.app").is_known("abc123")
+
+    def test_an_unregistered_project_keeps_the_default_location(self, isolated_projects_dir):
+        # Every project that predates the registry has to go on working untouched.
+        import memory
+
+        assert Path(memory.project_dir("com.example.app")) == \
+            isolated_projects_dir / "com.example.app"
 
 
 class TestOutcomes:

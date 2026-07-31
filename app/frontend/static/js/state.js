@@ -27,6 +27,10 @@ const ui = {
   connectorPct: 100,
   observeMode: false,
   currentTool: 'pan',
+  // True only while the space bar is held down for a temporary pan. `currentTool` reads
+  // 'pan' during that hold, so this is what tells "the user chose the pan tool" apart from
+  // "the user is holding space" — the difference matters wherever a plain click acts.
+  spacePan: false,
   selectedIds: new Set(),
   lastElements: [],
   lastDims: { w: 1080, h: 1920 },

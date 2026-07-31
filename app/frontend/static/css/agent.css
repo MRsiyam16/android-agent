@@ -295,6 +295,42 @@ div.vis-tooltip {
 .agent-blocked-done.hidden { display: none; }
 .agent-blocked-question { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
 
+/* Prewritten prompts, inside the chat log under the greeting, on an empty module only.
+
+   Deliberately the quietest thing in the panel: faint text on the panel's own background,
+   no fill, hairline border. They are a suggestion about what to type, not state and not a
+   verdict, so they must not compete with a finding card or the blocked-question box — both
+   of which are coloured because they need answering. Hover is what says they are live.
+
+   A flex item of `.chat-log`, aligned and width-matched to `.chat-entry.agent` so it reads as
+   part of the greeting rather than as a panel bolted underneath it. No max-height and no
+   overflow of its own: it scrolls with the log, which is the whole reason it lives in there
+   (see presets.js — as a sibling above the composer it collapsed the log to 120px). */
+.chat-presets {
+  align-self: flex-start; max-width: 78%; width: 100%;
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 2px;
+}
+.chat-presets-head {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--ink-faint); margin-bottom: 2px;
+}
+.chat-preset {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  width: 100%; text-align: left; cursor: pointer;
+  padding: 7px 11px; border-radius: var(--radius-md);
+  background: transparent; border: 1px solid var(--hairline);
+  color: var(--ink-faint); font-family: var(--font-body);
+}
+.chat-preset:hover {
+  border-color: var(--accent-blue); color: var(--ink);
+  background: rgba(0, 153, 255, 0.06);
+}
+.chat-preset-label { font-size: 12.5px; font-weight: 500; }
+/* Not italic and not smaller than 11px: this is the line that says what the preset will
+   actually do, so it has to survive being read rather than merely being present. */
+.chat-preset-blurb { font-size: 11px; line-height: 1.4; opacity: 0.8; }
+
 .chat-input-row { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--hairline); background: var(--surface-1); align-items: flex-end; }
 .chat-input-row input, .chat-input-row textarea {
   flex: 1; background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
@@ -341,6 +377,12 @@ div.vis-tooltip {
 .agent-badge.approved { color: var(--accent-blue); border-color: rgba(0, 153, 255, 0.35); }
 .agent-badge.tested { color: var(--success); border-color: rgba(34, 197, 94, 0.35); }
 .agent-badge.defects { color: var(--danger); border-color: rgba(255, 85, 119, 0.35); }
+/* The manager module. Filled rather than outlined like the status badges, because it is not a
+   status — this row is a different kind of thing from the test suites under it. */
+.agent-badge.manager {
+  color: var(--ink); background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.22);
+}
 .agent-module-approve {
   margin-top: 8px; width: 100%; background: var(--surface-3); border: 1px solid var(--hairline);
   color: var(--ink); font-size: 11px; padding: 5px; border-radius: var(--radius-sm); cursor: pointer;

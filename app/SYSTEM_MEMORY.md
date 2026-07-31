@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **0** · last updated: 2026-07-28T04:12:52+00:00
+Runs recorded: **19** · last updated: 2026-07-30T15:12:41+00:00
 
 ## Environment
 
@@ -15,7 +15,17 @@ Runs recorded: **0** · last updated: 2026-07-28T04:12:52+00:00
 |---|---|---|
 | `adb_path_source` | `config.ADB_PATH` | adb is not on PATH in the Bash tool on this machine; resolve via config or drive it from Python |
 | `console_encoding` | `PYTHONIOENCODING=utf-8` | the Windows console is cp1252; app labels with non-Latin text raise UnicodeEncodeError without it |
+| `last_toolkit` | `native` | — |
 | `pm_clear_variant` | `user0` | on a multi-user Samsung ROM the bare form returns Success but leaves the session intact |
+
+## Learned waits
+
+Tuned to the slow tail on purpose: waiting too little yields a dump of
+the wrong screen, which downstream becomes a false defect.
+
+| Key | Samples | Median | Slowest | Recommended |
+|---|---|---|---|---|
+| `launch_settle.native` | 38 | 1.2s | 1.3s | **1.6s** |
 
 ## Operating lessons
 
@@ -35,6 +45,8 @@ Runs recorded: **0** · last updated: 2026-07-28T04:12:52+00:00
   - _evidence:_ notes and selection state were correct on the server while the hidden tab showed none
 - **dashboard-stale-tab-clobbers-project** (seen once) — Two dashboard tabs open on one project is data loss: a tab that loaded before annotations restored will autosave a note-less blob over the good one, and the stale tab wins. Keep one tab per project.
   - _evidence:_ a second tab autosaved an empty note set over a populated board
+- **dashboard-websocket-origin-is-port-locked** (seen once) — Verifying a dashboard change on any port other than 8000 gets no WebSocket: the server refuses the handshake on origin, so live agent events, tool traces and findings never reach the page. Static rendering and REST all work, which makes it look like the feature under test is broken. Check the DOM and the REST endpoints directly, and treat missing live updates on a scratch port as expected rather than as a regression.
+  - _evidence:_ A scratch instance on 127.0.0.1:8124 logged 'server.telemetry WARNING refused a websocket from origin http://127.0.0.1:8124' every few seconds while HTTP answered in 3ms.
 - **dump-shows-top-window-only** (seen once) — dump_hierarchy() returns only the topmost window, so a dialog or a blocking progress overlay hides the screen underneath. A missing screen marker therefore means something is covering the screen, not that navigation happened. Never judge the result of a submit while a request is still in flight.
   - _evidence:_ an auth-error modal and a progress overlay each made a correct rejection look like the input had been accepted
 - **empty-dump-means-wait** (seen once) — An empty or status-bar-only UI dump right after launch means the UI has not rendered yet, not that the app is broken. Wait for text, not for node count -- a splash screen publishes nodes with no text.
@@ -59,3 +71,16 @@ Runs recorded: **0** · last updated: 2026-07-28T04:12:52+00:00
   - _evidence:_ notes and screenshots painted over both rails; elementFromPoint inside each rail returned a canvas layer
 - **system-dialogs-are-invisible-to-package-filters** (seen once) — Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing.
   - _evidence:_ a notification-permission prompt after a data wipe made the app dump look empty
+
+## Recent runs
+
+14/19 of the last runs completed without raising.
+
+- `2026-07-30T15:12:41+00:00` agent:profile-personal-medical-information — 901.8s, ok (turns=204 taps=63)
+- `2026-07-30T14:57:19+00:00` agent:profile-personal-medical-information — 480.2s, FAILED (taps=10 turns=82)
+- `2026-07-30T14:22:24+00:00` agent:recon — 23.5s, ok (taps=0 turns=1)
+- `2026-07-30T14:20:31+00:00` agent:recon — 66.5s, ok (taps=0 turns=1)
+- `2026-07-30T14:18:51+00:00` agent:recon — 33.7s, ok (taps=0 turns=1)
+- `2026-07-30T14:15:27+00:00` agent:recon — 78.8s, ok (taps=0 turns=12)
+- `2026-07-30T14:13:33+00:00` agent:recon — 20.1s, ok (taps=0 turns=1)
+- `2026-07-30T14:06:36+00:00` agent:recon — 33.2s, ok (taps=0 turns=5)

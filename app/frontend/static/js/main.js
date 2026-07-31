@@ -57,16 +57,21 @@ agentEl.stop.addEventListener('click', async () => {
   }
 });
 
-// Called straight after a project is created. The agent asks what you want out of the app
-// before it asks to look at it, so the module breakdown answers your priorities rather
-// than just enumerating screens.
-async function startProjectOnboarding(pkg) {
+// Called straight after a project is created. Creates the project's manager module — Main —
+// and starts it on the setup interview: it asks what you want out of the app before it asks
+// to look at it, so the module breakdown answers your priorities rather than just enumerating
+// screens. Main then stays open as the module you come back to for "add a module for X" and
+// "where does this project stand".
+async function startProjectMain(pkg) {
   try {
-    await agentFetch(`/agent/${encodeURIComponent(pkg)}/onboarding`, {
+    const data = await agentFetch(`/agent/${encodeURIComponent(pkg)}/main`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     setRail('right', true);
     await loadModules();
-    await selectModule('onboarding');
+    // The slug the server actually used, not a hardcoded 'main'. A project that predates the
+    // manager keeps its interview under `onboarding`, and selecting a module that is not there
+    // would leave the rail pointing at nothing.
+    await selectModule(data.slug || 'main');
   } catch (err) {
     // The project itself was created; only the interview failed to start, and saying so is
     // better than leaving a project that looks half-made.
@@ -209,4 +214,4 @@ fetch('/agent/status')
   })
   .catch(() => { /* the dashboard is fully usable without the agent */ });
 
-export { lightbox, startProjectOnboarding, warmModule };
+export { lightbox, startProjectMain, warmModule };

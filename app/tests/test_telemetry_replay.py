@@ -11,6 +11,7 @@ import pytest
 
 import config
 import server
+from backend.routes.telemetry import _origin_allowed
 
 IMAGE = "/9j/4AAQSkZJRgABAQ" + "A" * 4000  # stand-in for a real base64 JPEG
 
@@ -108,3 +109,33 @@ class TestHistoryBound:
             post(f"h{i}", IMAGE)
         assert [r["state_hash"] for r in server.telemetry_history] == \
                ["h3", "h4", "h5", "h6", "h7"]
+
+
+class TestSocketOrigin:
+    """Who may open the socket that replays every screenshot of the app under test.
+
+    WebSocket handshakes are not subject to CORS, so any page the user has open can call
+    `new WebSocket("ws://localhost:8000/ws")` and be handed the payload above — the whole
+    graph, screenshots included. Binding to loopback (config.SERVER_HOST) does not cover
+    this: the connection originates in the user's own browser, already inside the loopback.
+    """
+
+    def test_the_dashboards_own_origin_is_allowed(self):
+        assert _origin_allowed(f"http://localhost:{config.SERVER_PORT}")
+        assert _origin_allowed(f"http://127.0.0.1:{config.SERVER_PORT}")
+
+    def test_a_trailing_slash_does_not_lock_the_dashboard_out(self):
+        assert _origin_allowed(f"http://localhost:{config.SERVER_PORT}/")
+
+    def test_another_site_is_refused(self):
+        assert not _origin_allowed("https://evil.example.com")
+        assert not _origin_allowed("http://localhost:3000")
+
+    def test_a_lookalike_host_is_refused(self):
+        assert not _origin_allowed(f"http://localhost.evil.com:{config.SERVER_PORT}")
+
+    def test_a_missing_origin_is_allowed(self):
+        # Non-browser clients (scripts, this suite) send no Origin, and they are not the
+        # vector — a browser always sends one and cannot forge it. Refusing on absence
+        # would break every non-browser consumer to stop nothing.
+        assert _origin_allowed("")

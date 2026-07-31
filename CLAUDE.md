@@ -23,6 +23,14 @@ web dashboard on `localhost:8000`.
 A **project** is an app package. A **module** is a test suite for one part of it, with its
 own transcript, memory, findings and session under `<project>/agent/<module>/`.
 
+Every project has one **manager module**, `main`, created with the project. It runs the setup
+interview, looks at the app, creates modules and reads back what they found — and it is the one
+module with **no `record_finding`**. That absence is enforced by the tool not being registered
+(`device_tools.VERDICT_TOOLS`), not by prose: it forms impressions while walking the app, and an
+impression in `findings.json` is indistinguishable from a verdict once it is there. Projects
+created before it existed keep their interview under `onboarding`, and `store.is_main_slug`
+treats both names as the manager.
+
 ---
 
 ## Running it
@@ -35,7 +43,7 @@ root holds only `README.md` and the launcher — what someone opening the projec
 cd app
 python start.py                                    # server + device check + browser
 python run_agent.py --package <pkg> --steps 30     # autonomous exploration
-python -m pytest                                   # 283 tests, no device, a few seconds
+python -m pytest                                   # 408 tests, no device, a few seconds
 ```
 
 `pytest.ini` lives in `app/` too, so `python -m pytest` from the repo root collects nothing
@@ -59,7 +67,8 @@ Paths are relative to `app/`.
 | Server internals | `backend/{app,state,naming,projects,devices,schemas,paths}.py` |
 | Chat agent | `agent/runtime.py` (one session per module), `agent/prompts.py`, `agent/store.py` |
 | Agent's tools | `agent/device_tools.py` (MCP tools), `agent/screen.py` (dump reading), `agent/guards.py` (finding rules) |
-| Frontend | `frontend/dashboard.html`, `frontend/static/js/*.js` (23 ES modules), `frontend/static/css/*.css` |
+| Manager module's tools | `agent/manager_tools.py` — read any module's work, create a module, roll up the project |
+| Frontend | `frontend/dashboard.html`, `frontend/static/js/*.js` (25 ES modules), `frontend/static/css/*.css` |
 | Learned operating knowledge | `system_memory.py` → `SYSTEM_MEMORY.md` (generated) |
 
 Frontend entry is `frontend/static/js/main.js`; `state.js` holds shared data, `render.js`
@@ -168,3 +177,4 @@ not as part of the app.
 - `README.md` (repo root) — the full guide
 - `docs/ARCHITECTURE.md` — state hashing and exploration algorithms
 - `docs/SETUP.md`, `docs/EXAMPLES.md`
+- `docs/PUBLISH_CHECKLIST.md` — what to check before tagging a release

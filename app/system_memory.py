@@ -106,9 +106,23 @@ def save(data: dict[str, Any]) -> None:
 
 
 def _mutate(fn) -> Any:
+    """Read, change, persist — and refresh the digest from the same data.
+
+    The digest used to be rewritten only on the way out of `run_session`, which brackets a
+    whole `run_agent.py` process and is the only caller that can. Everything the Agent tab
+    learns arrives through `learn`/`observe_*` inside a long-lived server process, so the
+    JSON store moved and the tracked `SYSTEM_MEMORY.md` did not: measured launch timings and
+    newer lessons sat in the store for days while the digest — the file a human or an agent
+    is told to read before a device run — still showed the state of some earlier afternoon.
+
+    Refreshing here is what makes the two agree by construction. It is affordable because
+    the writes are rare (a lesson, an environment fact, one timing per launch) and the digest
+    is a few KB rendered from data already in hand.
+    """
     data = load()
     result = fn(data)
     save(data)
+    _write_digest_from(data)
     return result
 
 
@@ -131,6 +145,26 @@ def observe_timing(key: str, seconds: float) -> None:
         logger.debug("observe_timing failed: %s", exc)
 
 
+def _suggest_from_samples(samples: list[float], default: float, floor: float = 0.0,
+                          ceiling: float = 120.0, headroom: float = 1.25) -> float:
+    """The learned-wait computation, over samples the caller already holds.
+
+    Split out so the digest can render every timing row from one load instead of re-reading
+    the store once per key — `_mutate` now rebuilds the digest on every write, so what used
+    to be a once-per-run cost is on the path of every observation.
+    """
+    try:
+        if len(samples) < 3:
+            return max(floor, default)
+        ordered = sorted(samples)
+        idx = max(0, int(len(ordered) * 0.9) - 1)         # ~p90, min() of the slow tail
+        value = max(ordered[idx], statistics.median(ordered))
+        return round(min(ceiling, max(floor, value * headroom)), 2)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("suggest_timing failed: %s", exc)
+        return max(floor, default)
+
+
 def suggest_timing(key: str, default: float, floor: float = 0.0,
                    ceiling: float = 120.0, headroom: float = 1.25) -> float:
     """A learned wait: the slowest of the recent samples plus headroom.
@@ -142,15 +176,10 @@ def suggest_timing(key: str, default: float, floor: float = 0.0,
     """
     try:
         samples = load()["timings"].get(key, {}).get("samples", [])
-        if len(samples) < 3:
-            return max(floor, default)
-        ordered = sorted(samples)
-        idx = max(0, int(len(ordered) * 0.9) - 1)         # ~p90, min() of the slow tail
-        value = max(ordered[idx], statistics.median(ordered))
-        return round(min(ceiling, max(floor, value * headroom)), 2)
     except Exception as exc:  # noqa: BLE001
         logger.debug("suggest_timing failed: %s", exc)
         return max(floor, default)
+    return _suggest_from_samples(samples, default, floor, ceiling, headroom)
 
 
 def suggest_launch_settle(toolkit: str, default: float = 6.0) -> float:
@@ -205,15 +234,26 @@ def learn(lesson_id: str, text: str, evidence: str = "") -> None:
         logger.debug("learn failed: %s", exc)
 
 
-def lessons(min_hits: int = 1) -> list[dict[str, Any]]:
+def lessons(min_hits: int = 1, data: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+    """Lessons worth showing, most-confident first.
+
+    `data` lets the digest reuse a load it already has.
+    """
     try:
-        data = load()
+        data = load() if data is None else data
         run_no = data.get("run_count", 0)
         out = []
         for lid, entry in data["lessons"].items():
-            if entry.get("hits", 0) < min_hits:
+            hits = entry.get("hits", 0)
+            if hits < min_hits:
                 continue
-            if run_no - entry.get("last_seen_run", 0) > STALE_LESSON_RUNS:
+            # Only a single sighting ever ages out. `run_count` was stuck at 0 while this
+            # window was written, so nothing had aged in practice and the rule was never
+            # tested against a moving counter; now that agent instructions advance it too,
+            # an unguarded window would start quietly dropping rules that each cost a wrong
+            # bug report to learn. A lesson seen more than once is durable knowledge — the
+            # expensive direction to be wrong in is forgetting it.
+            if hits < 2 and run_no - entry.get("last_seen_run", 0) > STALE_LESSON_RUNS:
                 continue
             out.append({"id": lid, **entry})
         return sorted(out, key=lambda e: (-e.get("hits", 0), e["id"]))
@@ -235,6 +275,32 @@ class RunHandle:
         self.notes.update(kwargs)
 
 
+def record_run(tool: str, seconds: float, ok: bool = True, **notes: Any) -> None:
+    """Count one completed unit of testing work.
+
+    `run_session` below can only bracket something with a beginning and an end in one
+    process, which means `run_agent.py` and nothing else. The Agent tab's work arrives as
+    instructions inside a long-lived server, so it had nothing to wrap — and while that was
+    the only way to count, `run_count` stayed at 0 however much testing happened. Two things
+    read it: the digest's own header, which claimed no runs had ever been recorded, and the
+    lesson-ageing window in `lessons()`, which could never advance.
+    """
+    def apply(data):
+        data["run_count"] = data.get("run_count", 0) + 1
+        data["runs"].append({
+            "tool": tool,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "seconds": round(float(seconds or 0.0), 1),
+            "ok": bool(ok),
+            **notes,
+        })
+        data["runs"] = data["runs"][-MAX_RUNS:]
+    try:
+        _mutate(apply)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("record_run failed: %s", exc)
+
+
 @contextmanager
 def run_session(tool: str) -> Iterator[RunHandle]:
     """Bracket a run so it is counted, timed, and folded into the digest on exit.
@@ -250,30 +316,24 @@ def run_session(tool: str) -> Iterator[RunHandle]:
         handle.ok = False
         raise
     finally:
-        elapsed = round(time.monotonic() - handle.started, 1)
-
-        def apply(data):
-            data["run_count"] = data.get("run_count", 0) + 1
-            data["runs"].append({
-                "tool": handle.tool,
-                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "seconds": elapsed,
-                "ok": handle.ok,
-                **handle.notes,
-            })
-            data["runs"] = data["runs"][-MAX_RUNS:]
-        try:
-            _mutate(apply)
-            write_digest()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("run_session bookkeeping failed: %s", exc)
+        record_run(handle.tool, round(time.monotonic() - handle.started, 1),
+                   handle.ok, **handle.notes)
 
 
 # --------------------------------------------------------------------------- digest
 def write_digest() -> Optional[str]:
     """Regenerate the human/agent-readable briefing from the store."""
+    return _write_digest_from(load())
+
+
+def _write_digest_from(data: dict[str, Any]) -> Optional[str]:
+    """Render the digest from a store already in memory.
+
+    Separate from `write_digest` so `_mutate` can refresh it without a second read, and so
+    every row below is computed from the same snapshot that was just persisted — the digest
+    can no longer describe a state the store has already moved on from.
+    """
     try:
-        data = load()
         lines = [
             "# System memory — how to drive this harness",
             "",
@@ -309,10 +369,10 @@ def write_digest() -> Optional[str]:
                     continue
                 lines.append(
                     f"| `{key}` | {len(s)} | {statistics.median(s):.1f}s | {max(s):.1f}s | "
-                    f"**{suggest_timing(key, default=max(s)):.1f}s** |")
+                    f"**{_suggest_from_samples(s, default=max(s)):.1f}s** |")
             lines.append("")
 
-        ls = lessons()
+        ls = lessons(data=data)
         if ls:
             lines += ["## Operating lessons", ""]
             for e in ls:
@@ -346,13 +406,38 @@ def write_digest() -> Optional[str]:
 
 
 def briefing(max_lessons: int = 8) -> str:
-    """One-screen summary for logging at the start of a run."""
+    """One-screen summary for logging at the start of a run.
+
+    Ids only, deliberately: this goes to a log line. Anything that has to *act* on a lesson
+    wants `operating_notes` instead.
+    """
     data = load()
     parts = [f"system memory: {data.get('run_count', 0)} runs recorded"]
-    ls = lessons(min_hits=2)[:max_lessons]
+    ls = lessons(min_hits=2, data=data)[:max_lessons]
     if ls:
         parts.append("confirmed lessons: " + "; ".join(e["id"] for e in ls))
     return " | ".join(parts)
+
+
+def operating_notes(max_lessons: int = 10, min_hits: int = 1) -> str:
+    """The lessons themselves, as markdown, for a reader that has to act on them.
+
+    The agent's system prompt used to be handed `briefing()` under the heading "operating
+    notes learned from previous runs". That returns ids and a run count, so what actually
+    reached the agent was a bare `dump-shows-top-window-only` and nothing else — a label for
+    a rule, with the rule left out, presented as fact it should prefer over its assumptions.
+
+    `min_hits=1` here where `briefing` uses 2: a lesson seen once is still the only record of
+    a failure this harness has actually produced, and the confidence is stated per line so the
+    reader can weigh it rather than being silently shown only the repeats.
+    """
+    entries = lessons(min_hits=min_hits)[:max_lessons]
+    out = []
+    for e in entries:
+        hits = e.get("hits", 0)
+        confidence = "confirmed" if hits >= 3 else ("seen twice" if hits == 2 else "seen once")
+        out.append(f"- **{e['id']}** ({confidence}) — {e['text']}")
+    return "\n".join(out)
 
 
 # --------------------------------------------------------------------------- CLI

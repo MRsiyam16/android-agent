@@ -4,6 +4,7 @@ import { ui } from './state.js';
 import { agent, agentEl, agentFetch, appendChat, scrollChatToEnd, setAgentModel } from './chat.js';
 import { loadAgentProjects } from './modules.js';
 import { chatLog, phonePlaceholder, setPhoneFrame } from './phone.js';
+import { hidePresets } from './presets.js';
 import { chatImageInput, hideBlocked, renderAttachments } from './transcript.js';
 
 function stageImage(file) {
@@ -61,6 +62,11 @@ async function sendToAgent(text) {
     appendChat('error', 'Pick a project and a module first.');
     return;
   }
+  // Before the upload, not after the POST. The suggestion strip is only for a module with
+  // nothing in it, and sending anything — typed or from a preset — ends that; leaving it up
+  // through a multi-second attachment upload invites a second click on a preset whose
+  // instruction is already on its way.
+  hidePresets();
   const staged = ui.pendingAttachments.slice();
   let paths = [];
   try {
