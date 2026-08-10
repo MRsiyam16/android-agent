@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-import adb_device
+import device
 
 from .. import agent_bridge, devices, state
 from ..schemas import CommandPayload
@@ -75,7 +75,7 @@ async def run_command(payload: CommandPayload):
 
         elif verb == "launch" and len(parts) >= 2:
             package = parts[1]
-            await asyncio.to_thread(d.app_start, package, stop=True)
+            await asyncio.to_thread(d.start_app, package)
 
         else:
             raise HTTPException(status_code=400, detail=f"Unrecognized command: '{raw}'")
@@ -86,7 +86,7 @@ async def run_command(payload: CommandPayload):
         raise HTTPException(status_code=502, detail=f"Command failed: {exc}") from exc
 
     try:
-        shot = await asyncio.to_thread(devices.screenshot_b64, d)
+        shot = await asyncio.to_thread(d.screenshot_b64)
     except Exception as exc:  # noqa: BLE001
         logger.warning("post-command screenshot failed: %s", exc)
         shot = ""
@@ -99,26 +99,23 @@ _device_info_cache: dict[str, Any] = {"at": 0.0, "value": None}
 
 @router.get("/device/info")
 async def device_info():
-    """Which phone is attached, for the top bar.
+    """Which device is attached, for the top bar — Android or iOS, whichever answers.
 
     Cached for a few seconds because the dashboard polls this and every miss shells out to
-    adb twice. The serial the *run* is using wins over the first one adb lists: with two
-    devices attached, naming the wrong one in the chrome is worse than naming none.
+    adb and pymobiledevice3. The serial the *run* is using wins over the first one listed:
+    with two devices attached, naming the wrong one in the chrome is worse than naming none.
     """
     now = time.monotonic()
     if _device_info_cache["value"] is not None and now - _device_info_cache["at"] < 5:
         return _device_info_cache["value"]
 
     def _probe() -> dict[str, Any]:
-        try:
-            serials = adb_device.list_serials()
-        except adb_device.DeviceError as exc:
-            return {"serial": None, "label": None, "count": 0, "error": str(exc)}
-        if not serials:
+        found = device.list_devices()
+        if not found:
             return {"serial": None, "label": None, "count": 0}
         active = state.device_serial()
-        serial = active if active in serials else serials[0]
-        return {**adb_device.describe_serial(serial), "count": len(serials)}
+        match = next((d for d in found if d["serial"] == active), None) or found[0]
+        return {**match, "count": len(found)}
 
     info = await asyncio.to_thread(_probe)
     _device_info_cache.update({"at": now, "value": info})
