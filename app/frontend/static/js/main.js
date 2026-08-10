@@ -156,7 +156,10 @@ document.querySelectorAll('.chip-btn[data-cmd]').forEach((btn) => {
   btn.addEventListener('click', () => sendCommand(btn.dataset.cmd));
 });
 
-document.getElementById('refreshFrameBtn').addEventListener('click', refreshFrame);
+// true: also re-read the device's window size, not just the pixels — the one time it's
+// worth an extra round trip to WDA, since this is the button for "the iPad got rotated,
+// catch up."
+document.getElementById('refreshFrameBtn').addEventListener('click', () => refreshFrame(true));
 
 phoneScreen.addEventListener('click', (evt) => {
   const rect = phoneScreen.getBoundingClientRect();

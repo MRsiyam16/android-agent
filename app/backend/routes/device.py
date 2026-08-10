@@ -123,22 +123,41 @@ async def device_info():
 
 
 @router.get("/device/frame")
-async def device_frame(package: str | None = None, slug: str | None = None):
-    """A single frame of the phone for the Agent tab's live view.
+async def device_frame(package: str | None = None, slug: str | None = None, resync: bool = False):
+    """A single frame of the phone for the Agent tab's live view, plus its current screen
+    size in points.
+
+    The dashboard uses `width`/`height` to size the frame to the device's actual aspect
+    ratio instead of a fixed phone shape — an iPad is nowhere near 9:19.5. `resync=true` is
+    the dashboard's "match device" refresh: `IOSDevice.window_size` caches after first read
+    (re-querying WDA on every tap would cost a round trip each time), so a rotation is
+    invisible to it until something explicitly asks for a fresh read. Android's window_size
+    is never cached, so `resync` is a no-op there — `getattr` skips it rather than branching
+    on platform.
 
     Reuses the agent's own device session when one exists, so watching the screen does not
-    open a second uiautomator2 connection to the same phone while the agent is mid-tap.
+    open a second connection to the same phone while the agent is mid-tap.
     """
     session = agent_bridge.sessions.peek(package, slug) if package and slug else None
     try:
         if session is not None:
-            device = await session.device.device()
-            b64 = await session.device.run(device.screenshot_b64)
+            dev = await session.device.device()
+            if resync:
+                refresh = getattr(dev, "refresh_window_size", None)
+                if refresh is not None:
+                    await session.device.run(refresh)
+            b64 = await session.device.run(dev.screenshot_b64)
+            w, h = await session.device.run(lambda: dev.window_size)
         else:
-            d = await asyncio.to_thread(devices.resolve_device, None)
-            b64 = await asyncio.to_thread(devices.screenshot_b64, d)
+            dev = await asyncio.to_thread(devices.resolve_device, None)
+            if resync:
+                refresh = getattr(dev, "refresh_window_size", None)
+                if refresh is not None:
+                    await asyncio.to_thread(refresh)
+            b64 = await asyncio.to_thread(dev.screenshot_b64)
+            w, h = await asyncio.to_thread(lambda: dev.window_size)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not grab a frame: {exc}") from exc
-    return {"screenshot_b64": b64}
+    return {"screenshot_b64": b64, "width": w, "height": h}

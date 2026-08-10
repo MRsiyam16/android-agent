@@ -10,12 +10,26 @@ const overlayLayer = document.getElementById('overlayLayer');
 const overlayToggle = document.getElementById('overlayToggle');
 const chatLog = document.getElementById('chatLog');
 
-function setPhoneFrame(b64) {
+// Set once a real frame has ever come with dimensions attached, so a stale event with no
+// `dims` (an older/erroring response) can't blank out a ratio already known to be correct.
+let lastFrameDims = null;
+
+function setPhoneFrame(b64, dims) {
   if (!b64) return;
   phoneScreen.src = 'data:image/jpeg;base64,' + b64;
   phoneScreen.classList.add('loaded');
   phonePlaceholder.classList.add('hidden');
+  if (dims && dims.w && dims.h) applyDeviceAspect(dims.w, dims.h);
   drawOverlay();
+}
+
+function applyDeviceAspect(w, h) {
+  if (lastFrameDims && lastFrameDims.w === w && lastFrameDims.h === h) return;
+  lastFrameDims = { w, h };
+  const frame = phoneScreen.closest('.phone-frame');
+  if (!frame) return;
+  frame.style.aspectRatio = `${w} / ${h}`;
+  frame.classList.toggle('landscape', w > h);
 }
 
 function drawOverlay() {

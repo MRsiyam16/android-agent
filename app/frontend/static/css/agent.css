@@ -116,11 +116,21 @@ div.vis-tooltip {
 /* Sized from its *height*, not its width. A phone is far taller than it is wide, so on a
    short window a width-driven frame is what pushes the chat log to zero height and starts
    clipping the message box off the bottom. Capping by vh means the phone gives up space
-   first and the conversation stays usable. */
+   first and the conversation stays usable.
+   aspect-ratio here is only the fallback shown before a real frame has ever loaded — once
+   one has, phone.js sets it inline from the device's actual window_size (see
+   applyDeviceAspect), which wins over this rule at equal specificity. 9/19.5 fits the
+   phones this shipped for; an iPad is nowhere close, hence the override. */
 .rail-right .phone-frame {
   height: min(44vh, 500px); width: auto; aspect-ratio: 9 / 19.5;
   max-width: 100%; padding: 8px; border-radius: 26px;
 }
+/* A device wider than it is tall (iPad/phone in landscape) can't size from height the way
+   portrait does — height-driven sizing would want more width than the rail has and get
+   clipped by max-width without height shrinking to match, stretching the image inside a box
+   that no longer matches its own aspect-ratio. Sizing from width instead lets height fall
+   out of the ratio correctly. */
+.rail-right .phone-frame.landscape { width: 100%; height: auto; max-height: min(44vh, 500px); }
 .rail-right .phone-screen-wrap { border-radius: 19px; }
 .rail-right .agent-meter { font-size: 11px; padding: 8px 10px; }
 .rail-right .phone-actions { gap: 6px; }

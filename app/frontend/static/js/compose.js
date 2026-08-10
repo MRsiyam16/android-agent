@@ -130,13 +130,17 @@ async function sendCommand(command) {
   }
 }
 
-async function refreshFrame() {
-  const query = (agent.package && agent.slug)
-    ? `?package=${encodeURIComponent(agent.package)}&slug=${encodeURIComponent(agent.slug)}`
-    : '';
+// `resync` is the "match device" ask: it costs iOS an extra WDA round trip to re-read
+// window_size (see /device/frame's docstring), so it's only worth paying for on an
+// explicit press of Refresh — not on the 2.5s "Follow live" poll while the agent runs.
+async function refreshFrame(resync = false) {
+  const params = new URLSearchParams();
+  if (agent.package && agent.slug) { params.set('package', agent.package); params.set('slug', agent.slug); }
+  if (resync) params.set('resync', 'true');
+  const query = params.toString() ? `?${params}` : '';
   try {
     const data = await agentFetch('/device/frame' + query);
-    if (data.screenshot_b64) setPhoneFrame(data.screenshot_b64);
+    if (data.screenshot_b64) setPhoneFrame(data.screenshot_b64, { w: data.width, h: data.height });
   } catch (err) {
     phonePlaceholder.textContent = err.message;
   }

@@ -337,14 +337,29 @@ class IOSDevice:
 
     @property
     def window_size(self) -> tuple[int, int]:
-        """Screen size in **points**. Cached: it cannot change without a rotation."""
+        """Screen size in **points**. Cached: it cannot change without a rotation, and a
+        WDA round trip on every tap's coordinate scaling would add up. Call
+        `refresh_window_size()` after one might have happened."""
         if self._size is None:
-            value = self._call("GET", self._s("/window/size"), timeout=30) or {}
-            try:
-                self._size = int(value["width"]), int(value["height"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise DeviceError(f"window_size() returned {value!r}") from exc
+            self._size = self._fetch_window_size()
         return self._size
+
+    def refresh_window_size(self) -> tuple[int, int]:
+        """Force a fresh `/window/size` read, for when the device may have rotated.
+
+        Nothing here calls this on its own — a running test never rotates the device
+        mid-session. It exists for the dashboard's live-frame view, which a human can rotate
+        the iPad underneath at any moment; the cache has no way to notice that by itself.
+        """
+        self._size = self._fetch_window_size()
+        return self._size
+
+    def _fetch_window_size(self) -> tuple[int, int]:
+        value = self._call("GET", self._s("/window/size"), timeout=30) or {}
+        try:
+            return int(value["width"]), int(value["height"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DeviceError(f"window_size() returned {value!r}") from exc
 
     def dump_xml(self) -> str:
         """The current screen as Android-shaped XML (see the module docstring)."""
