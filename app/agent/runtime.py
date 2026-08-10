@@ -177,7 +177,9 @@ class AgentSession:
             }}
 
         options = ClaudeAgentOptions(
-            system_prompt=prompts.build_system_prompt(self.package, self.slug, title, scope),
+            system_prompt=prompts.build_system_prompt(
+                self.package, self.slug, title, scope,
+                platform=self.device.resolved_platform),
             mcp_servers=mcp_servers,
             allowed_tools=allowed,
             disallowed_tools=BLOCKED_TOOLS,
@@ -346,12 +348,18 @@ class AgentSession:
         tools poll, and they return "cancelled" at their next check instead of running to
         term. Then the CLI is asked to end the turn, which it now can do promptly.
         """
+        was_blocked = self.device.pending_question is not None
         if self._client is None or not self.busy:
             # Still worth cancelling the device: a tool can be mid-flight in the window
             # between the turn ending and `busy` clearing.
             self.device.cancel()
             return False
         self.device.cancel()
+        if was_blocked:
+            # Emitted here rather than waited for: the turn itself still has to unwind through
+            # the CLI, which can take a moment, but the question Stop just voided should not
+            # keep sitting in the browser looking like it is still waiting to be answered.
+            await self.emit({"slug": self.slug, "type": "agent_unblocked"})
         try:
             await self._client.interrupt()
             return True
@@ -362,13 +370,11 @@ class AgentSession:
     # -- the turn ----------------------------------------------------------------
     async def send(self, text: str) -> None:
         """Feed one user message in and stream everything that comes back."""
-        if self.busy:
-            await self.emit({"slug": self.slug, "type": "agent_error",
-                             "message": "The agent is still working. Press Stop first if you "
-                                        "want to redirect it."})
-            return
-
         # A reply to a blocked question resolves the waiting tool instead of starting a turn.
+        # Checked before the busy guard below: the run is still `busy` for the entire time it
+        # is parked on a question, so a busy-first check meant a reply here always hit "the
+        # agent is still working" and `answer()` was never called — the parked `ask()` future
+        # never resolved, and the run hung forever with no way to answer it.
         if self.device.pending_question is not None:
             # Captured before `answer()`, which is what lets the waiting `ask()` clear it.
             question = self.device.pending_question
@@ -378,6 +384,12 @@ class AgentSession:
                     {"role": "user", "text": _transcript_text(question, text)})
                 await self.emit({"slug": self.slug, "type": "agent_unblocked"})
                 return
+
+        if self.busy:
+            await self.emit({"slug": self.slug, "type": "agent_error",
+                             "message": "The agent is still working. Press Stop first if you "
+                                        "want to redirect it."})
+            return
 
         await asyncio.to_thread(store.append_chat, self.package, self.slug,
                                 {"role": "user", "text": text})

@@ -495,6 +495,38 @@ def link_finding(package: str, slug: str, finding_id: str,
         return found
 
 
+#: Fields `set_finding_tracking` is allowed to touch. Kept narrow on purpose — this is the
+#: one place a finding is edited after the fact from outside the test run that filed it, so
+#: it must not become a general-purpose patch that could silently rewrite `expected`/`actual`.
+FINDING_TRACKING_FIELDS = ("resolved", "issue_url", "issue_id")
+
+
+def set_finding_tracking(package: str, slug: str, finding_id: str,
+                          **fields: Any) -> Optional[dict[str, Any]]:
+    """Record where a finding is tracked externally (e.g. a Blackcode issue) and whether
+    it's resolved. None if there is no such finding id.
+
+    Separate from `link_finding` because that one is the agent pointing a finding at a
+    screen it already knows about mid-run; this one is the dashboard recording an outcome
+    that happens entirely outside the test run, at any point after the finding was filed.
+    Only keys in FINDING_TRACKING_FIELDS are applied — anything else in `fields` is ignored
+    rather than raising, so a caller can pass a dict straight through without pre-filtering.
+    """
+    with _LOCK:
+        findings = list_findings(package, slug)
+        found = None
+        for item in findings:
+            if item.get("id") == finding_id:
+                for key in FINDING_TRACKING_FIELDS:
+                    if key in fields:
+                        item[key] = fields[key]
+                found = item
+        if found is None:
+            return None
+        _write_or_raise(_findings_path(package, slug), findings)
+        return found
+
+
 # --------------------------------------------------------------------------------------
 # Flow-graph steps
 #

@@ -60,6 +60,49 @@ Two more traps that have each produced a false defect:
   screen text and quote what it actually says."""
 
 
+# Appended to the traps above when the module under test runs on an iPhone. Kept separate
+# rather than merged because two of these directly *contradict* an Android rule — an agent
+# given both sets at once would be told a zero-control screen is both "almost never real"
+# and "often ordinary", and would follow whichever it read last.
+_IOS_DEVICE_TRAPS = """\
+
+# iPhone: where the rules above change
+
+You are driving an iPhone through WebDriverAgent, not an Android phone over ADB. Most of the
+traps above still hold — a dump is still only the topmost window, a verdict during a request
+in flight is still wrong. These four differ, and the first one inverts an Android rule:
+
+* **Zero touchable controls is often an ordinary iOS screen, not an overlay.** A
+  custom-drawn surface — video player, game, canvas — publishes one element for the whole
+  area and nothing at all for the controls painted inside it. YouTube's player exposes only
+  `Video Player`, a fullscreen toggle and a scrubber: no play, no pause, no next. So when the
+  dump shows nothing tappable, **screenshot before concluding anything**, and if the
+  screenshot shows controls the dump does not, tap by coordinate inside the named surface.
+  Reporting "the player has no controls" from a dump alone is a false defect.
+* **A launch returns before the app has drawn.** The call comes back as soon as the process
+  is spawned. Measured here: returned in 120 ms, still showing the home screen at 678 ms,
+  drawn by 1.5 s. Wait for readable text, never treat the launch returning as ready.
+* **App data cannot be cleared from the host.** There is no `pm clear` on iOS, so a login
+  persists between runs and every run may start already signed in. Sign out through the app's
+  own UI when a test needs a clean slate; do not assume one.
+* **Crash reports arrive late.** They are written asynchronously, seconds after the process
+  dies, so a crash check immediately after a suspicious action often comes back empty. An
+  empty result right after the action is weak evidence of "no crash" — check again a step or
+  two later before claiming stability.
+
+Two smaller differences: there is no launching straight to a screen (no deep links — the
+launch API takes a bundle id, and a URL scheme is rejected), so reach screens by tapping; and
+`com.apple.springboard` owning the screen means you are on the home screen, the way a
+launcher package does on Android."""
+
+
+def _device_traps(platform: str) -> str:
+    """The traps section for a platform: shared rules, plus the iPhone deltas if relevant."""
+    if (platform or "").lower() == "ios":
+        return _DEVICE_TRAPS + "\n" + _IOS_DEVICE_TRAPS
+    return _DEVICE_TRAPS
+
+
 CORE = """\
 You are the testing agent inside QA Tester AI. You drive a real Android phone over ADB to
 test an app, and you report what you actually observe.
@@ -324,25 +367,29 @@ the whole reason you do not file findings.
 """
 
 
-def build_manager_prompt(package: str, slug: str) -> str:
+def build_manager_prompt(package: str, slug: str, platform: str = "android") -> str:
     """The manager module's core rules, with the device traps and cost guidance filled in."""
     return MANAGER_CORE.format(memory_path=store.memory_path(package, slug),
                                cost_section=_cost_section(),
-                               device_traps=_DEVICE_TRAPS)
+                               device_traps=_device_traps(platform))
 
 
-def build_system_prompt(package: str, slug: str, title: str, scope: str) -> str:
+def build_system_prompt(package: str, slug: str, title: str, scope: str,
+                        platform: str = "android") -> str:
     """Assemble the prompt: core rules, the live harness briefing, then this module's brief.
 
     The manager module gets a different core — it manages the breakdown and must not file
     findings — but the same briefing and the same session brief. Branching here rather than at
     the call site means the two prompts cannot drift apart in what they are told about the
     project: `runtime._options` asks for "the prompt for this module" and gets it.
+
+    `platform` defaults to Android so that every existing caller — and the tests that call
+    this positionally — keeps the prompt it already had, unchanged.
     """
-    core = (build_manager_prompt(package, slug) if store.is_main_slug(slug)
+    core = (build_manager_prompt(package, slug, platform) if store.is_main_slug(slug)
             else CORE.format(memory_path=store.memory_path(package, slug),
                              cost_section=_cost_section(),
-                             device_traps=_DEVICE_TRAPS))
+                             device_traps=_device_traps(platform)))
     parts = [core]
 
     try:

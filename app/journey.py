@@ -16,6 +16,7 @@ so a step can be correlated back to an explored screen.
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any, Optional
 
@@ -23,6 +24,24 @@ import requests
 
 import config
 from extractor import compute_state_hash, extract_actions
+
+
+def _short_session_code(session_id: str) -> str:
+    """A short, collision-resistant node-id prefix for this session.
+
+    Used to be `session_id[:8]`. `device_tools.py` builds a module's Journey session id as
+    `f"agent-{slug}"`, so two module slugs sharing a start truncate to the same 8 chars —
+    "auth" and "auth-login-password-reset" both give "agent-au", and
+    "settings-permissions-biometrics-account" and "search-doctors-clinics-filters" both give
+    "agent-se". Two Journeys sharing a prefix mint the same node ids from step 1, and
+    `state_store[state_hash] = record` in the telemetry route has no notion of ownership, so
+    the second module's steps silently overwrite the first's in server memory — discovered
+    when the Settings module's board turned out to be showing the Search module's screens
+    under borrowed ids, with no error anywhere to say so. Hashing spreads different session
+    ids across the id space instead of collapsing every slug with a shared start onto the
+    same short prefix.
+    """
+    return hashlib.sha1(session_id.encode("utf-8")).hexdigest()[:8]
 
 
 class Journey:
@@ -60,7 +79,7 @@ class Journey:
         Returns the node id, so a caller can branch from an earlier step if it needs to.
         """
         self.step_count += 1
-        node_id = f"{self.session_id[:8]}-{self.step_count:03d}"
+        node_id = f"{_short_session_code(self.session_id)}-{self.step_count:03d}"
 
         if xml is None:
             xml = self.device.dump_xml()

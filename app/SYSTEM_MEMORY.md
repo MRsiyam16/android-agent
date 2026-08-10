@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **19** · last updated: 2026-07-30T15:12:41+00:00
+Runs recorded: **82** · last updated: 2026-08-08T15:51:54+00:00
 
 ## Environment
 
@@ -15,7 +15,7 @@ Runs recorded: **19** · last updated: 2026-07-30T15:12:41+00:00
 |---|---|---|
 | `adb_path_source` | `config.ADB_PATH` | adb is not on PATH in the Bash tool on this machine; resolve via config or drive it from Python |
 | `console_encoding` | `PYTHONIOENCODING=utf-8` | the Windows console is cp1252; app labels with non-Latin text raise UnicodeEncodeError without it |
-| `last_toolkit` | `native` | — |
+| `last_toolkit` | `ios-native` | — |
 | `pm_clear_variant` | `user0` | on a multi-user Samsung ROM the bare form returns Success but leaves the session intact |
 
 ## Learned waits
@@ -25,62 +25,29 @@ the wrong screen, which downstream becomes a false defect.
 
 | Key | Samples | Median | Slowest | Recommended |
 |---|---|---|---|---|
-| `launch_settle.native` | 38 | 1.2s | 1.3s | **1.6s** |
+| `launch_settle.ios-native` | 40 | 0.2s | 2.1s | **0.4s** |
+| `launch_settle.native` | 40 | 1.2s | 1.3s | **1.6s** |
 
 ## Operating lessons
 
 - **ui-never-settled** (confirmed) — The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app.
-  - _evidence:_ waited 0s for com.example.app with no readable dump
-- **agent-ask-user-parks-until-answered** (seen once) — The chat agent's ask_user tool parks the run on a future until the browser answers. Driving the agent from a bare script therefore looks exactly like a hang, and with block-buffered stdout there is no output at all. Run such scripts with python -u, and read the chat.jsonl transcript to see what the agent actually did.
-  - _evidence:_ a locked-device run sat with 0.8s CPU and an empty output file; the transcript showed it had correctly asked the user to unlock the phone
-- **appbar-shares-label-with-primary-button** (seen once) — The app bar often carries the same accessibility label as the screen primary button, so a first-match label lookup taps the back header and navigates away. Constrain body taps below the app-bar band, and never use a button label as a screen-identity marker.
-  - _evidence:_ desc=Login matched both the back header and the submit button on the same screen
-- **back-up-the-project-blob-before-ui-work** (seen once) — The project blob carries the whole board (screens, notes, layout) and is several MB. Snapshot it to disk before doing anything that opens a second dashboard tab or rewrites notes.
-  - _evidence:_ a 5.9MB blob with 23 notes was backed up before UI changes and made the work reversible
-- **board-owner-is-the-run-target-not-the-screen** (seen once) — The package on screen is not the project a board belongs to. A run wanders out of its own app constantly (Play Store, browser, permissioncontroller), so anything that decides 'which project does this belong to' must key off the run's target package, never the current frame's. Conflating them destroyed four saved boards and scattered screenshots into projects for apps that were only passed through.
-  - _evidence:_ youtube/flow-graph.json held 39 Metaesthetics screens; chrome held deskclock's; keep held the Play Store's; vending and gms existed as projects at all
-- **chat-input-row-button-outspecifies-a-bare-class** (seen once) — `.chat-input-row button` (0,1,1) beats a bare `.chat-attach-btn` (0,1,0) however far down the file the class sits, so a new button added to an existing styled row silently inherits the row's primary-button look. Scope new rules to the container.
-  - _evidence:_ the chat attach button rendered as a second solid white Send button
-- **dashboard-hidden-tab-freezes-overlay** (seen once) — requestAnimationFrame is throttled in a hidden browser tab, so the dashboard overlay (cards, notes, selection) stops repainting while the underlying data stays correct. A board that looks empty in a background tab is a rendering artefact -- verify against the server before debugging the UI.
-  - _evidence:_ notes and selection state were correct on the server while the hidden tab showed none
-- **dashboard-stale-tab-clobbers-project** (seen once) — Two dashboard tabs open on one project is data loss: a tab that loaded before annotations restored will autosave a note-less blob over the good one, and the stale tab wins. Keep one tab per project.
-  - _evidence:_ a second tab autosaved an empty note set over a populated board
-- **dashboard-websocket-origin-is-port-locked** (seen once) — Verifying a dashboard change on any port other than 8000 gets no WebSocket: the server refuses the handshake on origin, so live agent events, tool traces and findings never reach the page. Static rendering and REST all work, which makes it look like the feature under test is broken. Check the DOM and the REST endpoints directly, and treat missing live updates on a scratch port as expected rather than as a regression.
-  - _evidence:_ A scratch instance on 127.0.0.1:8124 logged 'server.telemetry WARNING refused a websocket from origin http://127.0.0.1:8124' every few seconds while HTTP answered in 3ms.
-- **dump-shows-top-window-only** (seen once) — dump_hierarchy() returns only the topmost window, so a dialog or a blocking progress overlay hides the screen underneath. A missing screen marker therefore means something is covering the screen, not that navigation happened. Never judge the result of a submit while a request is still in flight.
-  - _evidence:_ an auth-error modal and a progress overlay each made a correct rejection look like the input had been accepted
-- **empty-dump-means-wait** (seen once) — An empty or status-bar-only UI dump right after launch means the UI has not rendered yet, not that the app is broken. Wait for text, not for node count -- a splash screen publishes nodes with no text.
-  - _evidence:_ a dump 5s after launch contained only com.android.systemui while a screenshot showed a fully rendered app
-- **exploration-edge-exclusion-hides-real-controls** (seen once) — EXCLUDE_BOTTOM_PCT (0.08) exists so autonomous exploration does not mash the gesture nav bar, but on a 1080x2400 phone it blanks the bottom 192px and with it a whole keypad row. Any reader used for scripted or agent-driven testing needs its own, much tighter band, or real controls are simply absent from the element list.
-  - _evidence:_ the calculator's = key was missing from the agent's element list and had to be located by eye from a screenshot
-- **hard-reload-after-editing-static-assets** (seen once) — dashboard.js and dashboard.css are served with a cache-busting query and still get served from cache. After editing either, hard-reload (ctrl+shift+R) before concluding a change did not work.
-  - _evidence:_ a verified-correct fix appeared to do nothing until a hard reload
-- **interrupt-does-not-cancel-the-tool-in-flight** (seen once) — ClaudeSDKClient.interrupt() ends the turn only after the tool in flight returns, so a Stop pressed during a long poll (wait_for_ui up to 120s, wait_for_text, wait_until_gone) lands minutes later and reads as a dead button. A real stop needs a threading.Event the blocking loops poll, cleared at the start of the next turn or every later tool returns 'stopped' immediately.
-  - _evidence:_ Stop appeared to do nothing while the agent kept tapping through a settle wait
-- **launch-succeeded-but-launcher-still-showing** (seen once) — A launch that reports success but leaves the launcher on screen usually means the package is not installed, not that the app refused to start. Check `pm list packages <pkg>` before suspecting the app; on OEM ROMs the vendor app often owns the name you expect.
-  - _evidence:_ two launches of com.google.android.calculator reported success on a Samsung S21 where only com.sec.android.app.popupcalculator is installed
-- **patching-a-constant-that-is-no-longer-read** (seen once) — When a module stops computing a path and starts asking a helper for it, every test that monkeypatched the old constant keeps passing while writing to the real location. The failure is invisible on the first run and shows up on the second as leftover state. After moving a path lookup behind an indirection, grep for monkeypatch of the old name and check the real folder for new files.
-  - _evidence:_ test_store and test_finding_guards patched store.PROJECTS_DIR after project_dir began delegating to project_paths; the suite wrote a com.example.app project into the live projects folder and still reported all green
-- **reactive-validation-defeats-diffs** (seen once) — Forms that validate while you type already show their error before the submit tap, so a before/after text diff around the tap finds nothing. Baseline the pristine screen on arrival and diff against that, excluding input field values.
-  - _evidence:_ five validation checks reported blocked-but-silent against a screen that was showing a specific message
-- **screenshot-before-believing-a-dump** (seen once) — Before reporting anything negative derived from a UI dump, capture a screenshot. Every false defect this harness has produced was a dump misread, not an app fault.
-  - _evidence:_ four separate dump misreads each presented as a confident defect
-- **server-needs-a-real-restart** (seen once) — server.py runs with reload=False, and a stale process keeps holding port 8000 while the new one fails to bind -- so edits appear to have no effect. Check who owns the port before debugging the code.
-  - _evidence:_ documented in the repo troubleshooting notes and re-confirmed in use
-- **sibling-rails-need-a-stacking-context-not-a-bigger-z-index** (seen once) — Canvas overlays painted over both sidebars because .canvas-col and .rail are siblings and neither created a stacking context, so the canvas's inner z-indexes (up to 28) competed directly with the rails' auto. `isolation: isolate` on the canvas column is the durable fix; raising the rails' z-index alone only holds until a new canvas layer picks a higher number.
-  - _evidence:_ notes and screenshots painted over both rails; elementFromPoint inside each rail returned a canvas layer
-- **system-dialogs-are-invisible-to-package-filters** (seen once) — Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing.
-  - _evidence:_ a notification-permission prompt after a data wipe made the app dump look empty
+  - _evidence:_ waited 9s for com.metaesthetics.mobileclientapp with no readable dump
+- **ios-no-app-data-clear** (seen twice) — iOS cannot clear an app's data from the host: there is no `pm clear` equivalent, so a persisted login survives between runs. Reset through the app's own sign-out flow instead of assuming a clean start.
+  - _evidence:_ clear_app_data(com.google.ios.youtube) is unavailable on the iOS adapter
+- **ios-forward-orphan-survives-window-close** (seen once) — Closing the spawned 'WDA forward' console window does not reliably kill its python.exe -- it can survive as an orphan holding the forwarded port open with no runner behind it. bring_up() always spawns a fresh forward on relaunch without checking if one already owns the port, so the stale one keeps answering empty replies. Kill the orphaned PID (find via netstat -ano | grep :8100, confirm with Get-CimInstance Win32_Process CommandLine) before relaunching.
+  - _evidence:_ 2026-08-06: PID holding :8100 for 15+ min after its console was gone, curl got Empty reply from server
+- **ios-signing-trap-recurs** (seen once) — Nested WebDriverAgentRunner.xctest can go unsigned again after a weekly Sideloadly re-cert, even with a still-valid provisioning profile -- Sideloadly signs the outer .app only. Symptom: wda_ready() times out with 'no answer' while curl to the forwarded port gets 'Empty reply from server' (TCP accepted, no HTTP response), not connection-refused. Diagnose fast by running 'pymobiledevice3 -v developer dvt xcuitest <bundle> --tunnel <udid>' directly (captured to a file) instead of trying to read the spawned WDA-runner console window -- MainWindowTitle/MainWindowHandle are unreadable for these spawned consoles from an agent shell. Fix: re-sign with go-ios (C:\Users\MRsiy\tools\go-ios\ios.exe, not on PATH) reusing Sideloadly's cert/key from %APPDATA%\sideloadly, no re-sideload needed if the profile has not expired.
+  - _evidence:_ 2026-08-06: dlopen missing code signature error in verbose runner log; fixed by openssl pkcs12 export + ios ui install wda, WDA ready in ~10s afterward
 
 ## Recent runs
 
-14/19 of the last runs completed without raising.
+19/30 of the last runs completed without raising.
 
-- `2026-07-30T15:12:41+00:00` agent:profile-personal-medical-information — 901.8s, ok (turns=204 taps=63)
-- `2026-07-30T14:57:19+00:00` agent:profile-personal-medical-information — 480.2s, FAILED (taps=10 turns=82)
-- `2026-07-30T14:22:24+00:00` agent:recon — 23.5s, ok (taps=0 turns=1)
-- `2026-07-30T14:20:31+00:00` agent:recon — 66.5s, ok (taps=0 turns=1)
-- `2026-07-30T14:18:51+00:00` agent:recon — 33.7s, ok (taps=0 turns=1)
-- `2026-07-30T14:15:27+00:00` agent:recon — 78.8s, ok (taps=0 turns=12)
-- `2026-07-30T14:13:33+00:00` agent:recon — 20.1s, ok (taps=0 turns=1)
-- `2026-07-30T14:06:36+00:00` agent:recon — 33.2s, ok (taps=0 turns=5)
+- `2026-08-08T15:51:54+00:00` agent:main — 529.8s, ok (turns=64 taps=15)
+- `2026-08-08T15:36:11+00:00` agent:main — 245.5s, ok (taps=0 turns=7)
+- `2026-08-08T15:09:26+00:00` agent:permissions-notifications — 823.6s, ok (taps=96 turns=133)
+- `2026-08-08T14:54:00+00:00` agent:permissions-notifications — 1479.8s, FAILED (taps=67 turns=301)
+- `2026-08-08T14:25:53+00:00` agent:permissions-notifications — 29.8s, ok (taps=0 turns=1)
+- `2026-08-08T14:19:08+00:00` agent:profile-medical-profile-legal-language — 2839.2s, ok (taps=191 turns=257)
+- `2026-08-08T13:31:42+00:00` agent:profile-medical-profile-legal-language — 5.0s, FAILED (taps=131 turns=2)
+- `2026-08-08T13:31:31+00:00` agent:profile-medical-profile-legal-language — 3611.0s, FAILED (taps=131 turns=301)

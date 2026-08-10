@@ -18,8 +18,8 @@ from fastapi import APIRouter, HTTPException
 import project_paths
 from agent import store as agent_store
 
-from .. import projects
-from ..schemas import ProjectCreatePayload
+from .. import projects, state
+from ..schemas import FindingTrackingPayload, ProjectCreatePayload
 
 logger = logging.getLogger("server.projects")
 router = APIRouter()
@@ -149,6 +149,23 @@ async def save_project_flow_graph(package: str, payload: dict):
     return {"ok": True}
 
 
+@router.get("/projects/{package}/telemetry-history")
+async def get_project_telemetry_history(package: str):
+    """Every state_store record telemetry has ever posted for this package.
+
+    The saved board (`flow-graph.json`) is only as complete as whatever browser tab was
+    open and autosaving while the telemetry arrived — see `save_project_flow_graph`. A
+    module run driven headlessly through the device MCP tools, with no dashboard tab open,
+    still posts every step here (`post_telemetry` writes `state.state_store` unconditionally),
+    but none of it reaches disk until something replays it through the same `ingest()` a live
+    tab uses. The dashboard calls this on open to catch the saved board up to what actually
+    happened; `state_store` never evicts, so this stays complete for as long as the server
+    process runs, even long after the run that produced it finished.
+    """
+    return [record for record in state.state_store.values()
+            if record.get("target_package") == package]
+
+
 @router.get("/projects/{package}/outcomes")
 async def project_outcomes(package: str):
     """Every outcome across every module, bucketed by kind then module.
@@ -174,6 +191,22 @@ async def project_outcomes(package: str):
                            "modules": list(buckets[kind]["modules"].values())}
                     for kind in agent_store.FINDING_KINDS},
     }
+
+
+@router.patch("/projects/{package}/modules/{slug}/findings/{finding_id}/tracking")
+async def patch_finding_tracking(package: str, slug: str, finding_id: str,
+                                  payload: FindingTrackingPayload):
+    """Record a finding's external tracking (Blackcode issue link + resolved state).
+
+    Called once when a finding is filed as a Blackcode issue (to set `issue_url`/`issue_id`),
+    and again whenever that issue's status changes, so the Bugs pill can show which findings
+    are actually resolved without the dashboard having to know anything about Blackcode itself.
+    """
+    updated = agent_store.set_finding_tracking(
+        package, slug, finding_id, **payload.dict(exclude_unset=True))
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"No finding {finding_id} in {slug}")
+    return updated
 
 
 @router.get("/projects/{package}/notes")

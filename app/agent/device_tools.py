@@ -28,6 +28,8 @@ already produced (see SYSTEM_MEMORY.md):
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import logging
 import re
 import threading
@@ -36,9 +38,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
+from PIL import Image
 
 import config
-from adb_device import AdbDevice, DeviceError, detect_toolkit
+from adb_device import DeviceError
+from device import Device, create_device, detect_toolkit, platform_from_dump
 from agent import store
 from agent.store import StoreWriteError
 
@@ -78,13 +82,19 @@ class DeviceSession:
     """One agent chat session's view of the device, plus its evidence trail."""
 
     def __init__(self, package: str, slug: str, serial: Optional[str] = None,
-                 emit: Optional[Callable[[dict[str, Any]], Any]] = None):
+                 emit: Optional[Callable[[dict[str, Any]], Any]] = None,
+                 platform: Optional[str] = None):
+        # `package` holds whatever identifies the app on this platform: an Android package
+        # name, or an iOS bundle id. The two are the same concept and are never mixed within
+        # a project, so they share the field rather than the name being generalised across
+        # ~500 call sites.
         self.package = package
         self.slug = slug
         self.serial = serial
+        self.platform = platform
         self.emit = emit or (lambda _e: None)
 
-        self._device: Optional[AdbDevice] = None
+        self._device: Optional[Device] = None
         self._journey = None
         self._section: Optional[str] = None
         self.last_elements: list[dict[str, Any]] = []
@@ -119,13 +129,30 @@ class DeviceSession:
         """Ask everything in flight to give up at its next checkpoint."""
         self._cancelled.set()
         # A run parked on a question would otherwise sit there forever after a Stop, since
-        # nothing is going to answer it now.
+        # nothing is going to answer it now. Resolved, not `.cancel()`led: cancelling the
+        # Future raises asyncio.CancelledError inside the parked `ask()` call, and the SDK's
+        # control-request handler treats that specific exception as "the CLI already
+        # abandoned this request" and deliberately sends back no response at all — which
+        # leaves the CLI subprocess waiting forever for a tool result and makes Stop unable
+        # to recover the run. `ask()` turns the cancelled flag into a normal `DeviceCancelled`
+        # once this unblocks it, which every tool call here is expected to survive.
         if self._answer is not None and not self._answer.done():
-            self._answer.cancel()
+            self._answer.set_result("")
 
     def resume(self) -> None:
         """Clear the flag so the next turn can run. Called when a new message arrives."""
         self._cancelled.clear()
+
+    @property
+    def resolved_platform(self) -> str:
+        """Which platform this session drives, without touching the device.
+
+        Shape-only inference on purpose: this is read while building the system prompt and on
+        every screen render, and a subprocess on either path would be paid hundreds of times a
+        run to answer a question the serial usually already settles.
+        """
+        from device import ANDROID, platform_from_serial
+        return self.platform or platform_from_serial(self.serial) or ANDROID
 
     @property
     def cancelled(self) -> bool:
@@ -149,13 +176,13 @@ class DeviceSession:
         return self._cancelled.wait(seconds)
 
     # -- device ------------------------------------------------------------------
-    def _connect(self) -> AdbDevice:
+    def _connect(self) -> Device:
         if self._device is None:
-            self._device = AdbDevice(self.serial)
+            self._device = create_device(self.serial, self.platform)
             self.serial = self._device.serial
         return self._device
 
-    async def device(self) -> AdbDevice:
+    async def device(self) -> Device:
         """Connect (once), with a timeout.
 
         `u2.connect()` starts atx-agent on the phone and can block for a long time if the
@@ -195,10 +222,13 @@ class DeviceSession:
         self.pending_question = {"kind": kind, "question": question, "payload": payload or {}}
         await self._emit({"type": "agent_blocked", **self.pending_question})
         try:
-            return await self._answer
+            answer = await self._answer
         finally:
             self.pending_question = None
             self._answer = None
+        if self.cancelled:
+            raise DeviceCancelled("Stopped by the user before the question was answered.")
+        return answer
 
     def answer(self, text: str) -> bool:
         if self._answer and not self._answer.done():
@@ -217,7 +247,13 @@ class DeviceSession:
     async def capture(self, note: str = "") -> Path:
         """Save a screenshot into the sub-project's evidence folder and return its path."""
         d = await self.device()
-        raw = await self.run(d.d.screenshot, format="pillow")
+        # `screenshot_b64` is the cross-platform method on the `Device` protocol; `d.d` is
+        # AdbDevice's uiautomator2 handle and does not exist on IOSDevice at all — calling it
+        # directly here used to raise `'IOSDevice' object has no attribute 'd'` on every iOS
+        # capture, which silently blocked every finding on that platform (record_finding
+        # requires a screenshot).
+        b64 = await self.run(d.screenshot_b64)
+        raw = Image.open(io.BytesIO(base64.b64decode(b64)))
         self.shot_count += 1
         safe = re.sub(r"[^a-z0-9]+", "-", note.lower()).strip("-")[:40] or "shot"
         path = store.shots_dir(self.package, self.slug) / f"{self.shot_count:03d}-{safe}.jpg"
@@ -255,9 +291,23 @@ def _render_screen(session: DeviceSession, xml: str, w: int, h: int,
     lines.append(f"screen {w}x{h} · toolkit={detect_toolkit(xml)} · "
                  f"{len(elements)} touchable elements")
     if not elements:
-        lines.append("NOTE: zero touchable controls. That is almost never a real app state — "
-                     "it usually means an overlay is intercepting input or the screen is "
-                     "still loading.")
+        # The Android reading of "zero controls" does not hold on iOS. There, a custom-drawn
+        # surface publishes one element for the whole area and nothing for the buttons inside
+        # it, so an empty list is an ordinary state rather than a covered screen — and telling
+        # the agent to "deal with the overlay" would send it hunting for a problem that is not
+        # there, which is how this harness invents defects. Measured on YouTube's player,
+        # which exposes only Video Player, a fullscreen toggle and a scrubber.
+        if platform_from_dump(xml) == "ios":
+            lines.append(
+                "NOTE: zero touchable controls. On iOS this is often NOT an overlay: a "
+                "custom-drawn surface (video player, game, canvas) publishes one element for "
+                "the whole area and none for the controls painted inside it. Screenshot "
+                "first. If the screenshot shows controls the dump does not, tap by "
+                "coordinate inside the surface rather than concluding anything is wrong.")
+        else:
+            lines.append("NOTE: zero touchable controls. That is almost never a real app "
+                         "state — it usually means an overlay is intercepting input or the "
+                         "screen is still loading.")
 
     lines.append("\n--- visible text ---")
     lines.append("\n".join(f"  {t}" for t in texts[:80]) or "  (no text — screen not ready?)")
@@ -906,7 +956,10 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
            "properties": {"question": {"type": "string"}},
            "required": ["question"], "additionalProperties": False})
     async def ask_user(args: dict[str, Any]) -> dict[str, Any]:
-        answer = await session.ask(str(args["question"]))
+        try:
+            answer = await session.ask(str(args["question"]))
+        except DeviceCancelled:
+            return _ok("Stopped by the user before this was answered.")
         return _ok(f"The user replied: {answer}")
 
     @tool("propose_subprojects",
@@ -931,9 +984,13 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
             store.create_subproject, session.package, m["title"], m.get("scope", ""),
             "proposed", m.get("screens") or []) for m in modules]
         await session._emit({"type": "agent_subprojects_proposed", "subprojects": created})
-        answer = await session.ask(
-            "Approve this module breakdown, or tell me what to rename, merge or drop.",
-            kind="approval", payload={"subprojects": created})
+        try:
+            answer = await session.ask(
+                "Approve this module breakdown, or tell me what to rename, merge or drop.",
+                kind="approval", payload={"subprojects": created})
+        except DeviceCancelled:
+            return _ok(f"Proposed {len(created)} modules, but the user stopped before "
+                       "approving them.")
         return _ok(f"Proposed {len(created)} modules. The user said: {answer}")
 
     tools = [read_screen, screenshot, wait_for_text, wait_until_gone, check_crash,

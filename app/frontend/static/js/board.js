@@ -2,7 +2,7 @@
 
 import { escapeHtml } from './markdown.js';
 import { emptyState } from './comments.js';
-import { resetGraph, updateStats } from './feed.js';
+import { ingest, resetGraph, updateStats } from './feed.js';
 import { relayoutAll } from './layout.js';
 import { startProjectMain } from './main.js';
 import { network, scheduleRenderOverlay } from './render.js';
@@ -99,6 +99,38 @@ async function restoreSavedAnnotations() {
   } catch { /* annotations are a nicety; never break the graph over them */ }
 }
 
+// A headless run (the device MCP tools driving the phone directly, no dashboard tab open)
+// still posts every step to the server, but nothing saves it to `flow-graph.json` — that
+// only happens via this same tab's debounced autosave, which never fired because nothing
+// was listening. The server keeps every step it has ever received in `state_store`, so
+// replay it through `ingest()` — the exact path a live tab's telemetry takes — to catch
+// the saved board up to what the run actually did. Nodes the board already has are
+// no-ops here (`ingest` only creates what it does not already recognise); anything new
+// lands via the normal `assignSection`/`scheduleAutoSave` path and becomes durable on
+// the next autosave.
+// Returns how many nodes were recovered, so the caller can decide whether the extra
+// re-layout/re-fit/status-message work below is worth doing.
+async function backfillMissingTelemetry(pkg) {
+  const before = nodesData.length;
+  try {
+    const resp = await fetch(`/projects/${encodeURIComponent(pkg)}/telemetry-history`);
+    if (!resp.ok) return 0;
+    const records = await resp.json();
+    // Only ever ADD a node that is not already on the board — never route an existing
+    // hash through ingest() to "refresh" it. Two Journeys can mint the same short node id
+    // (see journey.py's `_short_session_code`, added after exactly this was found live —
+    // two module slugs sharing an 8-char prefix collided and one silently overwrote the
+    // other's records in the server's in-memory state_store); if that ever happens again,
+    // state_store holds whichever module posted last under the shared id, which is not
+    // necessarily the module this already-saved node actually belongs to. Re-ingesting it
+    // would paste the wrong screenshot and label onto the right section. A hash already on
+    // the board keeps whatever the file says; only a hash the board has never seen is safe
+    // to add from server memory.
+    records.filter((r) => r && r.state_hash && !nodesData.get(r.state_hash)).forEach(ingest);
+  } catch { /* best-effort catch-up; the saved board still shows whatever was on disk */ }
+  return nodesData.length - before;
+}
+
 async function persistProjectToServer() {
   // Saves to the board's owner, never to whatever is merely selected or on screen.
   if (!ui.boardPackage) return;
@@ -191,12 +223,31 @@ async function openProject(pkg) {
       resetGraph();
       // An empty board legitimately belongs to pkg — a run started now should save here.
       ui.boardPackage = pkg;
-      showStatus(`Project "${pkg}" has no saved runs yet — start exploring to populate it.`, 'info');
+      const recovered = await backfillMissingTelemetry(pkg);
+      if (recovered) {
+        network.fit({ animation: false });
+        showStatus(`Recovered ${recovered} screens a headless run posted with no saved board yet.`, 'ok');
+      } else {
+        showStatus(`Project "${pkg}" has no saved runs yet — start exploring to populate it.`, 'info');
+      }
       return;
     }
     const project = await resp.json();
     loadProject(project);
     ui.boardPackage = pkg;
+    // Catch the saved board up to whatever a browser-less run posted after the last
+    // autosave — see backfillMissingTelemetry. Before refreshOutcomes for the same reason
+    // boardPackage is set before it: a finding whose node is not on the board yet gets
+    // silently dropped rather than outlined.
+    const recovered = await backfillMissingTelemetry(pkg);
+    if (recovered) {
+      // ingest() re-lays out the whole board on every new node, which would otherwise
+      // undo the arrangement loadProject just restored — put it back, then make sure the
+      // recovered nodes (which never had a saved position) are actually in view.
+      applyNodePositions(project.nodePositions);
+      network.fit({ animation: false });
+      showStatus(`Recovered ${recovered} screens a headless run posted with no saved board yet.`, 'ok');
+    }
     // After boardPackage is set, or the fetch keys off whichever project the agent
     // happens to be pointed at rather than the board that just loaded.
     //

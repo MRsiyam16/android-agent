@@ -37,6 +37,30 @@ def _discover_adb_path() -> str:
 # --- ADB / device -----------------------------------------------------------
 ADB_PATH: str = _discover_adb_path()
 
+# --- iOS / WebDriverAgent -----------------------------------------------------------
+# The iOS adapter talks to WebDriverAgent over HTTP on a forwarded port, and shells out to
+# the pymobiledevice3 CLI for the few things WDA does not cover (device list, installed
+# apps, crash reports). Nothing here is used unless an iPhone is actually selected.
+#
+# WDA has to be running before any of it works, and it does not start itself. Three
+# processes, each in its own terminal, device unlocked:
+#   1. pymobiledevice3 remote tunneld                                  (as Administrator)
+#   2. pymobiledevice3 developer dvt xcuitest <WDA_BUNDLE_ID> --tunnel <udid>
+#   3. pymobiledevice3 usbmux forward 8100 8100 --udid <udid>
+PYMOBILEDEVICE3_PATH: str = os.environ.get("PYMOBILEDEVICE3_PATH", "pymobiledevice3")
+WDA_URL: str = os.environ.get("WDA_URL", "http://127.0.0.1:8100")
+
+# The runner's bundle id carries the signing team suffix, because a free Apple ID cannot
+# claim `com.facebook.WebDriverAgentRunner.xctrunner` itself — Sideloadly appends the team
+# id to make it unique. Set WDA_BUNDLE_ID to whatever `pymobiledevice3 apps list` reports
+# after re-signing; it changes if the app is ever signed by a different Apple ID.
+WDA_BUNDLE_ID: str = os.environ.get(
+    "WDA_BUNDLE_ID", "com.facebook.WebDriverAgentRunner.xctrunner")
+
+# Listing installed apps costs a CLI round trip of several seconds, and it is asked once per
+# launch to check the bundle id exists. Cached for this long.
+IOS_APP_LIST_TTL_SECONDS: float = float(os.environ.get("IOS_APP_LIST_TTL_SECONDS", 120))
+
 # --- Telemetry server ---------------------------------------------------------
 # Loopback by default, deliberately. /command is unauthenticated remote control of the
 # phone — arbitrary taps, launches and screenshots — so binding it to 0.0.0.0 hands anyone

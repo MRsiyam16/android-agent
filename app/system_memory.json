@@ -12,8 +12,8 @@
     },
     "last_toolkit": {
       "evidence": "",
-      "updated_at": "2026-07-29T04:26:12+00:00",
-      "value": "native"
+      "updated_at": "2026-08-06T07:08:23+00:00",
+      "value": "ios-native"
     },
     "pm_clear_variant": {
       "evidence": "on a multi-user Samsung ROM the bare form returns Success but leaves the session intact",
@@ -113,6 +113,27 @@
       "last_seen_run": 0,
       "text": "ClaudeSDKClient.interrupt() ends the turn only after the tool in flight returns, so a Stop pressed during a long poll (wait_for_ui up to 120s, wait_for_text, wait_until_gone) lands minutes later and reads as a dead button. A real stop needs a threading.Event the blocking loops poll, cleared at the start of the next turn or every later tool returns 'stopped' immediately."
     },
+    "ios-forward-orphan-survives-window-close": {
+      "evidence": "2026-08-06: PID holding :8100 for 15+ min after its console was gone, curl got Empty reply from server",
+      "first_seen_run": 37,
+      "hits": 1,
+      "last_seen_run": 37,
+      "text": "Closing the spawned 'WDA forward' console window does not reliably kill its python.exe -- it can survive as an orphan holding the forwarded port open with no runner behind it. bring_up() always spawns a fresh forward on relaunch without checking if one already owns the port, so the stale one keeps answering empty replies. Kill the orphaned PID (find via netstat -ano | grep :8100, confirm with Get-CimInstance Win32_Process CommandLine) before relaunching."
+    },
+    "ios-no-app-data-clear": {
+      "evidence": "clear_app_data(com.google.ios.youtube) is unavailable on the iOS adapter",
+      "first_seen_run": 19,
+      "hits": 2,
+      "last_seen_run": 19,
+      "text": "iOS cannot clear an app's data from the host: there is no `pm clear` equivalent, so a persisted login survives between runs. Reset through the app's own sign-out flow instead of assuming a clean start."
+    },
+    "ios-signing-trap-recurs": {
+      "evidence": "2026-08-06: dlopen missing code signature error in verbose runner log; fixed by openssl pkcs12 export + ios ui install wda, WDA ready in ~10s afterward",
+      "first_seen_run": 37,
+      "hits": 1,
+      "last_seen_run": 37,
+      "text": "Nested WebDriverAgentRunner.xctest can go unsigned again after a weekly Sideloadly re-cert, even with a still-valid provisioning profile -- Sideloadly signs the outer .app only. Symptom: wda_ready() times out with 'no answer' while curl to the forwarded port gets 'Empty reply from server' (TCP accepted, no HTTP response), not connection-refused. Diagnose fast by running 'pymobiledevice3 -v developer dvt xcuitest <bundle> --tunnel <udid>' directly (captured to a file) instead of trying to read the spawned WDA-runner console window -- MainWindowTitle/MainWindowHandle are unreadable for these spawned consoles from an agent shell. Fix: re-sign with go-ios (C:\\Users\\MRsiy\\tools\\go-ios\\ios.exe, not on PATH) reusing Sideloadly's cert/key from %APPDATA%\\sideloadly, no re-sideload needed if the profile has not expired."
+    },
     "launch-succeeded-but-launcher-still-showing": {
       "evidence": "two launches of com.google.android.calculator reported success on a Samsung S21 where only com.sec.android.app.popupcalculator is installed",
       "first_seen_run": 0,
@@ -163,180 +184,305 @@
       "text": "Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing."
     },
     "ui-never-settled": {
-      "evidence": "waited 0s for com.example.app with no readable dump",
+      "evidence": "waited 9s for com.metaesthetics.mobileclientapp with no readable dump",
       "first_seen_run": 0,
-      "hits": 64,
-      "last_seen_run": 0,
+      "hits": 65,
+      "last_seen_run": 68,
       "text": "The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app."
     }
   },
-  "run_count": 19,
+  "run_count": 82,
   "runs": [
     {
-      "at": "2026-07-30T01:55:21+00:00",
+      "at": "2026-08-07T04:22:04+00:00",
       "ok": true,
-      "seconds": 23.4,
-      "taps": 0,
-      "tool": "agent:auth-registration",
-      "turns": 4
-    },
-    {
-      "at": "2026-07-30T01:56:04+00:00",
-      "ok": true,
-      "seconds": 21.7,
-      "taps": 0,
-      "tool": "agent:auth-registration",
+      "seconds": 14.5,
+      "taps": 87,
+      "tool": "agent:personalization-aesthetic-profile-wishes-surveys",
       "turns": 1
     },
     {
-      "at": "2026-07-30T02:23:07+00:00",
+      "at": "2026-08-07T04:28:20+00:00",
       "ok": true,
-      "seconds": 1518.4,
-      "taps": 28,
-      "tool": "agent:treatment-catalogue-discovery",
-      "turns": 252
+      "seconds": 340.4,
+      "taps": 96,
+      "tool": "agent:personalization-aesthetic-profile-wishes-surveys",
+      "turns": 54
     },
     {
-      "at": "2026-07-30T02:45:00+00:00",
+      "at": "2026-08-07T04:30:34+00:00",
       "ok": false,
-      "seconds": 46.3,
+      "seconds": 8.6,
       "taps": 0,
-      "tool": "agent:appointments-booking",
-      "turns": 6
+      "tool": "agent:auth-onboarding-session",
+      "turns": 2
     },
     {
-      "at": "2026-07-30T03:12:35+00:00",
+      "at": "2026-08-07T04:44:46+00:00",
+      "ok": false,
+      "seconds": 838.7,
+      "taps": 5,
+      "tool": "agent:auth-onboarding-session",
+      "turns": 27
+    },
+    {
+      "at": "2026-08-07T04:47:14+00:00",
       "ok": true,
-      "seconds": 1387.8,
-      "taps": 22,
-      "tool": "agent:appointments-booking",
-      "turns": 148
+      "seconds": 135.6,
+      "taps": 6,
+      "tool": "agent:auth-onboarding-session",
+      "turns": 11
     },
     {
-      "at": "2026-07-30T03:16:17+00:00",
-      "ok": false,
-      "seconds": 132.0,
+      "at": "2026-08-07T05:22:31+00:00",
+      "ok": true,
+      "seconds": 27.0,
       "taps": 0,
-      "tool": "agent:localisation-language-switching",
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-07T05:23:36+00:00",
+      "ok": true,
+      "seconds": 43.5,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 3
+    },
+    {
+      "at": "2026-08-07T05:42:48+00:00",
+      "ok": false,
+      "seconds": 3065.4,
+      "taps": 72,
+      "tool": "agent:navigation-dashboard-search-discovery",
+      "turns": 301
+    },
+    {
+      "at": "2026-08-07T06:22:11+00:00",
+      "ok": true,
+      "seconds": 693.3,
+      "taps": 102,
+      "tool": "agent:navigation-dashboard-search-discovery",
+      "turns": 104
+    },
+    {
+      "at": "2026-08-07T06:52:34+00:00",
+      "ok": true,
+      "seconds": 59.9,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 2
+    },
+    {
+      "at": "2026-08-07T12:14:48+00:00",
+      "ok": false,
+      "seconds": 767.0,
+      "taps": 13,
+      "tool": "agent:booking-flow",
+      "turns": 102
+    },
+    {
+      "at": "2026-08-07T12:33:25+00:00",
+      "ok": true,
+      "seconds": 645.2,
+      "taps": 29,
+      "tool": "agent:booking-flow",
+      "turns": 112
+    },
+    {
+      "at": "2026-08-07T13:36:25+00:00",
+      "ok": false,
+      "seconds": 1186.2,
+      "taps": 43,
+      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
+      "turns": 146
+    },
+    {
+      "at": "2026-08-07T13:38:02+00:00",
+      "ok": false,
+      "seconds": 3.0,
+      "taps": 43,
+      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
+      "turns": 2
+    },
+    {
+      "at": "2026-08-07T14:10:23+00:00",
+      "ok": true,
+      "seconds": 1930.8,
+      "taps": 121,
+      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
+      "turns": 293
+    },
+    {
+      "at": "2026-08-07T14:16:47+00:00",
+      "ok": true,
+      "seconds": 230.9,
+      "taps": 128,
+      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
+      "turns": 26
+    },
+    {
+      "at": "2026-08-07T14:35:56+00:00",
+      "ok": true,
+      "seconds": 1059.6,
+      "taps": 167,
+      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
+      "turns": 125
+    },
+    {
+      "at": "2026-08-07T15:02:46+00:00",
+      "ok": true,
+      "seconds": 1029.0,
+      "taps": 37,
+      "tool": "agent:treatments-concerns-explorer",
+      "turns": 208
+    },
+    {
+      "at": "2026-08-07T15:11:58+00:00",
+      "ok": true,
+      "seconds": 32.5,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 3
+    },
+    {
+      "at": "2026-08-08T06:53:43+00:00",
+      "ok": false,
+      "seconds": 1985.5,
+      "taps": 75,
+      "tool": "agent:aesthetic-quiz-body-focus-personalization",
+      "turns": 301
+    },
+    {
+      "at": "2026-08-08T07:23:54+00:00",
+      "ok": true,
+      "seconds": 362.3,
+      "taps": 76,
+      "tool": "agent:aesthetic-quiz-body-focus-personalization",
+      "turns": 34
+    },
+    {
+      "at": "2026-08-08T12:27:19+00:00",
+      "ok": false,
+      "seconds": 2333.5,
+      "taps": 58,
+      "tool": "agent:profile-medical-profile-legal-language",
+      "turns": 301
+    },
+    {
+      "at": "2026-08-08T13:31:31+00:00",
+      "ok": false,
+      "seconds": 3611.0,
+      "taps": 131,
+      "tool": "agent:profile-medical-profile-legal-language",
+      "turns": 301
+    },
+    {
+      "at": "2026-08-08T13:31:42+00:00",
+      "ok": false,
+      "seconds": 5.0,
+      "taps": 131,
+      "tool": "agent:profile-medical-profile-legal-language",
+      "turns": 2
+    },
+    {
+      "at": "2026-08-08T14:19:08+00:00",
+      "ok": true,
+      "seconds": 2839.2,
+      "taps": 191,
+      "tool": "agent:profile-medical-profile-legal-language",
+      "turns": 257
+    },
+    {
+      "at": "2026-08-08T14:25:53+00:00",
+      "ok": true,
+      "seconds": 29.8,
+      "taps": 0,
+      "tool": "agent:permissions-notifications",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-08T14:54:00+00:00",
+      "ok": false,
+      "seconds": 1479.8,
+      "taps": 67,
+      "tool": "agent:permissions-notifications",
+      "turns": 301
+    },
+    {
+      "at": "2026-08-08T15:09:26+00:00",
+      "ok": true,
+      "seconds": 823.6,
+      "taps": 96,
+      "tool": "agent:permissions-notifications",
+      "turns": 133
+    },
+    {
+      "at": "2026-08-08T15:36:11+00:00",
+      "ok": true,
+      "seconds": 245.5,
+      "taps": 0,
+      "tool": "agent:main",
       "turns": 7
     },
     {
-      "at": "2026-07-30T03:34:55+00:00",
+      "at": "2026-08-08T15:51:54+00:00",
       "ok": true,
-      "seconds": 1100.3,
-      "taps": 20,
-      "tool": "agent:localisation-language-switching",
-      "turns": 158
-    },
-    {
-      "at": "2026-07-30T03:38:13+00:00",
-      "ok": false,
-      "seconds": 29.5,
-      "taps": 0,
-      "tool": "agent:auth-invitation-claim-profile",
-      "turns": 9
-    },
-    {
-      "at": "2026-07-30T04:19:27+00:00",
-      "ok": false,
-      "seconds": 2017.0,
-      "taps": 27,
-      "tool": "agent:auth-invitation-claim-profile",
-      "turns": 199
-    },
-    {
-      "at": "2026-07-30T04:20:45+00:00",
-      "ok": true,
-      "seconds": 71.8,
-      "taps": 27,
-      "tool": "agent:auth-invitation-claim-profile",
-      "turns": 6
-    },
-    {
-      "at": "2026-07-30T04:45:31+00:00",
-      "ok": true,
-      "seconds": 1311.4,
-      "taps": 42,
-      "tool": "agent:guest-mode-auth-gating",
-      "turns": 213
-    },
-    {
-      "at": "2026-07-30T14:06:36+00:00",
-      "ok": true,
-      "seconds": 33.2,
-      "taps": 0,
-      "tool": "agent:recon",
-      "turns": 5
-    },
-    {
-      "at": "2026-07-30T14:13:33+00:00",
-      "ok": true,
-      "seconds": 20.1,
-      "taps": 0,
-      "tool": "agent:recon",
-      "turns": 1
-    },
-    {
-      "at": "2026-07-30T14:15:27+00:00",
-      "ok": true,
-      "seconds": 78.8,
-      "taps": 0,
-      "tool": "agent:recon",
-      "turns": 12
-    },
-    {
-      "at": "2026-07-30T14:18:51+00:00",
-      "ok": true,
-      "seconds": 33.7,
-      "taps": 0,
-      "tool": "agent:recon",
-      "turns": 1
-    },
-    {
-      "at": "2026-07-30T14:20:31+00:00",
-      "ok": true,
-      "seconds": 66.5,
-      "taps": 0,
-      "tool": "agent:recon",
-      "turns": 1
-    },
-    {
-      "at": "2026-07-30T14:22:24+00:00",
-      "ok": true,
-      "seconds": 23.5,
-      "taps": 0,
-      "tool": "agent:recon",
-      "turns": 1
-    },
-    {
-      "at": "2026-07-30T14:57:19+00:00",
-      "ok": false,
-      "seconds": 480.2,
-      "taps": 10,
-      "tool": "agent:profile-personal-medical-information",
-      "turns": 82
-    },
-    {
-      "at": "2026-07-30T15:12:41+00:00",
-      "ok": true,
-      "seconds": 901.8,
-      "taps": 63,
-      "tool": "agent:profile-personal-medical-information",
-      "turns": 204
+      "seconds": 529.8,
+      "taps": 15,
+      "tool": "agent:main",
+      "turns": 64
     }
   ],
   "schema": 1,
   "timings": {
+    "launch_settle.ios-native": {
+      "samples": [
+        0.21,
+        0.29,
+        0.34,
+        0.16,
+        0.33,
+        0.15,
+        0.24,
+        0.24,
+        0.36,
+        0.21,
+        0.22,
+        0.32,
+        0.27,
+        0.26,
+        0.22,
+        0.19,
+        0.24,
+        0.18,
+        0.2,
+        0.2,
+        0.33,
+        0.3,
+        0.27,
+        0.2,
+        0.23,
+        0.21,
+        0.22,
+        0.22,
+        2.14,
+        0.26,
+        0.31,
+        0.19,
+        0.3,
+        0.22,
+        0.23,
+        0.22,
+        0.23,
+        0.21,
+        0.29,
+        0.25
+      ],
+      "unit": "s"
+    },
     "launch_settle.native": {
       "samples": [
-        1.17,
-        1.16,
-        1.18,
-        1.17,
-        1.24,
-        1.18,
-        1.17,
-        1.2,
         1.16,
         1.28,
         1.14,
@@ -366,10 +512,20 @@
         1.12,
         1.21,
         1.29,
-        1.26
+        1.26,
+        1.2,
+        1.15,
+        1.19,
+        1.16,
+        1.2,
+        1.18,
+        1.2,
+        1.16,
+        1.21,
+        1.2
       ],
       "unit": "s"
     }
   },
-  "updated_at": "2026-07-30T15:12:41+00:00"
+  "updated_at": "2026-08-08T15:51:54+00:00"
 }

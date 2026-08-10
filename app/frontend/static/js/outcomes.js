@@ -165,6 +165,15 @@ function outcomeItem(f, kind) {
     sev.textContent = f.severity;
     head.appendChild(sev);
   }
+  // Resolved is only meaningful once a finding is actually being tracked somewhere — a
+  // finding nobody filed yet is neither resolved nor unresolved, it's just not tracked.
+  if (f.resolved) {
+    const resolved = document.createElement('span');
+    resolved.className = 'outcome-item-resolved';
+    resolved.textContent = '✓ Resolved';
+    resolved.title = 'Closed in Blackcode Issues';
+    head.appendChild(resolved);
+  }
   item.appendChild(head);
 
   [['Expected', f.expected], ['Actual', f.actual]].forEach(([label, value]) => {
@@ -184,6 +193,19 @@ function outcomeItem(f, kind) {
     b.textContent = 'Steps: ';
     row.append(b, document.createTextNode(f.steps.join(' → ')));
     item.appendChild(row);
+  }
+
+  // The straight line from a finding to the ticket tracking it — without this, confirming
+  // whether something is actually fixed means leaving the dashboard and searching Blackcode
+  // by title, which nobody reliably does, so links quietly go stale.
+  if (f.issue_url) {
+    const link = document.createElement('a');
+    link.className = 'outcome-item-link';
+    link.href = f.issue_url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'View in Blackcode Issues ↗';
+    item.appendChild(link);
   }
 
   // The evidence screenshot is the point. Every incident this harness has learned from was

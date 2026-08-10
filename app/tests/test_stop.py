@@ -19,7 +19,7 @@ import pytest
 import project_paths
 from adb_device import AdbDevice
 from agent import store
-from agent.device_tools import DeviceSession
+from agent.device_tools import DeviceCancelled, DeviceSession
 
 PKG, SLUG = "com.example.app", "auth"
 
@@ -53,12 +53,30 @@ class TestCancelFlag:
         import asyncio
 
         async def scenario():
-            session._answer = asyncio.get_running_loop().create_future()
-            session.pending_question = {"question": "which account?"}
+            registered = asyncio.get_event_loop().create_future()
+
+            async def ask_it():
+                task = asyncio.ensure_future(
+                    session.ask("which account?"))
+                # Give `ask()` a turn to create the future and publish the question before
+                # Stop is pressed, the same ordering a real parked question would see.
+                while session._answer is None:
+                    await asyncio.sleep(0)
+                registered.set_result(None)
+                return await task
+
+            asker = asyncio.ensure_future(ask_it())
+            await registered
             session.cancel()
             # A run parked on `ask_user` has nobody left to answer it after a Stop; leaving the
-            # future pending would hold the turn open forever.
-            assert session._answer.cancelled()
+            # future pending would hold the turn open forever. It has to come back as a plain
+            # `DeviceCancelled` rather than via `asyncio.CancelledError` — the SDK's
+            # control-request handler treats that specific exception as "the CLI already
+            # abandoned this" and sends back no response at all, which would leave the CLI
+            # subprocess (and Stop) stuck for good instead of recovering.
+            with pytest.raises(DeviceCancelled):
+                await asyncio.wait_for(asker, timeout=1.0)
+            assert session.pending_question is None
 
         asyncio.run(scenario())
 

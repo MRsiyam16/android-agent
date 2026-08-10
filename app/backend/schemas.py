@@ -97,3 +97,14 @@ class SubprojectUpdatePayload(BaseModel):
 class SecretPayload(BaseModel):
     name: str
     value: str
+
+
+class FindingTrackingPayload(BaseModel):
+    """Where a finding is tracked externally, and whether it's resolved.
+
+    All optional and applied with `exclude_unset` so a caller can update just one field
+    (e.g. flip `resolved` after a Blackcode issue closes) without re-sending the others.
+    """
+    resolved: Optional[bool] = None
+    issue_url: Optional[str] = None
+    issue_id: Optional[int] = None
