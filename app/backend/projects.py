@@ -65,6 +65,10 @@ def write_meta(package: str, **updates: Any) -> dict[str, Any]:
         "last_saved_at": None,
         "state_count": 0,
         "edge_count": 0,
+        # A project created before this field existed has none on disk; every reader treats a
+        # missing key as "android" (see agent/runtime.py's session-registry lookups), so
+        # nothing here needs a migration pass.
+        "platform": "android",
     }
     meta.update(updates)
     try:

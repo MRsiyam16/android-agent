@@ -66,12 +66,40 @@ div.vis-tooltip {
 @keyframes rippleOut { 0% { transform: scale(0.4); opacity: 1; } 100% { transform: scale(3.2); opacity: 0; } }
 
 .phone-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+/* `.phone-actions` sets `display: flex` at the same specificity as the UA's `[hidden]` rule,
+   and an author rule always wins over a UA one regardless — same reason `.agent-meter-row`
+   needed this below. Without it, hiding #webViewportRow for a phone project would not work. */
+.phone-actions[hidden] { display: none; }
 .chip-btn {
   background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
   font-size: 12px; padding: 7px 12px; border-radius: var(--radius-pill); cursor: pointer;
 }
 .chip-btn:hover { background: var(--surface-3); }
 .chip-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); }
+
+/* Website-only viewport row: a select plus optional custom width/height, sized to sit in the
+   same flex row as the chip buttons rather than the New Project sheet's full-width inputs. */
+.viewport-select {
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
+  font-size: 12px; padding: 6px 8px; border-radius: var(--radius-sm);
+}
+.viewport-custom {
+  width: 64px; background: var(--surface-2); border: 1px solid var(--hairline);
+  color: var(--ink); font-size: 12px; padding: 6px 8px; border-radius: var(--radius-sm);
+}
+
+.responsive-sweep-results {
+  width: 100%; display: flex; flex-direction: column; gap: 10px; margin-top: 4px;
+}
+.responsive-sweep-results[hidden] { display: none; }
+.sweep-breakpoint {
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); padding: 10px; font-size: 12px;
+}
+.sweep-breakpoint-head { font-weight: 600; margin-bottom: 6px; }
+.sweep-breakpoint img { width: 100%; border-radius: var(--radius-sm); margin-bottom: 6px; }
+.sweep-breakpoint ul { margin: 0; padding-left: 18px; color: var(--danger); }
+.sweep-breakpoint .sweep-ok { color: var(--ink-faint); }
 
 /* Cost/activity meter under the phone — spend and effort should be visible, not assumed. */
 .agent-meter {
@@ -131,6 +159,10 @@ div.vis-tooltip {
    that no longer matches its own aspect-ratio. Sizing from width instead lets height fall
    out of the ratio correctly. */
 .rail-right .phone-frame.landscape { width: 100%; height: auto; max-height: min(44vh, 500px); }
+/* A website's viewport is commonly 16:9 or wider — noticeably wider than a rotated phone or
+   tablet, which is what the landscape cap above was tuned for. Relaxing it here keeps a
+   desktop breakpoint from reading as squashed; set by phone.js's applyDeviceAspect. */
+.rail-right .phone-frame.landscape.very-wide { max-height: min(60vh, 640px); }
 .rail-right .phone-screen-wrap { border-radius: 19px; }
 .rail-right .agent-meter { font-size: 11px; padding: 8px 10px; }
 .rail-right .phone-actions { gap: 6px; }

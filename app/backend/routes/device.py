@@ -14,13 +14,37 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+import config
 import device
 
-from .. import agent_bridge, devices, state
-from ..schemas import CommandPayload
+from .. import agent_bridge, devices, projects, state
+from ..schemas import CommandPayload, ResponsiveSweepPayload, ViewportPayload
 
 logger = logging.getLogger("server.device")
 router = APIRouter()
+
+
+async def _resolve_for_project(package: str | None, slug: str | None, serial: str | None):
+    """The right device for a dashboard-initiated action (remote control, viewport, sweep).
+
+    Prefers the module's own live agent session when one exists. For a web project this is
+    not an optimisation but a correctness requirement: each session owns exactly one running
+    browser, and resolving through `devices.resolve_device()` instead would launch a second,
+    disconnected browser rather than reaching the one already open and visible on screen.
+    Falls back to the shared device cache — keyed by serial, same as ever — for the common
+    Android/iOS case of "no module open yet, just talk to whatever is plugged in."
+    """
+    if package and slug:
+        session = agent_bridge.sessions.peek(package, slug)
+        if session is not None:
+            return await session.device.device()
+    platform = (projects.read_meta(package) or {}).get("platform") if package else None
+    eff_serial = serial
+    if not eff_serial and (platform or "").lower() == "web":
+        eff_serial = package  # a web project's "serial" is its URL, i.e. its package
+    if not eff_serial:
+        eff_serial = state.device_serial()
+    return await asyncio.to_thread(devices.resolve_device, eff_serial, platform)
 
 
 @router.post("/command")
@@ -35,8 +59,7 @@ async def run_command(payload: CommandPayload):
     frames this endpoint exists to produce. `/device/info` and `/device/frame` below already
     thread their work; this endpoint was the one that did not.
     """
-    serial = payload.device_serial or state.device_serial()
-    d = await asyncio.to_thread(devices.resolve_device, serial)
+    d = await _resolve_for_project(payload.package, payload.slug, payload.device_serial)
 
     raw = payload.command.strip()
     parts = raw.split()
@@ -72,6 +95,12 @@ async def run_command(payload: CommandPayload):
 
         elif verb == "home":
             await asyncio.to_thread(d.press, "home")
+
+        elif verb == "reload":
+            # Web-only in practice — the dashboard hides this chip for Android/iOS — but
+            # dispatches through the same `press()` the other verbs use rather than a new
+            # device-protocol method, since only one platform implements it.
+            await asyncio.to_thread(d.press, "reload")
 
         elif verb == "launch" and len(parts) >= 2:
             package = parts[1]
@@ -161,3 +190,76 @@ async def device_frame(package: str | None = None, slug: str | None = None, resy
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not grab a frame: {exc}") from exc
     return {"screenshot_b64": b64, "width": w, "height": h}
+
+
+@router.post("/device/viewport")
+async def set_viewport(payload: ViewportPayload):
+    """Resize a web project's browser viewport — the mobile/tablet/desktop/custom picker.
+
+    Deliberately not a `Device` protocol method (see `device.py`'s own rule: add one there
+    only once every adapter implements it). `set_viewport` is web-only, so this checks for it
+    with `getattr` instead — the same pattern `/device/frame` already uses above for iOS-only
+    `refresh_window_size`.
+    """
+    d = await _resolve_for_project(payload.package, payload.slug, None)
+    setter = getattr(d, "set_viewport", None)
+    if setter is None:
+        raise HTTPException(
+            status_code=400, detail="This device does not support resizing its viewport.")
+    try:
+        w, h = await asyncio.to_thread(setter, payload.width, payload.height)
+        b64 = await asyncio.to_thread(d.screenshot_b64)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not resize the viewport: {exc}") from exc
+    return {"ok": True, "width": w, "height": h, "screenshot_b64": b64}
+
+
+@router.post("/device/responsive-sweep")
+async def responsive_sweep(payload: ResponsiveSweepPayload):
+    """The dashboard's one-click breakpoint sweep — presentation only, files nothing.
+
+    Deliberately does not write to `findings.json`: this route has no `(package, slug)` module
+    context the way `agent/store.add_finding` requires, and improvising one would either force
+    a spurious module picker or mis-attribute a finding to whichever module happens to be
+    selected. The agent's own `check_responsive` tool (agent/device_tools.py) runs the same
+    sweep and is the actual filing path, through `record_finding` like everything else.
+
+    Restores the viewport to whatever it was before the sweep, same as the agent tool does.
+    """
+    d = await _resolve_for_project(payload.package, payload.slug, None)
+    setter = getattr(d, "set_viewport", None)
+    checker = getattr(d, "responsive_issues", None)
+    if setter is None or checker is None:
+        raise HTTPException(
+            status_code=400, detail="This device does not support a responsive sweep.")
+
+    raw = payload.breakpoints or [
+        {"name": name, "width": w, "height": h}
+        for name, (w, h) in config.WEB_BREAKPOINTS.items()]
+    try:
+        original = await asyncio.to_thread(lambda: d.window_size)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not read the viewport: {exc}") from exc
+
+    results = []
+    try:
+        for bp in raw:
+            name, width, height = str(bp.get("name") or ""), int(bp["width"]), int(bp["height"])
+            try:
+                await asyncio.to_thread(setter, width, height)
+                await asyncio.sleep(0.4)  # let the re-layout settle, same as the agent tool
+                b64 = await asyncio.to_thread(d.screenshot_b64)
+                issues = await asyncio.to_thread(checker)
+            except Exception as exc:  # noqa: BLE001
+                results.append({"name": name, "width": width, "height": height,
+                                "issues": [f"FAILED: {exc}"], "screenshot_b64": ""})
+                continue
+            results.append({"name": name, "width": width, "height": height,
+                            "issues": issues, "screenshot_b64": b64})
+    finally:
+        try:
+            await asyncio.to_thread(setter, *original)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not restore viewport after sweep: %s", exc)
+
+    return {"ok": True, "breakpoints": results}

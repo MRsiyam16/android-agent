@@ -16,6 +16,11 @@ class ProjectCreatePayload(BaseModel):
     # Where to put the project folder. Absent means the default `projects/<package>/`, which
     # is what telemetry from a bare `run_agent.py` still creates.
     root: Optional[str] = None
+    # "android" | "ios" | "web". Absent defaults to "android" for back-compat with every
+    # existing caller. For a web project, `package` holds the target URL rather than a
+    # package/bundle id — the same field-sharing `device_tools.DeviceSession` already does
+    # between Android package names and iOS bundle ids.
+    platform: Optional[str] = None
 
 
 class TelemetryPayload(BaseModel):
@@ -47,6 +52,26 @@ class TelemetryPayload(BaseModel):
 class CommandPayload(BaseModel):
     command: str
     device_serial: Optional[str] = None
+    # Which module's live device to reuse, if one is already open. Not optional in practice
+    # for a web project: each agent session owns one running browser, and resolving without
+    # these would open a second, disconnected one instead of reaching the one on screen.
+    package: Optional[str] = None
+    slug: Optional[str] = None
+
+
+class ViewportPayload(BaseModel):
+    """Resize a web project's browser viewport — see `/device/viewport`."""
+    package: Optional[str] = None
+    slug: Optional[str] = None
+    width: int
+    height: int
+
+
+class ResponsiveSweepPayload(BaseModel):
+    """One-click breakpoint sweep from the dashboard — see `/device/responsive-sweep`."""
+    package: Optional[str] = None
+    slug: Optional[str] = None
+    breakpoints: Optional[list[dict]] = None
 
 
 class StatusPayload(BaseModel):

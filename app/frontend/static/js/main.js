@@ -2,10 +2,10 @@
 
 import { fetchProjects, openProject, setProjectPill } from './board.js';
 import { agent, agentEl, agentFetch, appendChat, initChatScroll, scrollChatToEnd, setAgentModel } from './chat.js';
-import { initAgent, initComposerAttachments, loadSecretNames, refreshFrame, sendCommand, sendToAgent } from './compose.js';
+import { applyViewport, initAgent, initComposerAttachments, loadSecretNames, refreshFrame, runResponsiveSweep, sendCommand, sendToAgent } from './compose.js';
 import { updateStats } from './feed.js';
-import { loadModules, selectModule } from './modules.js';
-import { chatLog, phoneScreen, ripple } from './phone.js';
+import { loadModules, platformOf, selectModule } from './modules.js';
+import { applyPlatformUI, chatLog, phoneScreen, ripple } from './phone.js';
 import { initBlockedDone } from './transcript.js';
 import { initToolOverlay, setTool } from './tools.js';
 import { connectWs } from './socket.js';
@@ -30,6 +30,8 @@ async function warmModule() {
 
 agentEl.project.addEventListener('change', () => {
   agent.package = agentEl.project.value;
+  agent.platform = platformOf(agent.package);
+  applyPlatformUI(agent.platform);
   agent.slug = null;
   agent.loadedKey = null;
   loadModules();
@@ -160,6 +162,14 @@ document.querySelectorAll('.chip-btn[data-cmd]').forEach((btn) => {
 // worth an extra round trip to WDA, since this is the button for "the iPad got rotated,
 // catch up."
 document.getElementById('refreshFrameBtn').addEventListener('click', () => refreshFrame(true));
+
+// Website-only viewport row (hidden for a phone project by applyPlatformUI).
+document.getElementById('viewportPreset').addEventListener('change', (e) => {
+  const custom = e.target.value === 'custom';
+  document.querySelectorAll('.viewport-custom').forEach((el) => { el.hidden = !custom; });
+});
+document.getElementById('applyViewportBtn').addEventListener('click', applyViewport);
+document.getElementById('responsiveSweepBtn').addEventListener('click', runResponsiveSweep);
 
 phoneScreen.addEventListener('click', (evt) => {
   const rect = phoneScreen.getBoundingClientRect();

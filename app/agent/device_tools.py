@@ -444,7 +444,8 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
 
     # ---------------------------------------------------------------- acting
     @tool("launch",
-          "Force-stop and relaunch the app under test, then wait for its UI to render. "
+          "Force-stop and relaunch the app under test, then wait for its UI to render. On a "
+          "web project, `package` is a URL and this navigates to it instead. "
           "Returns what is on screen once it settles.",
           {"type": "object",
            "properties": {"package": {"type": "string",
@@ -453,16 +454,17 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
     async def launch(args: dict[str, Any]) -> dict[str, Any]:
         pkg = args.get("package") or session.package
         d = await session.device()
+        is_web = session.resolved_platform == "web"
         try:
             if await session.run(d.is_locked):
                 return _err("The device is locked and I cannot unlock it. Ask the user to "
                             "unlock the phone, then try again.")
             if not await session.run(d.is_screen_on):
                 await session.run(d.wake_screen)
-            # Check this before launching, not after: `monkey -p` on a missing package fails
-            # quietly and leaves the launcher on screen, which looks exactly like an app that
-            # refused to start — and invites a defect report about a package that isn't there.
-            if not await session.run(d.is_installed, pkg):
+            # Skipped on web: there is no "installed" concept for a URL — an unreachable one
+            # fails honestly inside start_app's navigation instead, which is the same honesty
+            # `is_installed` exists to provide for Android/iOS.
+            if not is_web and not await session.run(d.is_installed, pkg):
                 similar = await session.run(d.similar_packages, pkg)
                 hint = ("  Installed packages with a similar name: " + ", ".join(similar)
                         if similar else "  No installed package has a similar name.")
@@ -668,9 +670,11 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
         return _ok(f"Scrolled {args['direction']}. Call read_screen to see what is visible now.")
 
     @tool("reset_app_data",
-          "Wipe the app's data to drop a persisted session (pm clear). Needed between "
-          "sign-up cases, since a successful registration leaves you logged in. Expect a "
-          "system permission prompt on the next launch, which belongs to another package.",
+          "Wipe the app's data to drop a persisted session (pm clear on Android; cookies and "
+          "local/session storage on web). Needed between sign-up cases, since a successful "
+          "registration leaves you logged in. Expect a system permission prompt on the next "
+          "launch, which belongs to another package. Always False on iOS — sign out through "
+          "the app's own UI there instead.",
           {"type": "object",
            "properties": {"confirm": {"type": "boolean",
                                       "description": "Must be true — this destroys app state"}},
@@ -681,8 +685,9 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
         d = await session.device()
         cleared = await session.run(d.clear_app_data, session.package)
         if not cleared:
-            return _err("pm clear did not succeed in any form on this ROM — the persisted "
-                        "session is still there. Sign out through the UI instead.")
+            return _err("Clearing app data is not supported on this platform (or did not "
+                        "succeed) — the persisted session is still there. Sign out through "
+                        "the UI instead.")
         return _ok("App data cleared. The next launch is a cold start: it may sit on a splash "
                    "screen, and a permission prompt from com.android.permissioncontroller may "
                    "appear over it.")
@@ -993,13 +998,84 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
                        "approving them.")
         return _ok(f"Proposed {len(created)} modules. The user said: {answer}")
 
+    @tool("check_responsive",
+          "Web only. Resize the browser through mobile/tablet/desktop breakpoints (or your "
+          "own), screenshot each, and report layout-issue CANDIDATES: horizontal overflow, an "
+          "interactive element running off the horizontal edge, or two interactive elements "
+          "overlapping heavily. These are candidates, not verdicts — Read each screenshot, "
+          "confirm what is actually visible, and call record_finding per real issue with that "
+          "breakpoint's screenshot as evidence. The viewport is restored to its size before "
+          "this call once it finishes.",
+          {"type": "object",
+           "properties": {"breakpoints": {
+               "type": "array",
+               "description": "Defaults to mobile/tablet/desktop if omitted.",
+               "items": {"type": "object",
+                         "properties": {"name": {"type": "string"},
+                                        "width": {"type": "integer"},
+                                        "height": {"type": "integer"}},
+                         "required": ["name", "width", "height"],
+                         "additionalProperties": False}}},
+           "additionalProperties": False})
+    async def check_responsive(args: dict[str, Any]) -> dict[str, Any]:
+        d = await session.device()
+        set_viewport = getattr(d, "set_viewport", None)
+        responsive_issues = getattr(d, "responsive_issues", None)
+        if set_viewport is None or responsive_issues is None:
+            return _err("check_responsive is web-only; this session is not driving a browser.")
+
+        raw = args.get("breakpoints") or [
+            {"name": name, "width": w, "height": h}
+            for name, (w, h) in config.WEB_BREAKPOINTS.items()]
+        try:
+            original = await session.run(lambda: d.window_size)
+        except (DeviceError, asyncio.TimeoutError) as exc:
+            return _err(f"Could not read the current viewport: {exc}")
+
+        lines = []
+        try:
+            for bp in raw:
+                if session.cancelled:
+                    return _ok("Stopped mid-sweep. " + "\n".join(lines))
+                name = str(bp.get("name") or "")
+                width, height = int(bp["width"]), int(bp["height"])
+                try:
+                    await session.run(set_viewport, width, height)
+                    # A resize re-flows the page but does not reload it — this is a layout
+                    # settle, not a network wait, so a short fixed pause is enough rather than
+                    # the text-polling `wait_for_ui` needs after a real navigation.
+                    session.wait_cancellable(0.4)
+                    path = await session.capture(note=f"responsive-{name}")
+                    issues = await session.run(responsive_issues)
+                except (DeviceError, asyncio.TimeoutError) as exc:
+                    lines.append(f"- {name} ({width}x{height}): FAILED — {exc}")
+                    continue
+                session.actions_since_read += 1
+                if issues:
+                    lines.append(f"- {name} ({width}x{height}) — {path}:")
+                    lines.extend(f"    {i}" for i in issues)
+                else:
+                    lines.append(f"- {name} ({width}x{height}) — {path}: "
+                                 f"no overflow, off-screen or overlapping elements detected")
+        finally:
+            try:
+                await session.run(set_viewport, *original)
+            except (DeviceError, asyncio.TimeoutError):
+                pass
+
+        return _ok("Responsive sweep — candidates, not verdicts. Read each screenshot before "
+                   "deciding anything is real, then record_finding per real issue:\n"
+                   + "\n".join(lines))
+
     tools = [read_screen, screenshot, wait_for_text, wait_until_gone, check_crash,
              launch, tap_element, tap_text, tap_xy, type_text, use_credential,
              list_credentials, press, scroll, reset_app_data,
              journey_step, record_finding, add_note, link_finding, list_steps,
-             list_findings, ask_user, propose_subprojects]
+             list_findings, ask_user, propose_subprojects, check_responsive]
     if not can_file_findings:
         tools = [t for t in tools if t.name not in VERDICT_TOOLS]
+    if session.resolved_platform != "web":
+        tools = [t for t in tools if t.name != "check_responsive"]
     return create_sdk_mcp_server(name="device", version="1.0.0", tools=tools)
 
 
@@ -1020,23 +1096,29 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
 VERDICT_TOOLS = ("record_finding",)
 
 
-def _device_tool_names(*, can_file_findings: bool = True) -> list[str]:
+def _device_tool_names(*, can_file_findings: bool = True, web: bool = False) -> list[str]:
     """The device tools as the agent sees them, for the allow-list in runtime.py.
 
     Derived from one list rather than written out twice: an allow-list that disagrees with what
     `build_device_server` registered is a tool the agent can see and cannot call, or one it can
-    call that nobody meant it to have.
+    call that nobody meant it to have. `web=True` adds `check_responsive`, which
+    `build_device_server` itself only registers for a web session (see its own filter at the
+    end) — the two have to agree for the same reason.
     """
     short = ["read_screen", "screenshot", "wait_for_text", "wait_until_gone", "check_crash",
              "launch", "tap_element", "tap_text", "tap_xy", "type_text", "use_credential",
              "list_credentials", "press", "scroll", "reset_app_data",
              "journey_step", "record_finding", "add_note", "link_finding", "list_steps",
              "list_findings", "ask_user", "propose_subprojects"]
+    if web:
+        short = short + ["check_responsive"]
     return [f"mcp__device__{name}" for name in short
             if can_file_findings or name not in VERDICT_TOOLS]
 
 
 DEVICE_TOOL_NAMES = _device_tool_names()
+WEB_DEVICE_TOOL_NAMES = _device_tool_names(web=True)
+MANAGER_WEB_DEVICE_TOOL_NAMES = _device_tool_names(can_file_findings=False, web=True)
 
 #: The manager module's device allow-list: everything except the verdict tools.
 MANAGER_DEVICE_TOOL_NAMES = _device_tool_names(can_file_findings=False)

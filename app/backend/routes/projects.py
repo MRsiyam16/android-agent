@@ -60,7 +60,15 @@ async def create_project(payload: ProjectCreatePayload):
                 detail=f"{package} already lives in {existing}. Move or delete that folder "
                        f"first if you want it somewhere else.")
         project_paths.register(package, payload.root)
-    meta = projects.write_meta(package)
+    # Idempotent re-opens post no `platform` at all — only set it when the caller actually
+    # named one, so re-opening an existing web project never clobbers it back to "android".
+    # `write_meta`'s own default dict covers a genuinely new project with no platform given.
+    updates: dict[str, Any] = {}
+    if payload.platform:
+        updates["platform"] = payload.platform.lower()
+    # Reachability (a bad URL, an uninstalled app) is discovered honestly on first `launch`,
+    # the same way `is_installed` already works — no validation of `package` here.
+    meta = projects.write_meta(package, **updates)
     return {**meta, **project_paths.describe(package)}
 
 
@@ -108,7 +116,7 @@ async def pick_folder():
     return {"path": chosen, "cancelled": chosen is None}
 
 
-@router.get("/projects/{package}/flow-graph")
+@router.get("/projects/{package:path}/flow-graph")
 async def get_project_flow_graph(package: str):
     path = projects.flow_graph_path(package)
     if not path.is_file():
@@ -119,7 +127,7 @@ async def get_project_flow_graph(package: str):
         raise HTTPException(status_code=500, detail=f"Could not read flow graph: {exc}") from exc
 
 
-@router.post("/projects/{package}/flow-graph")
+@router.post("/projects/{package:path}/flow-graph")
 async def save_project_flow_graph(package: str, payload: dict):
     # The board carries the project it was loaded from. If that disagrees with the URL, the
     # browser is about to write one app's board over another's file — which is exactly how
@@ -149,7 +157,7 @@ async def save_project_flow_graph(package: str, payload: dict):
     return {"ok": True}
 
 
-@router.get("/projects/{package}/telemetry-history")
+@router.get("/projects/{package:path}/telemetry-history")
 async def get_project_telemetry_history(package: str):
     """Every state_store record telemetry has ever posted for this package.
 
@@ -166,7 +174,7 @@ async def get_project_telemetry_history(package: str):
             if record.get("target_package") == package]
 
 
-@router.get("/projects/{package}/outcomes")
+@router.get("/projects/{package:path}/outcomes")
 async def project_outcomes(package: str):
     """Every outcome across every module, bucketed by kind then module.
 
@@ -193,7 +201,7 @@ async def project_outcomes(package: str):
     }
 
 
-@router.patch("/projects/{package}/modules/{slug}/findings/{finding_id}/tracking")
+@router.patch("/projects/{package:path}/modules/{slug}/findings/{finding_id}/tracking")
 async def patch_finding_tracking(package: str, slug: str, finding_id: str,
                                   payload: FindingTrackingPayload):
     """Record a finding's external tracking (Blackcode issue link + resolved state).
@@ -209,7 +217,7 @@ async def patch_finding_tracking(package: str, slug: str, finding_id: str,
     return updated
 
 
-@router.get("/projects/{package}/notes")
+@router.get("/projects/{package:path}/notes")
 async def project_notes(package: str):
     """The notes the agent pinned to this project's board, across every module.
 

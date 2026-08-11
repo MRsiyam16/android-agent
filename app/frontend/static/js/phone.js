@@ -30,6 +30,23 @@ function applyDeviceAspect(w, h) {
   if (!frame) return;
   frame.style.aspectRatio = `${w} / ${h}`;
   frame.classList.toggle('landscape', w > h);
+  // A rotated phone/tablet and a desktop-wide website both take the landscape path above,
+  // but a 16:9-or-wider viewport looks squashed under the same height cap tuned for a
+  // rotated handset — .very-wide relaxes it. Ratio, not raw width, so it still applies once
+  // the frame is scaled down to fit the rail.
+  frame.classList.toggle('very-wide', w > h && w / h > 1.4);
+}
+
+// Shows/hides controls that only make sense on one kind of device — the Home button (no
+// browser-tab analogue), Reload and the viewport picker (no phone analogue). "phone" covers
+// both Android and iOS, since neither cares about the other's absence here; only web is
+// genuinely different. Called whenever the selected project's platform is known or changes
+// (see modules.js/main.js), not just once at load, since switching projects can switch kind.
+function applyPlatformUI(platform) {
+  const kind = (platform || 'android').toLowerCase() === 'web' ? 'web' : 'phone';
+  document.querySelectorAll('[data-platform]').forEach((el) => {
+    el.hidden = !el.dataset.platform.split(' ').includes(kind);
+  });
 }
 
 function drawOverlay() {
@@ -67,4 +84,4 @@ function ripple(px, py) {
 // Looks its own elements up rather than closing over `agentEl` / `agent`: this runs from
 // appendChat, which is reachable before those consts are initialised.
 
-export { chatLog, drawOverlay, overlayLayer, overlayToggle, phonePlaceholder, phoneScreen, ripple, setPhoneFrame };
+export { applyPlatformUI, chatLog, drawOverlay, overlayLayer, overlayToggle, phonePlaceholder, phoneScreen, ripple, setPhoneFrame };

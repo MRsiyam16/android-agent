@@ -61,6 +61,29 @@ WDA_BUNDLE_ID: str = os.environ.get(
 # launch to check the bundle id exists. Cached for this long.
 IOS_APP_LIST_TTL_SECONDS: float = float(os.environ.get("IOS_APP_LIST_TTL_SECONDS", 120))
 
+# --- Web / Playwright -----------------------------------------------------------
+# The web adapter drives a real Chromium tab via Playwright, launched on first use. Nothing
+# here is used unless a website target is actually selected, and importing `playwright` itself
+# is deferred to `device.create_device()` — a checkout with no Playwright installed still
+# starts fine for Android/iOS.
+#
+# Visible by default (not headless), matching this dashboard's own spirit of watching a run
+# happen live rather than being told about it afterwards. Set WEB_HEADLESS=true for CI-style
+# runs where nobody is watching.
+WEB_HEADLESS: bool = os.environ.get("WEB_HEADLESS", "false").lower() in ("1", "true", "yes")
+WEB_BROWSER_CHANNEL: str = os.environ.get("WEB_BROWSER_CHANNEL", "chromium")
+WEB_DEFAULT_VIEWPORT: tuple[int, int] = (
+    int(os.environ.get("WEB_VIEWPORT_W", 1280)), int(os.environ.get("WEB_VIEWPORT_H", 800)))
+
+# Breakpoints `check_responsive` sweeps when the agent doesn't name its own. Named after common
+# device classes rather than exact devices — nothing here claims to be a specific iPhone or iPad.
+WEB_BREAKPOINTS: dict[str, tuple[int, int]] = {
+    "mobile": (375, 812),
+    "tablet": (768, 1024),
+    "desktop": (1440, 900),
+}
+WEB_NAV_TIMEOUT_SECONDS: float = float(os.environ.get("WEB_NAV_TIMEOUT_SECONDS", 30))
+
 # --- Telemetry server ---------------------------------------------------------
 # Loopback by default, deliberately. /command is unauthenticated remote control of the
 # phone — arbitrary taps, launches and screenshots — so binding it to 0.0.0.0 hands anyone

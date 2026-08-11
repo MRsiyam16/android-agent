@@ -14,6 +14,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -33,6 +34,17 @@ router = APIRouter()
 sessions = agent_bridge.sessions
 
 
+def _platform_of(package: str) -> Optional[str]:
+    """This project's recorded platform, or None to fall back to shape-inference.
+
+    A web project's serial (a URL) has no shape `device.platform_of` can infer the way a UDID
+    identifies iOS, so every session for it must be built with `platform` explicit — this is
+    the one place that reads `meta.json` and hands it to `SessionRegistry`.
+    """
+    meta = projects.read_meta(package)
+    return (meta or {}).get("platform") if meta else None
+
+
 @router.get("/agent/status")
 async def agent_status():
     """Which sessions are live, busy, blocked on a question, or parked on a rate limit."""
@@ -50,17 +62,17 @@ async def prompt_presets():
     """The prewritten prompts the composer offers on an empty module.
 
     Kept beside `/agent/status` with the other fixed paths rather than down among the
-    `/agent/{package}/...` routes. Nothing currently claims two segments with a `{package}`
+    `/agent/{package:path}/...` routes. Nothing currently claims two segments with a `{package:path}`
     in the second position, so there is no live conflict — but "prompt-presets" is a
     perfectly good package name as far as the router is concerned, and grouping the literals
-    is what stops a later `/agent/{package}` from quietly capturing this one.
+    is what stops a later `/agent/{package:path}` from quietly capturing this one.
     """
     from agent.prompts import preset_prompts
 
     return {"presets": preset_prompts()}
 
 
-@router.post("/agent/{package}/{slug}/warm")
+@router.post("/agent/{package:path}/{slug}/warm")
 async def warm_agent(package: str, slug: str, payload: AgentTriggerPayload | None = None):
     """Spawn the module's Claude Code session now, without sending it anything.
 
@@ -72,17 +84,17 @@ async def warm_agent(package: str, slug: str, payload: AgentTriggerPayload | Non
     agent_store.set_last_opened(package, slug)
     serial = (payload.device_serial if payload else None) or state.device_serial()
     try:
-        return await sessions.warm(package, slug, serial=serial)
+        return await sessions.warm(package, slug, serial=serial, platform=_platform_of(package))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@router.get("/agent/{package}/subprojects")
+@router.get("/agent/{package:path}/subprojects")
 async def list_subprojects(package: str):
     return agent_store.list_subprojects(package)
 
 
-@router.post("/agent/{package}/subprojects")
+@router.post("/agent/{package:path}/subprojects")
 async def create_subproject(package: str, payload: SubprojectPayload):
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="title is required")
@@ -91,7 +103,7 @@ async def create_subproject(package: str, payload: SubprojectPayload):
                                          status="approved")
 
 
-@router.patch("/agent/{package}/subprojects/{slug}")
+@router.patch("/agent/{package:path}/subprojects/{slug}")
 async def patch_subproject(package: str, slug: str, payload: SubprojectUpdatePayload):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     entry = agent_store.update_subproject(package, slug, **updates)
@@ -102,7 +114,7 @@ async def patch_subproject(package: str, slug: str, payload: SubprojectUpdatePay
     return entry
 
 
-@router.delete("/agent/{package}/subprojects/{slug}")
+@router.delete("/agent/{package:path}/subprojects/{slug}")
 async def remove_subproject(package: str, slug: str):
     """Removes it from the list only. The transcript, findings and evidence stay on disk —
     a mis-click should not be able to destroy a test history."""
@@ -112,7 +124,7 @@ async def remove_subproject(package: str, slug: str):
     return {"ok": True, "note": "Folder kept on disk; only the listing entry was removed."}
 
 
-@router.get("/agent/{package}/{slug}/chat")
+@router.get("/agent/{package:path}/{slug}/chat")
 async def get_chat(package: str, slug: str, limit: int = 400):
     session = sessions.peek(package, slug)
     return {
@@ -124,7 +136,7 @@ async def get_chat(package: str, slug: str, limit: int = 400):
     }
 
 
-@router.post("/agent/{package}/{slug}/message")
+@router.post("/agent/{package:path}/{slug}/message")
 async def post_message(package: str, slug: str, payload: AgentMessagePayload):
     """Hand a message to the agent and return immediately."""
     if not payload.text.strip():
@@ -132,12 +144,12 @@ async def post_message(package: str, slug: str, payload: AgentMessagePayload):
     if agent_store.get_subproject(package, slug) is None:
         raise HTTPException(status_code=404, detail="Unknown sub-project — create it first")
     serial = payload.device_serial or state.device_serial()
-    session = sessions.get(package, slug, serial=serial)
+    session = sessions.get(package, slug, serial=serial, platform=_platform_of(package))
     asyncio.create_task(session.send(payload.text))
     return {"ok": True, "accepted": True}
 
 
-@router.post("/agent/{package}/{slug}/attachment")
+@router.post("/agent/{package:path}/{slug}/attachment")
 async def upload_attachment(package: str, slug: str, payload: AttachmentPayload):
     """Store an image the user attached to a chat message, and return its path.
 
@@ -176,7 +188,7 @@ async def upload_attachment(package: str, slug: str, payload: AttachmentPayload)
     return {"ok": True, "path": str(path)}
 
 
-@router.post("/agent/{package}/recon")
+@router.post("/agent/{package:path}/recon")
 async def start_recon(package: str, payload: AgentTriggerPayload | None = None):
     """Kick off the recon pass that proposes the module breakdown for a new project."""
     from agent.prompts import recon_prompt
@@ -185,12 +197,12 @@ async def start_recon(package: str, payload: AgentTriggerPayload | None = None):
                                   status="approved")
     projects.ensure_project(package)
     serial = (payload.device_serial if payload else None) or state.device_serial()
-    session = sessions.get(package, "recon", serial=serial)
+    session = sessions.get(package, "recon", serial=serial, platform=_platform_of(package))
     asyncio.create_task(session.send(recon_prompt()))
     return {"ok": True, "slug": "recon"}
 
 
-@router.post("/agent/{package}/main")
+@router.post("/agent/{package:path}/main")
 async def start_main(package: str, payload: AgentTriggerPayload | None = None):
     """Create the project's manager module and start it on the setup interview.
 
@@ -216,12 +228,12 @@ async def start_main(package: str, payload: AgentTriggerPayload | None = None):
         status="approved")
     projects.ensure_project(package)
     serial = (payload.device_serial if payload else None) or state.device_serial()
-    session = sessions.get(package, slug, serial=serial)
+    session = sessions.get(package, slug, serial=serial, platform=_platform_of(package))
     asyncio.create_task(session.send(onboarding_prompt(package)))
     return {"ok": True, "slug": slug}
 
 
-@router.post("/agent/{package}/onboarding")
+@router.post("/agent/{package:path}/onboarding")
 async def start_onboarding(package: str, payload: AgentTriggerPayload | None = None):
     """What `/main` used to be called, kept because a stale browser tab still posts it.
 
@@ -238,7 +250,7 @@ async def start_onboarding(package: str, payload: AgentTriggerPayload | None = N
     return await start_main(package, payload)
 
 
-@router.post("/agent/{package}/{slug}/stop")
+@router.post("/agent/{package:path}/{slug}/stop")
 async def stop_agent(package: str, slug: str):
     session = sessions.peek(package, slug)
     if session is None:
@@ -250,7 +262,7 @@ async def stop_agent(package: str, slug: str):
     return {"ok": True, "stopped": stopped}
 
 
-@router.get("/agent/{package}/{slug}/models")
+@router.get("/agent/{package:path}/{slug}/models")
 async def list_models(package: str, slug: str):
     """Models this CLI can run, and which one this module is on.
 
@@ -265,12 +277,12 @@ async def list_models(package: str, slug: str):
             "requested": session.requested_model}
 
 
-@router.post("/agent/{package}/{slug}/model")
+@router.post("/agent/{package:path}/{slug}/model")
 async def set_model(package: str, slug: str, payload: ModelPayload):
     """Move a module onto a different model. Reconnects, resuming the conversation."""
     if agent_store.get_subproject(package, slug) is None:
         raise HTTPException(status_code=404, detail="Unknown sub-project")
-    session = sessions.get(package, slug)
+    session = sessions.get(package, slug, platform=_platform_of(package))
     try:
         return await session.set_model(payload.model)
     except RuntimeError as exc:
@@ -279,12 +291,12 @@ async def set_model(package: str, slug: str, payload: ModelPayload):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@router.get("/agent/{package}/{slug}/findings")
+@router.get("/agent/{package:path}/{slug}/findings")
 async def get_findings(package: str, slug: str):
     return agent_store.list_findings(package, slug)
 
 
-@router.post("/agent/{package}/secrets")
+@router.post("/agent/{package:path}/secrets")
 async def put_secret(package: str, payload: SecretPayload):
     """Store a test credential. Values are write-only over the API: the response lists names
     only, and the agent enters one via a tool without it ever entering the transcript."""
@@ -294,7 +306,7 @@ async def put_secret(package: str, payload: SecretPayload):
     return {"ok": True, "names": agent_store.secret_keys(package)}
 
 
-@router.get("/agent/{package}/secrets")
+@router.get("/agent/{package:path}/secrets")
 async def list_secrets(package: str):
     return {"names": agent_store.secret_keys(package)}
 

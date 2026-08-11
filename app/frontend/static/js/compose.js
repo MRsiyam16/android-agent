@@ -118,15 +118,87 @@ function appendChatImage(src) {
 async function sendCommand(command) {
   appendChat('cmd', '/' + command);
   try {
+    // package/slug let the server reuse the module's own live device (see
+    // backend/routes/device.py's `_resolve_for_project`) instead of resolving a fresh one —
+    // for a website this is the difference between driving the browser actually on screen
+    // and popping open a second, disconnected one.
     const data = await agentFetch('/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command }),
+      body: JSON.stringify({ command, package: agent.package, slug: agent.slug }),
     });
     appendChat('ok', 'Executed: ' + data.command);
     if (data.screenshot_b64) setPhoneFrame(data.screenshot_b64);
   } catch (err) {
     appendChat('error', err.message);
+  }
+}
+
+// -- Web-only: viewport resize + responsive sweep ------------------------------------------
+const VIEWPORT_PRESETS = { mobile: [375, 812], tablet: [768, 1024], desktop: [1440, 900] };
+
+function currentViewportSize() {
+  const preset = document.getElementById('viewportPreset').value;
+  if (preset !== 'custom') return VIEWPORT_PRESETS[preset];
+  const w = parseInt(document.getElementById('viewportCustomW').value, 10);
+  const h = parseInt(document.getElementById('viewportCustomH').value, 10);
+  return (w > 0 && h > 0) ? [w, h] : null;
+}
+
+async function applyViewport() {
+  const size = currentViewportSize();
+  if (!size) { appendChat('error', 'Enter a custom width and height first.'); return; }
+  const [width, height] = size;
+  try {
+    const data = await agentFetch('/device/viewport', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ package: agent.package, slug: agent.slug, width, height }),
+    });
+    appendChat('ok', `Viewport resized to ${data.width}×${data.height}.`);
+    if (data.screenshot_b64) setPhoneFrame(data.screenshot_b64, { w: data.width, h: data.height });
+  } catch (err) {
+    appendChat('error', err.message);
+  }
+}
+
+function renderResponsiveSweepResults(breakpoints) {
+  const el = document.getElementById('responsiveSweepResults');
+  if (!breakpoints || !breakpoints.length) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = breakpoints.map((bp) => {
+    const issues = bp.issues && bp.issues.length
+      ? `<ul>${bp.issues.map((i) => `<li>${i}</li>`).join('')}</ul>`
+      : '<div class="sweep-ok">No overflow or off-screen elements detected.</div>';
+    const shot = bp.screenshot_b64
+      ? `<img src="data:image/jpeg;base64,${bp.screenshot_b64}" alt="${bp.name} screenshot">`
+      : '';
+    return `<div class="sweep-breakpoint">
+      <div class="sweep-breakpoint-head">${bp.name} · ${bp.width}×${bp.height}</div>
+      ${shot}${issues}
+    </div>`;
+  }).join('');
+}
+
+async function runResponsiveSweep() {
+  const btn = document.getElementById('responsiveSweepBtn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Sweeping…';
+  try {
+    const data = await agentFetch('/device/responsive-sweep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ package: agent.package, slug: agent.slug }),
+    });
+    renderResponsiveSweepResults(data.breakpoints);
+    appendChat('ok', `Responsive sweep done — see the results panel below the device. Ask `
+      + `the agent to confirm and file any real issue with a screenshot.`);
+  } catch (err) {
+    appendChat('error', err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 
@@ -180,4 +252,4 @@ function initAgent() {
   }).catch(() => {});
 }
 
-export { initComposerAttachments, appendChatImage, initAgent, loadSecretNames, refreshFrame, sendCommand, sendToAgent, stageImage, uploadAttachments };
+export { applyViewport, initComposerAttachments, appendChatImage, initAgent, loadSecretNames, refreshFrame, runResponsiveSweep, sendCommand, sendToAgent, stageImage, uploadAttachments };

@@ -347,15 +347,31 @@
             </div>
           </div>
           <div class="phone-actions">
-            <button class="chip-btn" data-cmd="back">← Back</button>
-            <button class="chip-btn" data-cmd="home">● Home</button>
+            <button class="chip-btn" data-cmd="back" data-platform="phone web">← Back</button>
+            <button class="chip-btn" data-cmd="home" data-platform="phone">● Home</button>
+            <button class="chip-btn" data-cmd="reload" data-platform="web" hidden>⟲ Reload</button>
             <button class="chip-btn" id="refreshFrameBtn" title="Re-fetch the screen and re-check its orientation — use this after rotating the device">⟳ Refresh</button>
+          </div>
+          <!-- Website-only: resizing the actual browser viewport, not a CSS trick — this is
+               what a responsive check needs, and what check_responsive sweeps automatically. -->
+          <div class="phone-actions" id="webViewportRow" data-platform="web" hidden>
+            <select id="viewportPreset" class="viewport-select" title="Resize the browser viewport">
+              <option value="mobile">Mobile · 375×812</option>
+              <option value="tablet">Tablet · 768×1024</option>
+              <option value="desktop" selected>Desktop · 1440×900</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input type="number" id="viewportCustomW" class="viewport-custom" placeholder="width" hidden>
+            <input type="number" id="viewportCustomH" class="viewport-custom" placeholder="height" hidden>
+            <button class="chip-btn" id="applyViewportBtn">Resize</button>
+            <button class="chip-btn" id="responsiveSweepBtn" title="Check mobile/tablet/desktop breakpoints for layout issues">⤢ Responsive sweep</button>
           </div>
           <div class="phone-actions">
             <label class="chip-toggle"><input type="checkbox" id="overlayToggle" checked> Element bounds</label>
             <label class="chip-toggle"><input type="checkbox" id="liveFrameToggle" checked> Follow live</label>
             <label class="chip-toggle"><input type="checkbox" id="traceToggle" checked> Tool trace</label>
           </div>
+          <div class="responsive-sweep-results" id="responsiveSweepResults" hidden></div>
           <!-- Model, auth and taps·shots moved to the top bar, where they stay visible with
                this block collapsed. Only the cheap-tier spend stays, because it is the one
                number here that is off by default and worth seeing next to the device. -->
@@ -444,7 +460,13 @@
       One project per app. Everything the agent produces for it — screenshots, findings,
       per-module memory and the flow graph — is written into the folder you choose.
     </div>
-    <label class="sheet-label" for="newProjectPackage">App package</label>
+    <label class="sheet-label" for="newProjectPlatform">Platform</label>
+    <select id="newProjectPlatform" class="sheet-input">
+      <option value="android" selected>Android</option>
+      <option value="ios">iPhone or iPad</option>
+      <option value="web">Website</option>
+    </select>
+    <label class="sheet-label" for="newProjectPackage" id="newProjectPackageLabel">App package</label>
     <input type="text" id="newProjectPackage" class="sheet-input" placeholder="com.example.app" autocomplete="off">
     <label class="sheet-label" for="newProjectRoot">Project folder</label>
     <div class="sheet-row">

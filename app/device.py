@@ -20,6 +20,7 @@ logger = logging.getLogger("device")
 
 ANDROID = "android"
 IOS = "ios"
+WEB = "web"
 
 
 @runtime_checkable
@@ -65,13 +66,19 @@ class Device(Protocol):
 #
 #   DEEPLINK      launch straight to a screen via a URL. Android: `am start -d`. iOS: no —
 #                 the launch API takes a bundle id, and a URL scheme is rejected as one.
+#                 Web: no — `launch` navigates by URL already, so there is no separate
+#                 deep-link path to flag as present or absent.
 #   CLEAR_DATA    drop persisted app data. Android: `pm clear`. iOS: no equivalent at all.
+#                 Web: yes — cookies and local/session storage, genuinely supported.
 #   LIVE_LOG      stream a running log. Android: logcat. iOS: crash reports only, written
-#                 asynchronously seconds after the fact.
-#   RECENTS       open the app switcher. Android: yes. iOS: not reachable via XCUITest.
+#                 asynchronously seconds after the fact. Web has its own analogue (console
+#                 errors, synchronous) but it is different enough in shape to leave unflagged.
+#   RECENTS       open the app switcher. Android: yes. iOS: not reachable via XCUITest. Web:
+#                 no such concept in a single browser tab.
 CAPABILITIES: dict[str, frozenset[str]] = {
     ANDROID: frozenset({"DEEPLINK", "CLEAR_DATA", "LIVE_LOG", "RECENTS"}),
     IOS: frozenset(),
+    WEB: frozenset({"CLEAR_DATA"}),
 }
 
 _UDID_RE = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$|^[0-9A-Fa-f]{40}$")
@@ -114,11 +121,15 @@ def platform_from_serial(serial: Optional[str]) -> Optional[str]:
 def platform_from_dump(xml: str) -> str:
     """Which platform produced a dump.
 
-    `ios_device.dump_xml` stamps `platform="ios"` on the root element, so a reader holding
-    nothing but the string can still branch — no device, no session, no subprocess. Anything
-    unstamped is Android, which keeps every existing captured dump in `tests/` correct.
+    `ios_device.dump_xml` stamps `platform="ios"` on the root element and `web_device.dump_xml`
+    stamps `platform="web"`, so a reader holding nothing but the string can still branch — no
+    device, no session, no subprocess. Anything unstamped is Android, which keeps every
+    existing captured dump in `tests/` correct.
     """
-    return IOS if 'platform="ios"' in (xml or "")[:200] else ANDROID
+    head = (xml or "")[:200]
+    if 'platform="web"' in head:
+        return WEB
+    return IOS if 'platform="ios"' in head else ANDROID
 
 
 def _ios_serials() -> list[str]:
@@ -136,9 +147,15 @@ def create_device(serial: Optional[str] = None,
 
     `platform` wins when given — pass it when the caller already knows, so a phone that is
     unplugged at this exact moment produces a clear connection error rather than being
-    misrouted to the other adapter and a confusing one.
+    misrouted to the other adapter and a confusing one. This is not optional for web: a URL has
+    no shape `platform_of()` can infer the way a UDID's shape identifies iOS, so a web target
+    must always arrive with `platform="web"` explicit (see backend/projects.py's `platform`
+    field) rather than being guessed here.
     """
     resolved = (platform or platform_of(serial)).lower()
+    if resolved == WEB:
+        import web_device
+        return web_device.WebDevice(serial)
     if resolved == IOS:
         import ios_device
         return ios_device.IOSDevice(serial)
@@ -177,7 +194,10 @@ def detect_toolkit(xml: str) -> str:
 
     Keeps the toolkit readers pure functions over a string, testable from a captured dump.
     """
-    if platform_from_dump(xml) == IOS:
+    platform = platform_from_dump(xml)
+    if platform == WEB:
+        return "web"
+    if platform == IOS:
         import ios_device
         return ios_device.detect_toolkit(xml)
     return adb_device.detect_toolkit(xml)

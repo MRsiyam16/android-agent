@@ -4,7 +4,17 @@ import { agent, agentEl, agentFetch, appendChat, loadModelPicker } from './chat.
 import { loadSecretNames } from './compose.js';
 import { warmModule } from './main.js';
 import { refreshOutcomes } from './outcomes.js';
+import { applyPlatformUI } from './phone.js';
 import { loadTranscript } from './transcript.js';
+
+// package -> "android" | "ios" | "web", refreshed every time the project list loads.
+// main.js's project-select handler reads this too, so it lives here rather than as a local —
+// the project list is the one source of truth for a project's platform.
+const projectPlatforms = new Map();
+
+function platformOf(pkg) {
+  return projectPlatforms.get(pkg) || 'android';
+}
 
 async function loadAgentProjects() {
   let projects = [];
@@ -22,16 +32,20 @@ async function loadAgentProjects() {
     agentEl.project.appendChild(opt);
     return;
   }
+  projectPlatforms.clear();
   projects.forEach((p) => {
     const opt = document.createElement('option');
     opt.value = p.package;
     opt.textContent = p.package;
     agentEl.project.appendChild(opt);
+    projectPlatforms.set(p.package, (p.platform || 'android').toLowerCase());
   });
   agent.package = agent.package && projects.some((p) => p.package === agent.package)
     ? agent.package
     : projects[0].package;
   agentEl.project.value = agent.package;
+  agent.platform = platformOf(agent.package);
+  applyPlatformUI(agent.platform);
   await loadModules();
 }
 
@@ -326,4 +340,4 @@ const OUTCOME_KINDS = {
 // declaration runs, and refreshOutcomes is reachable from startup paths.
 
 
-export { MAIN_SLUGS, OUTCOME_KINDS, closeModuleMenu, closeModuleSheet, deleteModule, editingModule, isMainModule, loadAgentProjects, loadModules, moduleBackdrop, moduleBadges, moduleSheetName, moduleSheetScope, openMenuEl, openModuleMenu, openModuleSheet, renderModuleHighlight, selectModule, setModuleStatus };
+export { MAIN_SLUGS, OUTCOME_KINDS, closeModuleMenu, closeModuleSheet, deleteModule, editingModule, isMainModule, loadAgentProjects, loadModules, moduleBackdrop, moduleBadges, moduleSheetName, moduleSheetScope, openMenuEl, openModuleMenu, openModuleSheet, platformOf, projectPlatforms, renderModuleHighlight, selectModule, setModuleStatus };

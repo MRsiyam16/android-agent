@@ -97,12 +97,12 @@ class AgentSession:
     """A conversation with one module's tester."""
 
     def __init__(self, package: str, slug: str, emit: Emit,
-                 serial: Optional[str] = None):
+                 serial: Optional[str] = None, platform: Optional[str] = None):
         self.package = package
         self.slug = slug
         self.emit = emit
         self.stepper = Stepper()
-        self.device = DeviceSession(package, slug, serial=serial, emit=emit)
+        self.device = DeviceSession(package, slug, serial=serial, platform=platform, emit=emit)
 
         self._client: Optional[ClaudeSDKClient] = None
         self._lock = asyncio.Lock()
@@ -144,8 +144,14 @@ class AgentSession:
         # The same is true in reverse — a tool the prompt says it does not have, sitting in the
         # tool definitions, is an invitation to reach for it.
         manager = store.is_main_slug(self.slug)
-        allowed = ((device_tools.MANAGER_DEVICE_TOOL_NAMES if manager
-                    else device_tools.DEVICE_TOOL_NAMES) + FILE_TOOLS)
+        is_web = self.device.resolved_platform == "web"
+        if manager:
+            names = (device_tools.MANAGER_WEB_DEVICE_TOOL_NAMES if is_web
+                     else device_tools.MANAGER_DEVICE_TOOL_NAMES)
+        else:
+            names = (device_tools.WEB_DEVICE_TOOL_NAMES if is_web
+                     else device_tools.DEVICE_TOOL_NAMES)
+        allowed = names + FILE_TOOLS
         mcp_servers: dict[str, Any] = {
             "device": build_device_server(self.device, can_file_findings=not manager)}
         if config.AGENT_USE_CHEAP_TIER:
@@ -558,10 +564,12 @@ class SessionRegistry:
         self.emit = emit
         self._sessions: dict[tuple[str, str], AgentSession] = {}
 
-    def get(self, package: str, slug: str, serial: Optional[str] = None) -> AgentSession:
+    def get(self, package: str, slug: str, serial: Optional[str] = None,
+            platform: Optional[str] = None) -> AgentSession:
         key = (package, slug)
         if key not in self._sessions:
-            self._sessions[key] = AgentSession(package, slug, self.emit, serial=serial)
+            self._sessions[key] = AgentSession(
+                package, slug, self.emit, serial=serial, platform=platform)
         return self._sessions[key]
 
     def peek(self, package: str, slug: str) -> Optional[AgentSession]:
@@ -588,6 +596,6 @@ class SessionRegistry:
                  "stepper_cost_usd": round(sess.stepper.cost_usd, 4)}
                 for (p, s), sess in self._sessions.items()]
 
-    async def warm(self, package: str, slug: str,
-                   serial: Optional[str] = None) -> dict[str, Any]:
-        return await self.get(package, slug, serial=serial).warm()
+    async def warm(self, package: str, slug: str, serial: Optional[str] = None,
+                   platform: Optional[str] = None) -> dict[str, Any]:
+        return await self.get(package, slug, serial=serial, platform=platform).warm()

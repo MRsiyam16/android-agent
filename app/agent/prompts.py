@@ -96,15 +96,61 @@ launch API takes a bundle id, and a URL scheme is rejected), so reach screens by
 launcher package does on Android."""
 
 
+# Appended to the traps above when the module under test is a website. Kept separate for the
+# same reason as the iPhone block: some of these differ from the phone rules (there is no
+# "another app's overlay eating your taps" trap here, but there is a genuinely new one — a
+# cross-origin iframe reading as a different package is *correct*, not the false-positive
+# pattern the "another package owns the screen" guard exists to catch on a phone).
+_WEB_DEVICE_TRAPS = """\
+
+# Website: where the rules above change
+
+You are driving a real Chromium tab through Playwright, not a phone. The core loop is
+unchanged — read, act, read again — but the device itself differs in a few load-bearing ways:
+
+* **A cross-origin iframe owning part of the screen is expected, not a bug.** A payment
+  widget or an embedded ad genuinely runs under a different origin, so `read_screen` reporting
+  "another package owns the screen" there is the harness working correctly, not the false
+  positive that same warning catches on a phone's floating overlay. Judge it by what is
+  actually on screen, not by the warning alone.
+* **Console errors are synchronous, not delayed.** Unlike an iPhone's crash reports (written
+  seconds after the fact), `check_crash` on a website surfaces a JS exception or a logged
+  error the moment it happens — an empty result immediately after a suspicious action is
+  stronger evidence of "no error" here than the equivalent check is on iOS.
+* **There is no install, no home screen, no app switcher.** `launch` always succeeds in
+  attempting a navigation — a bad URL fails inside that navigation itself, not before it —
+  and `press("home")` / `press("recent")` raise rather than doing something misleading.
+* **Closed shadow DOM and content behind a login you have no credential for are both
+  invisible**, the same honest gap as an iOS surface that draws its own controls: screenshot
+  before concluding a control does not exist.
+* **A responsive layout bug needs `check_responsive`, not a guess from one viewport.** If the
+  brief mentions phone/tablet/desktop behaviour, sweep breakpoints with that tool and confirm
+  each candidate issue by reading its screenshot before filing it — it reports candidates, not
+  verdicts."""
+
+
 def _device_traps(platform: str) -> str:
-    """The traps section for a platform: shared rules, plus the iPhone deltas if relevant."""
-    if (platform or "").lower() == "ios":
+    """The traps section for a platform: shared rules, plus the platform-specific deltas."""
+    platform = (platform or "").lower()
+    if platform == "ios":
         return _DEVICE_TRAPS + "\n" + _IOS_DEVICE_TRAPS
+    if platform == "web":
+        return _DEVICE_TRAPS + "\n" + _WEB_DEVICE_TRAPS
     return _DEVICE_TRAPS
 
 
+def _device_kind(platform: str) -> str:
+    """How to name the thing being driven, for the prompt's opening line."""
+    platform = (platform or "").lower()
+    if platform == "ios":
+        return "a real iPhone through WebDriverAgent"
+    if platform == "web":
+        return "a real website through a Chromium browser"
+    return "a real Android phone over ADB"
+
+
 CORE = """\
-You are the testing agent inside QA Tester AI. You drive a real Android phone over ADB to
+You are the testing agent inside QA Tester AI. You drive {device_kind} to
 test an app, and you report what you actually observe.
 
 # How you work
@@ -278,7 +324,7 @@ def _cost_section() -> str:
 # --------------------------------------------------------------------------------------
 MANAGER_CORE = """\
 You are the manager module inside QA Tester AI, and you are what a project starts with. The
-app under test is on a real Android phone reached over ADB. Every other module here is a test
+app under test is on {device_kind}. Every other module here is a test
 suite for one part of that app, with its own conversation, its own memory and its own
 findings; you own the list of them.
 
@@ -371,7 +417,8 @@ def build_manager_prompt(package: str, slug: str, platform: str = "android") -> 
     """The manager module's core rules, with the device traps and cost guidance filled in."""
     return MANAGER_CORE.format(memory_path=store.memory_path(package, slug),
                                cost_section=_cost_section(),
-                               device_traps=_device_traps(platform))
+                               device_traps=_device_traps(platform),
+                               device_kind=_device_kind(platform))
 
 
 def build_system_prompt(package: str, slug: str, title: str, scope: str,
@@ -389,7 +436,8 @@ def build_system_prompt(package: str, slug: str, title: str, scope: str,
     core = (build_manager_prompt(package, slug, platform) if store.is_main_slug(slug)
             else CORE.format(memory_path=store.memory_path(package, slug),
                              cost_section=_cost_section(),
-                             device_traps=_device_traps(platform)))
+                             device_traps=_device_traps(platform),
+                             device_kind=_device_kind(platform)))
     parts = [core]
 
     try:

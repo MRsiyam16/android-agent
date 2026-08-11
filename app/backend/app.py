@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from agent import store as agent_store
 
-from . import agent_bridge
+from . import agent_bridge, projects
 from .paths import STATIC_DIR
 from .routes import agent as agent_routes
 from .routes import device as device_routes
@@ -58,7 +58,9 @@ def create_app() -> FastAPI:
 
         async def _warm() -> None:
             try:
-                result = await agent_bridge.sessions.warm(target["package"], target["slug"])
+                meta = projects.read_meta(target["package"]) or {}
+                result = await agent_bridge.sessions.warm(
+                    target["package"], target["slug"], platform=meta.get("platform"))
                 logger.info("pre-warmed agent session for %s/%s (model=%s)",
                             target["package"], target["slug"], result.get("model"))
             except Exception as exc:  # noqa: BLE001

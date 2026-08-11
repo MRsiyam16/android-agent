@@ -330,12 +330,33 @@ if (saveProjectBtn) {
 // required, so pressing it with an empty field did nothing at all and read as broken.
 // It is now a dialog that asks for both things it needs.
 const newProjectSheet = document.getElementById('newProjectBackdrop');
+const newProjectPlatform = document.getElementById('newProjectPlatform');
 const newProjectPackage = document.getElementById('newProjectPackage');
+const newProjectPackageLabel = document.getElementById('newProjectPackageLabel');
 const newProjectRoot = document.getElementById('newProjectRoot');
 const newProjectNote = document.getElementById('newProjectNote');
 const NEW_PROJECT_NOTE = newProjectNote.innerHTML;
 
+// What "package" means, and its placeholder, change with the platform — a website has no
+// package/bundle id, it has a URL. Reuses the one field rather than adding a second, the
+// same way DeviceSession already shares `package` between an Android package and an iOS
+// bundle id (see agent/device_tools.py).
+const PACKAGE_FIELD_BY_PLATFORM = {
+  android: { label: 'App package', placeholder: 'com.example.app' },
+  ios: { label: 'Bundle id', placeholder: 'com.example.app' },
+  web: { label: 'Website URL', placeholder: 'https://example.com' },
+};
+
+function applyNewProjectPlatform() {
+  const spec = PACKAGE_FIELD_BY_PLATFORM[newProjectPlatform.value] || PACKAGE_FIELD_BY_PLATFORM.android;
+  newProjectPackageLabel.textContent = spec.label;
+  newProjectPackage.placeholder = spec.placeholder;
+}
+newProjectPlatform.addEventListener('change', applyNewProjectPlatform);
+
 function openNewProjectSheet() {
+  newProjectPlatform.value = 'android';
+  applyNewProjectPlatform();
   newProjectPackage.value = '';
   newProjectRoot.value = '';
   newProjectNote.innerHTML = NEW_PROJECT_NOTE;
@@ -374,15 +395,17 @@ document.getElementById('newProjectBrowse').addEventListener('click', async () =
 });
 
 document.getElementById('newProjectCreate').addEventListener('click', async () => {
+  const platform = newProjectPlatform.value;
   const pkg = newProjectPackage.value.trim();
   if (!pkg) {
-    newProjectNote.textContent = 'An app package is required, e.g. com.example.app.';
+    const spec = PACKAGE_FIELD_BY_PLATFORM[platform] || PACKAGE_FIELD_BY_PLATFORM.android;
+    newProjectNote.textContent = `${spec.label} is required, e.g. ${spec.placeholder}.`;
     newProjectNote.classList.add('error');
     newProjectPackage.focus();
     return;
   }
   try {
-    const body = { package: pkg };
+    const body = { package: pkg, platform };
     if (newProjectRoot.value.trim()) body.root = newProjectRoot.value.trim();
     const resp = await fetch('/projects', {
       method: 'POST',

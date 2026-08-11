@@ -74,6 +74,10 @@ const agent = {
   ready: false,
   package: null,
   slug: null,
+  // "android" | "ios" | "web" — which device-frame chrome and controls apply. Kept in sync
+  // with the project list's own `platform` field (see modules.js's `projectPlatforms` map)
+  // whenever the selected project changes.
+  platform: 'android',
   busy: false,
   taps: 0,
   shots: 0,
