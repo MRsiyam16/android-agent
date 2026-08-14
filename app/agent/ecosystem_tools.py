@@ -101,22 +101,13 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
           "reasoning from what you remember, because modules run between your turns.",
           {"type": "object", "properties": {}, "additionalProperties": False})
     async def list_apps(_args: dict[str, Any]) -> dict[str, Any]:
-        members = await asyncio.to_thread(ecosystem_mod.members, name)
-        if not members:
+        apps = await asyncio.to_thread(ecosystem_mod.app_index, name)
+        if not apps:
             return _ok(f"No project is tagged into {name!r} yet.")
-        index = await asyncio.to_thread(ecosystem_mod.module_index, name)
-        lines = []
-        for member in members:
-            mods = [m for m in index if m["package"] == member["package"]]
-            tested = sum(1 for m in mods if m["status"] == "tested")
-            tally = {k: 0 for k in _KIND_ORDER}
-            for mod in mods:
-                for kind, n in mod["counts"].items():
-                    tally[kind] = tally.get(kind, 0) + n
-            lines.append(
-                f"{member['role']}  ({member['package']})  |  {member['platform']}  |  "
-                f"{len(mods)} modules, {tested} tested  |  {_tally_line(tally)}")
-        return _ok("\n".join(lines))
+        return _ok("\n".join(
+            f"{app['role']}  ({app['package']})  |  {app['platform']}  |  "
+            f"{app['modules']} modules, {app['modules_tested']} tested  |  "
+            f"{_tally_line(app['counts'])}" for app in apps))
 
     @tool("read_app",
           "One app's modules: status, scope, and what each has filed. Use it to see what an "
@@ -375,19 +366,12 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                        f"exist — the distinct count may be wrong until they are fixed.")
             out.append("")
 
-        members = await asyncio.to_thread(ecosystem_mod.members, name)
-        index = await asyncio.to_thread(ecosystem_mod.module_index, name)
+        apps = await asyncio.to_thread(ecosystem_mod.app_index, name)
         out.append("## Per app")
-        for member in members:
-            mods = [m for m in index if m["package"] == member["package"]]
-            tally = {k: 0 for k in _KIND_ORDER}
-            for mod in mods:
-                for kind, n in mod["counts"].items():
-                    tally[kind] = tally.get(kind, 0) + n
-            untested = [m["slug"] for m in mods
-                        if m["status"] != "tested" and not store.is_main_slug(m["slug"])]
-            out.append(f"{member['role']}: {_tally_line(tally)}"
-                       + (f"  ({len(untested)} module(s) not yet tested)" if untested else ""))
+        for app in apps:
+            untested = len(app["untested"])
+            out.append(f"{app['role']}: {_tally_line(app['counts'])}"
+                       + (f"  ({untested} module(s) not yet tested)" if untested else ""))
 
         cross = [c for c in rows if c["scope"] == "cross-app"]
         out += ["", f"## Cross-app defects ({len(cross)}) — no single project could see these"]

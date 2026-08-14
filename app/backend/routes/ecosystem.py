@@ -55,8 +55,36 @@ async def get_ecosystem(name: str):
     members = ecosystem_mod.members(name)
     if not members:
         raise HTTPException(status_code=404, detail=f"No ecosystem named {name!r}")
-    return {"name": name, "members": members, **ecosystem_mod.summary(name),
-            "clusters": clusters_mod.summary(name)}
+    return {"name": name, "members": members,
+            # `members` omits the supervisor, so anything that wants to talk to the manager
+            # cannot find it there. Named explicitly rather than left to the caller to guess.
+            "supervisor": ecosystem_mod.supervisor(name),
+            **ecosystem_mod.summary(name), "clusters": clusters_mod.summary(name)}
+
+
+@router.get("/ecosystems/{name}/board")
+async def get_board(name: str):
+    """Everything the manager dashboard's landing view shows, in one request.
+
+    Four round-trips (apps, totals, clusters, unclustered) rendered as one board is four
+    chances for the page to draw a total that disagrees with the rows under it, because each
+    reads the findings on disk at a different moment while a module is filing. One call, one
+    read, one consistent picture.
+    """
+    apps = ecosystem_mod.app_index(name)
+    if not apps:
+        raise HTTPException(status_code=404, detail=f"No ecosystem named {name!r}")
+    rows = clusters_mod.list_clusters(name)
+    unclustered = [f for f in ecosystem_mod.findings(name) if not f.get("cluster")]
+    return {
+        "name": name,
+        "supervisor": ecosystem_mod.supervisor(name),
+        "apps": apps,
+        "totals": ecosystem_mod.summary(name),
+        "clusters": clusters_mod.summary(name),
+        "cross_app": [c for c in rows if c["scope"] == "cross-app"],
+        "unclustered": len(unclustered),
+    }
 
 
 @router.get("/ecosystems/{name}/modules")

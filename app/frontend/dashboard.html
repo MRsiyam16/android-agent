@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="/static/css/graph.css?v=21">
 <link rel="stylesheet" href="/static/css/notes.css?v=21">
 <link rel="stylesheet" href="/static/css/agent.css?v=21">
-<link rel="stylesheet" href="/static/css/panels.css?v=24">
+<link rel="stylesheet" href="/static/css/panels.css?v=25">
 </head>
 <body>
 
@@ -69,17 +69,19 @@
       </button>
 
       <!--
-        The same claim one level up. The pills to the left describe the open project; this
-        describes the product it belongs to, where five apps share one backend and the same
-        defect gets filed once per app by agents that cannot see each other. It counts
-        *distinct* defects, not filed ones, because the whole point is that those differ.
-        Hidden until a project is tagged into an ecosystem, so a single-app install never
-        sees a control that would always read zero.
+        The one fact about the wider product that changes how you read this page: some of what
+        this app filed was also filed by another app, so it is not this app's bug to chase
+        alone. Everything else about the product — the app cards, the clusters, the manager
+        you can talk to — is on /manager, which this links to. A view across five apps was
+        only ever a sheet bolted over a workspace built around one.
+
+        Hidden until the open project is tagged into an ecosystem, so a single-app install
+        never sees a control that would always read zero.
       -->
       <div class="divider" id="ecosystemDivider"></div>
-      <button class="outcome-pill kind-ecosystem" id="ecosystemPill" hidden title="Defects across the whole product">
-        <span class="dot"></span> Distinct <span class="count" id="ecosystemCount">0</span>
-      </button>
+      <a class="outcome-pill kind-ecosystem" id="ecosystemPill" href="/manager" hidden>
+        <span class="dot"></span> <span id="ecosystemLabel">Cross-app</span> <span class="count" id="ecosystemCount">0</span>
+      </a>
     </div>
 
     <div class="topbar-right">
@@ -528,17 +530,7 @@
   </div>
 </div>
 
-<!-- ECOSYSTEM — findings from different apps that turned out to be one defect -->
-<div class="sheet-backdrop" id="ecosystemBackdrop">
-  <div class="sheet sheet-wide">
-    <div class="sheet-head-row">
-      <div class="sheet-title">Across the product</div>
-      <button type="button" class="sheet-close" id="ecosystemClose">✕</button>
-    </div>
-    <div class="sheet-sub" id="ecosystemSub"></div>
-    <div class="outcome-list" id="ecosystemList"></div>
-  </div>
-</div>
+<!-- The ecosystem sheet that used to be here now has a page of its own at /manager. -->
 
 <!-- SCREENSHOT LIGHTBOX -->
 <div class="shot-lightbox" id="shotLightbox"><img id="shotLightboxImg" alt="Screenshot"></div>

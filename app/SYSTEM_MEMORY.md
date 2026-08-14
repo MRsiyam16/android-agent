@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **124** · last updated: 2026-08-14T03:39:37+00:00
+Runs recorded: **130** · last updated: 2026-08-14T13:42:17+00:00
 
 ## Environment
 
@@ -27,7 +27,7 @@ the wrong screen, which downstream becomes a false defect.
 |---|---|---|---|---|
 | `launch_settle.ios-native` | 40 | 0.2s | 2.1s | **0.4s** |
 | `launch_settle.native` | 40 | 1.2s | 1.3s | **1.6s** |
-| `launch_settle.web` | 30 | 2.6s | 4.6s | **5.1s** |
+| `launch_settle.web` | 31 | 3.0s | 4.6s | **5.1s** |
 
 ## Operating lessons
 
@@ -43,12 +43,16 @@ the wrong screen, which downstream becomes a false defect.
   - _evidence:_ In the metaesthetics-staging.web.app project's main/manager module, four consecutive search_issues calls with different query strings ('metaesthetics-staging clinic onboarding', 'Cancel Registration account not removed', 'bug', 'login') all raised internal errors instead of returning results.
 - **credential-value-is-note-not-login** (seen once) — Before trusting a stored credential's use_credential output, sanity-check what actually lands in the field (read_screen after use) — a credential entry can be stored with a plain-text note (e.g. a status comment about the account) in place of a real email/password, and use_credential will type that same literal string into whichever field is focused with no error. On metaesthetics-staging.web.app, 'test-clinic-account' typed the literal text "Signup & Login already made a new clinic" into both the email and password fields.
   - _evidence:_ tap email field -> use_credential('test-clinic-account') -> field shows "Signup & Login already made a new clinic"; tap password field -> use_credential('test-clinic-account') again -> same literal string typed there too. Not a valid email or password in either case.
+- **record-finding-add-note-param-is-kind** (seen once) — record_finding's verdict-type parameter is named `kind` (values: pass/warning/bug/suggestion), not `type`. add_note's tone parameter is also named `kind` (values include at least pass/bug — not `color`, despite the system prompt describing the note tone as "Green if it passed, amber for a warning or suggestion, red for a bug"). Both tools also require `evidence`/text params up front — calling with the intuitively-named parameter first wastes a turn on an InputValidationError before finding the right name.
+  - _evidence:_ In this session, mcp__device__record_finding rejected a call with `type: "pass"` (error: "Additional properties are not allowed ('type' was unexpected)") and only succeeded once the field was renamed to `kind`. Separately, mcp__device__add_note rejected a call with `color: "green"` (error: "'kind' is a required property") and succeeded once `kind: "pass"` was supplied instead.
 - **web-browser-crash-self-heals** (seen once) — A web session's Chromium process can die out from under it (OS kill, crash) mid-run, and every subsequent call used to fail forever with a 'has been closed' / 'Target closed' error until the whole server was restarted by hand. web_device.py now detects that error message and self-heals: it relaunches a fresh browser and retries the failed call once automatically. If you ever see 'Target page, context or browser has been closed' surface all the way up to a tool result instead of being silently recovered, that means the retry itself also hit a closed-browser error (the relaunch failed too) -- that is a real environment problem (e.g. Chromium missing/corrupt), not a transient blip, and is worth investigating directly rather than just asking for another restart.
   - _evidence:_ launch() failed 3/3 times with 'Target page, context or browser has been closed' on the metaesthetics-staging.web.app project; required a manual server restart before web_device.py added _run_boxed's relaunch-and-retry-once logic.
 - **web-form-ids-shift-on-rerender** (seen once) — On this app's reactive React forms, an element's id from read_screen is not stable across renders — when a field's validation message appears or clears, everything below it in the DOM shifts and gets a new id. Re-read the screen immediately before every tap/type on a field if anything above it may have just changed, and after type_text, read_screen again to confirm the text actually landed — typing into a stale id after a re-render silently types nothing rather than erroring.
   - _evidence:_ On the Mira Create-New-Clinic signup form, tapping the password field by an id captured before the email field's "Email is required" error cleared, then typing, produced no visible change — the password field still showed its placeholder and "Password is required" on the next read. Re-reading, retapping the fresh id, and retyping fixed it, and this happened three separate times across email/password/confirm-password.
 - **web-launch-browser-closed-recurs** (seen once) — On this harness, `launch()` for a web project can fail repeatedly with "Target page, context or browser has been closed" across multiple consecutive retries within the same manager session, not just as a one-off transient blip seen once before. If retrying 3+ times in a row all produce the identical error, stop retrying blindly and tell the user directly — it likely needs the browser/device session restarted on their end, the same fix that worked last time this happened in this project.
   - _evidence:_ In the metaesthetics-staging.web.app project's main/manager module, launch() failed 3 consecutive times with 'Target page, context or browser has been closed' with no change between calls; earlier in the same project this exact error also appeared and was resolved only after the user restarted the browser session and said 'retry'.
+- **web-modal-dialog-missing-from-dump** (seen once) — On this web harness, a JS-rendered modal/dialog (e.g. a date-picker 'Go to Date' popup) can be fully visible in a screenshot — with its own title, dropdowns and buttons — while read_screen's dump entirely omits its text and controls, showing only the page underneath. This is unlike the iframe-ownership warning (which does fire correctly for genuinely cross-origin content) — here there is no ownership warning at all, the dump is just silently incomplete. If a screenshot shows an overlay/modal that read_screen's text and touchable-elements list don't mention, don't conclude the modal is absent; screenshot first and drive it via tap_xy with coordinates read off the image (remember the screenshot's pixel size is 2x the logical viewport reported by read_screen, so divide screenshot-image coordinates by 2 before calling tap_xy/type_text).
+  - _evidence:_ Calendar module: tapping 'Jump to date' opened a 'Go to Date' modal clearly visible in screenshots (title, month/year dropdowns, day grid, Cancel/Apply buttons), but read_screen's text and touchable-element list right after the tap were identical to the underlying Month-view calendar page with zero mention of the modal — had to locate and click Apply/day-cells purely from screenshot pixel coordinates via tap_xy.
 - **web-package-missing-scheme** (seen once) — A web project's package/serial can be stored as a bare domain with no scheme (e.g. 'example.com' instead of 'https://example.com') if it was typed that way when the project was created. web_device.py normalizes this automatically now (_ensure_scheme), so launch/goto no longer fails outright — but if a bare-domain package ever reaches Playwright unnormalized again, it raises an invalid-URL error immediately on launch. Treat that error as a missing-scheme symptom, not a dead browser.
   - _evidence:_ metaesthetics-staging.web.app project stored without https://; Chromium rejected page.goto() with an invalid URL error on every launch attempt until web_device.py was patched to prepend https:// when no scheme is present.
 - **web-reset-app-data-firebase-persistence-survives** (seen once) — On this project (metaesthetics-staging.web.app, and likely any Firebase-Auth web app), reset_app_data followed by launch() does NOT guarantee a truly logged-out session. The app renders the public login page fine (looks logged out), but Firebase Auth's own persistence (typically IndexedDB) can survive whatever reset_app_data clears (likely just cookies/localStorage), so a background auth-state listener in the app still finds the old session and redirects away from login/signup routes within a second or two of any interaction. If a test needs a genuinely clean, unauthenticated browser state after a broken/cancelled account, reset_app_data + launch() is not sufficient to prove it — read_screen immediately after may show a clean login form that then gets hijacked by a delayed redirect. There is currently no tool available to this harness to clear IndexedDB directly or force a new incognito browser context, so once a broken session like this is created there is no in-session way to recover to a clean state.
@@ -56,13 +60,13 @@ the wrong screen, which downstream becomes a false defect.
 
 ## Recent runs
 
-27/30 of the last runs completed without raising.
+28/30 of the last runs completed without raising.
 
-- `2026-08-14T03:39:37+00:00` agent:dashboard-quick-actions — 227.5s, ok (turns=35 taps=8)
+- `2026-08-14T13:42:17+00:00` agent:main — 4.6s, ok (turns=2 taps=0)
+- `2026-08-14T11:56:32+00:00` agent:main — 15.5s, ok (taps=0 turns=4)
+- `2026-08-14T08:07:41+00:00` agent:main — 5.5s, ok (taps=0 turns=2)
+- `2026-08-14T08:06:15+00:00` agent:main — 189.2s, ok (taps=0 turns=39)
+- `2026-08-14T04:36:44+00:00` agent:appointments-reception — 708.9s, ok (taps=36 turns=177)
+- `2026-08-14T03:56:51+00:00` agent:calendar — 889.2s, ok (taps=40 turns=212)
+- `2026-08-14T03:39:37+00:00` agent:dashboard-quick-actions — 227.5s, ok (taps=8 turns=35)
 - `2026-08-14T03:12:19+00:00` agent:practitioners-create-test-doctor — 28.7s, ok (taps=0 turns=1)
-- `2026-08-13T17:07:21+00:00` agent:dashboard-quick-actions — 1423.4s, FAILED (taps=56 turns=301)
-- `2026-08-13T15:54:05+00:00` agent:main — 306.1s, ok (taps=23 turns=39)
-- `2026-08-13T15:46:51+00:00` agent:practitioners-create-test-doctor — 265.7s, ok (taps=76 turns=41)
-- `2026-08-13T14:54:21+00:00` agent:practitioners-create-test-doctor — 1330.8s, FAILED (taps=69 turns=301)
-- `2026-08-13T14:31:54+00:00` agent:main — 3.8s, ok (taps=9 turns=1)
-- `2026-08-13T14:31:24+00:00` agent:main — 28.5s, ok (taps=9 turns=4)

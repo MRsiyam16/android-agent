@@ -2,6 +2,7 @@
 
 import { escapeHtml } from './markdown.js';
 import { emptyState } from './comments.js';
+import { refreshEcosystem } from './ecosystem.js';
 import { ingest, resetGraph, updateStats } from './feed.js';
 import { relayoutAll } from './layout.js';
 import { startProjectMain } from './main.js';
@@ -209,6 +210,9 @@ async function openProject(pkg) {
   // would otherwise be writing the previous project's screens into this one's file.
   ui.boardPackage = null;
   setProjectPill(pkg);
+  // The cross-app pill counts clusters touching *this* project, so it is per-project now and
+  // has to be recomputed on every switch rather than once at boot.
+  refreshEcosystem();
   // One click now means "work on this app": the board loads *and* the agent is pointed at
   // it. Splitting those across two tabs is what used to let the graph and the agent end up
   // on different packages without anything saying so.

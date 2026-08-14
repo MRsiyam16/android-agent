@@ -147,6 +147,20 @@ def supervises(package: str) -> Optional[str]:
     return name if name and str(meta.get("role") or "") == SUPERVISOR_ROLE else None
 
 
+def supervisor(name: str) -> Optional[str]:
+    """The package of this ecosystem's supervisor project, or None if it has none.
+
+    The inverse of `supervises`. `members` deliberately omits the supervisor, so anything that
+    needs to *talk to* the manager — the manager dashboard, which opens its conversation —
+    cannot find it from a members listing and would otherwise have to hardcode the convention
+    that the package equals the ecosystem name.
+    """
+    for package in project_paths.known_packages():
+        if supervises(package) == name:
+            return package
+    return None
+
+
 def create_supervisor(name: str) -> str:
     """Create (or return) the supervisor project for an ecosystem.
 
@@ -213,20 +227,61 @@ def module_index(name: str) -> list[dict[str, Any]]:
     return out
 
 
+def app_index(name: str) -> list[dict[str, Any]]:
+    """Every app with its module counts and outcome tally — one row per app.
+
+    The per-app row that every listing of this ecosystem wants: the manager dashboard's app
+    cards, the `list_apps` tool, and the totals in `summary` are all this, aggregated
+    differently. Written once because two places counting the same findings is how two screens
+    start disagreeing about how many bugs there are.
+
+    `never_run` is carried separately from `modules_tested` because they answer different
+    questions. A module that has filed nothing may be one that works or one nobody has opened,
+    and only one of those is good news.
+    """
+    index = module_index(name)
+    out: list[dict[str, Any]] = []
+    for member in members(name):
+        mods = [m for m in index if m["package"] == member["package"]]
+        tally = {kind: 0 for kind in ("bug", "warning", "suggestion", "pass")}
+        for mod in mods:
+            for kind, n in mod["counts"].items():
+                tally[kind] = tally.get(kind, 0) + n
+        out.append({
+            **member,
+            "modules": len(mods),
+            "modules_tested": sum(1 for m in mods if m["status"] == "tested"),
+            # Both lists exclude the manager module: it is where you talk to the project, not
+            # an area of the app, so it is never marked tested and never "runs" — counting it
+            # would put one phantom gap in every app.
+            "untested": [m["slug"] for m in mods
+                         if m["status"] != "tested" and not store.is_main_slug(m["slug"])],
+            "never_run": [m["slug"] for m in mods
+                          if not m.get("last_run_at") and not store.is_main_slug(m["slug"])],
+            "counts": tally,
+            "defects": sum(tally[k] for k in DEFECT_KINDS),
+        })
+    return out
+
+
 def summary(name: str) -> dict[str, Any]:
-    """Headline numbers for one ecosystem."""
-    mods = module_index(name)
+    """Headline numbers for one ecosystem, aggregated from `app_index`."""
+    apps = app_index(name)
     totals: dict[str, int] = {}
-    for mod in mods:
-        for kind, n in mod["counts"].items():
-            totals[kind] = totals.get(kind, 0) + n
-    tested = [m for m in mods if m["status"] == "tested"]
+    for app in apps:
+        for kind, n in app["counts"].items():
+            # Only kinds actually filed, so an ecosystem with no suggestions does not report
+            # `suggestion: 0` — absent and zero read differently in a tally.
+            if n:
+                totals[kind] = totals.get(kind, 0) + n
+    modules = sum(a["modules"] for a in apps)
+    tested = sum(a["modules_tested"] for a in apps)
     return {
         "ecosystem": name,
-        "apps": len(members(name)),
-        "modules": len(mods),
-        "modules_tested": len(tested),
-        "modules_untested": len(mods) - len(tested),
+        "apps": len(apps),
+        "modules": modules,
+        "modules_tested": tested,
+        "modules_untested": modules - tested,
         "counts": totals,
         "defects": sum(totals.get(k, 0) for k in DEFECT_KINDS),
     }

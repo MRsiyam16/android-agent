@@ -111,9 +111,23 @@ class AgentSession:
                  serial: Optional[str] = None, platform: Optional[str] = None):
         self.package = package
         self.slug = slug
-        self.emit = emit
+
+        # Every event this session emits is stamped with the project it came from, centrally,
+        # rather than at each of the ~20 emit sites — one of which would eventually be added
+        # without it. Only `agent_ready` used to carry a package, so a listener could tell
+        # events apart by module slug alone. That is not enough: **every project has a `main`
+        # module**, so a background run in one project's manager streamed straight into
+        # another's transcript, and the ecosystem manager — whose own slug is `main` — would
+        # have received every project manager's events as if they were its own.
+        #
+        # The stamp goes first so an event that sets its own package still wins.
+        async def stamped(event: dict[str, Any]) -> None:
+            await emit({"package": package, "slug": slug, **event})
+
+        self.emit = stamped
         self.stepper = Stepper()
-        self.device = DeviceSession(package, slug, serial=serial, platform=platform, emit=emit)
+        self.device = DeviceSession(package, slug, serial=serial, platform=platform,
+                                    emit=stamped)
 
         self._client: Optional[ClaudeSDKClient] = None
         self._lock = asyncio.Lock()

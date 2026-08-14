@@ -157,7 +157,13 @@ def _origin_allowed(origin: str) -> bool:
 
 
 @router.websocket("/ws")
-async def ws_endpoint(websocket: WebSocket):
+async def ws_endpoint(websocket: WebSocket, replay: bool = True):
+    """The one event channel. `replay=false` joins without the screen-graph backlog.
+
+    The backlog is every screen of the last run with its screenshot attached — what the flow
+    graph is drawn from, and megabytes of base64 JPEG. The manager dashboard has no graph and
+    listens only for `agent_*`, so it would download all of it to throw it away.
+    """
     origin = websocket.headers.get("origin", "")
     if not _origin_allowed(origin):
         logger.warning("refused a websocket from origin %r", origin)
@@ -165,7 +171,8 @@ async def ws_endpoint(websocket: WebSocket):
         return
     await state.manager.connect(websocket)
     try:
-        await websocket.send_json({"type": "history", "items": state.history_for_replay()})
+        if replay:
+            await websocket.send_json({"type": "history", "items": state.history_for_replay()})
         while True:
             # Dashboard doesn't need to send anything up this channel; just keep the
             # connection alive and drain any pings/keepalive frames the client sends.

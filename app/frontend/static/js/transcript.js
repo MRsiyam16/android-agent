@@ -159,8 +159,10 @@ function appendFinding(f) {
 const QUIET_EVENTS = new Set(['agent_model', 'agent_ready']);
 
 function handleAgentEvent(msg) {
-  // Events carry their module, so a background run cannot scribble into the chat you
-  // are currently reading.
+  // Events carry their project and module, so a background run cannot scribble into the chat
+  // you are currently reading. Package first: every project has a `main` module, so filtering
+  // on slug alone let another project's manager stream into this one's transcript.
+  if (msg.package && agent.package && msg.package !== agent.package) return;
   if (msg.slug && agent.slug && msg.slug !== agent.slug) {
     if (msg.type === 'agent_finding' || msg.type === 'agent_subprojects_proposed') loadModules();
     return;
