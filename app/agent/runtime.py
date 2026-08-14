@@ -52,7 +52,16 @@ Emit = Callable[[dict[str, Any]], Awaitable[None]]
 # File tools the agent legitimately needs: reading its own screenshots, and keeping its
 # memory file and report up to date. Bash, web access and subagents are withheld — this agent
 # tests a phone, and a shell would be an unnecessary blast radius inside a server process.
-FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"]
+#
+# `ToolSearch` is here because the CLI may hand an MCP server's tools over *deferred*: the
+# names are advertised but the schemas are not loaded, and `ToolSearch` is the only way to
+# load them. Denying it does not withhold a capability, it makes the allow-listed MCP tools
+# permanently uncallable — the agent sees them, cannot fetch a schema, and falls back to
+# whatever it can still reach. The ecosystem manager did exactly that on its first run: every
+# `mcp__ecosystem__*` tool was unreachable, so it read the projects' JSON off disk instead and
+# said so. Allowing it is safe because it only fetches schemas; the gate below still decides
+# what may actually be called.
+FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "ToolSearch"]
 BLOCKED_TOOLS = ["Bash", "WebSearch", "WebFetch", "Task", "NotebookEdit", "KillShell",
                  "BashOutput", "SlashCommand"]
 
@@ -189,6 +198,19 @@ class AgentSession:
             name = str(payload.get("tool_name") or "")
             if name in allowed:
                 return {}
+            if supervises:
+                # The tester's refusal tells the agent to drive the phone with the device
+                # tools. Said to a tier that has no device, it is an instruction it cannot
+                # follow and a claim about tools it does not have — so it reads as "you are
+                # holding it wrong" and sends the agent looking for a phone.
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason":
+                        f"{name} is not available to the ecosystem manager. You have no device "
+                        f"and no app: read across the projects with the ecosystem tools, and "
+                        f"use Read/Write only for your own memory file.",
+                }}
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
