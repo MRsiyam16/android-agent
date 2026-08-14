@@ -18,6 +18,7 @@ from . import agent_bridge, projects
 from .paths import STATIC_DIR
 from .routes import agent as agent_routes
 from .routes import device as device_routes
+from .routes import ecosystem as ecosystem_routes
 from .routes import pages as page_routes
 from .routes import projects as project_routes
 from .routes import telemetry as telemetry_routes
@@ -44,6 +45,10 @@ def create_app() -> FastAPI:
     app.include_router(project_routes.router)
     app.include_router(device_routes.router)
     app.include_router(agent_routes.router)
+    # Last because it is the only router that reaches across projects: everything it reads is
+    # built from what the routers above own. Its one `/projects/...` path takes a literal
+    # `/ecosystem` suffix, which no route above can shadow.
+    app.include_router(ecosystem_routes.router)
 
     @app.on_event("startup")
     async def _prewarm_agent() -> None:

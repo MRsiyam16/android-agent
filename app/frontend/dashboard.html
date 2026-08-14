@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="/static/css/graph.css?v=21">
 <link rel="stylesheet" href="/static/css/notes.css?v=21">
 <link rel="stylesheet" href="/static/css/agent.css?v=21">
-<link rel="stylesheet" href="/static/css/panels.css?v=22">
+<link rel="stylesheet" href="/static/css/panels.css?v=23">
 </head>
 <body>
 
@@ -66,6 +66,19 @@
       </button>
       <button class="outcome-pill kind-suggestion" id="outcomeSuggestion" data-kind="suggestion" title="Where the app could be improved">
         <span class="dot"></span> Suggestions <span class="count" id="countSuggestion">0</span>
+      </button>
+
+      <!--
+        The same claim one level up. The pills to the left describe the open project; this
+        describes the product it belongs to, where five apps share one backend and the same
+        defect gets filed once per app by agents that cannot see each other. It counts
+        *distinct* defects, not filed ones, because the whole point is that those differ.
+        Hidden until a project is tagged into an ecosystem, so a single-app install never
+        sees a control that would always read zero.
+      -->
+      <div class="divider" id="ecosystemDivider"></div>
+      <button class="outcome-pill kind-ecosystem" id="ecosystemPill" hidden title="Defects across the whole product">
+        <span class="dot"></span> Distinct <span class="count" id="ecosystemCount">0</span>
       </button>
     </div>
 
@@ -512,6 +525,18 @@
     </div>
     <div class="sheet-sub" id="outcomeSub"></div>
     <div class="outcome-list" id="outcomeList"></div>
+  </div>
+</div>
+
+<!-- ECOSYSTEM — findings from different apps that turned out to be one defect -->
+<div class="sheet-backdrop" id="ecosystemBackdrop">
+  <div class="sheet sheet-wide">
+    <div class="sheet-head-row">
+      <div class="sheet-title">Across the product</div>
+      <button type="button" class="sheet-close" id="ecosystemClose">✕</button>
+    </div>
+    <div class="sheet-sub" id="ecosystemSub"></div>
+    <div class="outcome-list" id="ecosystemList"></div>
   </div>
 </div>
 

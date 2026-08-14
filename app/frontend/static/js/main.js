@@ -3,6 +3,7 @@
 import { fetchProjects, openProject, setProjectPill } from './board.js';
 import { agent, agentEl, agentFetch, appendChat, initChatScroll, scrollChatToEnd, setAgentModel } from './chat.js';
 import { applyViewport, initAgent, initComposerAttachments, loadSecretNames, refreshFrame, runResponsiveSweep, sendCommand, sendToAgent } from './compose.js';
+import { initEcosystem } from './ecosystem.js';
 import { updateStats } from './feed.js';
 import { loadModules, platformOf, selectModule } from './modules.js';
 import { applyPlatformUI, chatLog, phoneScreen, ripple } from './phone.js';
@@ -202,6 +203,7 @@ initScreenSearch();
 initChatScroll();
 initComposerAttachments();
 initBlockedDone();
+initEcosystem();
 
 setTool('pan');
 refreshDeviceInfo();
