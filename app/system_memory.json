@@ -268,40 +268,8 @@
       "text": "On this project (metaesthetics-staging.web.app, and likely any Firebase-Auth web app), reset_app_data followed by launch() does NOT guarantee a truly logged-out session. The app renders the public login page fine (looks logged out), but Firebase Auth's own persistence (typically IndexedDB) can survive whatever reset_app_data clears (likely just cookies/localStorage), so a background auth-state listener in the app still finds the old session and redirects away from login/signup routes within a second or two of any interaction. If a test needs a genuinely clean, unauthenticated browser state after a broken/cancelled account, reset_app_data + launch() is not sufficient to prove it — read_screen immediately after may show a clean login form that then gets hijacked by a delayed redirect. There is currently no tool available to this harness to clear IndexedDB directly or force a new incognito browser context, so once a broken session like this is created there is no in-session way to recover to a clean state."
     }
   },
-  "run_count": 130,
+  "run_count": 134,
   "runs": [
-    {
-      "at": "2026-08-12T11:57:26+00:00",
-      "ok": true,
-      "seconds": 20.4,
-      "taps": 59,
-      "tool": "agent:clinic-onboarding",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-12T12:33:04+00:00",
-      "ok": true,
-      "seconds": 27.0,
-      "taps": 0,
-      "tool": "agent:clinic-onboarding",
-      "turns": 4
-    },
-    {
-      "at": "2026-08-12T12:36:19+00:00",
-      "ok": true,
-      "seconds": 16.8,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-12T12:41:54+00:00",
-      "ok": true,
-      "seconds": 60.1,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 8
-    },
     {
       "at": "2026-08-12T12:50:14+00:00",
       "ok": true,
@@ -509,6 +477,38 @@
       "taps": 0,
       "tool": "agent:main",
       "turns": 2
+    },
+    {
+      "at": "2026-08-14T14:03:50+00:00",
+      "ok": true,
+      "seconds": 13.5,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 4
+    },
+    {
+      "at": "2026-08-14T14:04:15+00:00",
+      "ok": true,
+      "seconds": 8.4,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 2
+    },
+    {
+      "at": "2026-08-14T14:10:21+00:00",
+      "ok": true,
+      "seconds": 20.7,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 3
+    },
+    {
+      "at": "2026-08-14T14:11:19+00:00",
+      "ok": true,
+      "seconds": 32.8,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 3
     }
   ],
   "schema": 1,
@@ -640,5 +640,5 @@
       "unit": "s"
     }
   },
-  "updated_at": "2026-08-14T13:42:17+00:00"
+  "updated_at": "2026-08-14T14:11:19+00:00"
 }

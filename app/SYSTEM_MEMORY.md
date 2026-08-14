@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **130** · last updated: 2026-08-14T13:42:17+00:00
+Runs recorded: **134** · last updated: 2026-08-14T14:11:19+00:00
 
 ## Environment
 
@@ -62,11 +62,11 @@ the wrong screen, which downstream becomes a false defect.
 
 28/30 of the last runs completed without raising.
 
-- `2026-08-14T13:42:17+00:00` agent:main — 4.6s, ok (turns=2 taps=0)
+- `2026-08-14T14:11:19+00:00` agent:main — 32.8s, ok (turns=3 taps=0)
+- `2026-08-14T14:10:21+00:00` agent:main — 20.7s, ok (taps=0 turns=3)
+- `2026-08-14T14:04:15+00:00` agent:main — 8.4s, ok (taps=0 turns=2)
+- `2026-08-14T14:03:50+00:00` agent:main — 13.5s, ok (taps=0 turns=4)
+- `2026-08-14T13:42:17+00:00` agent:main — 4.6s, ok (taps=0 turns=2)
 - `2026-08-14T11:56:32+00:00` agent:main — 15.5s, ok (taps=0 turns=4)
 - `2026-08-14T08:07:41+00:00` agent:main — 5.5s, ok (taps=0 turns=2)
 - `2026-08-14T08:06:15+00:00` agent:main — 189.2s, ok (taps=0 turns=39)
-- `2026-08-14T04:36:44+00:00` agent:appointments-reception — 708.9s, ok (taps=36 turns=177)
-- `2026-08-14T03:56:51+00:00` agent:calendar — 889.2s, ok (taps=40 turns=212)
-- `2026-08-14T03:39:37+00:00` agent:dashboard-quick-actions — 227.5s, ok (taps=8 turns=35)
-- `2026-08-14T03:12:19+00:00` agent:practitioners-create-test-doctor — 28.7s, ok (taps=0 turns=1)

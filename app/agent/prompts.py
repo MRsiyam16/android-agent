@@ -361,6 +361,32 @@ _BLACKCODE_SECTION_TESTER = _BLACKCODE_INTRO + """
 * `check_issue_status` — is a finding you already filed actually fixed yet? Checks Blackcode's
   live status and updates the finding's resolved flag here to match."""
 
+_BLACKCODE_SECTION_ECOSYSTEM = _BLACKCODE_INTRO + """
+
+Your unit here is the **cluster**, not the finding, and that is the whole point. A tester files
+one issue per finding, which is right for it and wrong for the product: one fault in a shared
+backend, filed by five apps, becomes five tickets that five people triage and close
+separately. A cluster is the only object in this system that spans apps, so you are the only
+tier that can turn it into one ticket.
+
+* `search_issues` — read-only. Check what is already tracked before filing, so a defect a
+  developer raised last week does not get a second ticket from you.
+* `file_cluster` — one issue for a whole cluster, with every report spelled out in the body
+  and the issue stamped on every member finding. A visible action outside this dashboard — a
+  real ticket a team will see — so file when the user asks you to, not on your own initiative
+  because a cluster exists. It refuses if any member is already tracked, and tells you where.
+* `link_cluster` — the defect already has an issue: attach it to every member instead of
+  creating a second one.
+* `sync_issue_status` — ask Blackcode what has actually been fixed, across every app at once,
+  and update each finding's resolved flag. Run it before reporting where the product stands:
+  a defect that shipped a fix a fortnight ago is still an open bug on this board until
+  somebody asks.
+
+Two things to be careful about. The ticket you file carries `confidence` in its body, and it
+should — a developer reading "these six reports are one defect" is entitled to know whether
+that was proved or guessed. And a `tentative` cluster is a grouping for convenience, not a
+claim of one root cause; say so rather than letting one ticket imply one fix."""
+
 _BLACKCODE_SECTION_MANAGER = _BLACKCODE_INTRO + """
 
 You have `search_issues` — read-only, for checking whether something you noticed during
@@ -552,6 +578,10 @@ as good news without checking `status` and whether it ever ran.
 
 You cannot start a run. Modules run where they live, driven by whoever opens them.
 
+# The issue tracker
+
+{blackcode_section}
+
 Your memory file is `{memory_path}` — one fact per bullet, about this product rather than
 about any one app: which app owns which concept, which seams you have checked, and which
 groupings you have already ruled out so you do not re-derive them next session.
@@ -564,7 +594,8 @@ asked for is almost always the answer in the chat.
 def build_ecosystem_prompt(package: str, slug: str, ecosystem: str) -> str:
     """The ecosystem manager's core rules. No device traps: it has no device."""
     return ECOSYSTEM_CORE.format(ecosystem=ecosystem,
-                                 memory_path=store.memory_path(package, slug))
+                                 memory_path=store.memory_path(package, slug),
+                                 blackcode_section=_BLACKCODE_SECTION_ECOSYSTEM)
 
 
 def build_manager_prompt(package: str, slug: str, platform: str = "android") -> str:

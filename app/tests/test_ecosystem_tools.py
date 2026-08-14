@@ -312,6 +312,174 @@ class TestThePrompt:
         assert "{" not in prompt.replace("{ecosystem}", "")
 
 
+class TestBlackcode:
+    """One ticket for a defect, not one per app that noticed it.
+
+    The tester tier files per finding, which is right for it: it watched one case fail. Run
+    across five apps that share a backend, the same rule produces five tickets for one fault,
+    triaged by five people. A cluster is the only object here that spans apps, so this is the
+    only tier that can file one — and the only place the duplicate-ticket problem can be
+    prevented rather than cleaned up afterwards.
+    """
+
+    ANDROID = "com.patient.android"
+    WEB = "clinic.example.com"
+
+    @pytest.fixture
+    def bk(self, monkeypatch):
+        """A stand-in for the `bk` CLI that records what it was asked to do."""
+        import blackcode
+
+        seen = {"created": [], "status_calls": [], "remembered": []}
+        monkeypatch.setattr(blackcode, "is_available", lambda: True)
+        monkeypatch.setattr(blackcode, "stored_project_id", lambda package: 7)
+        monkeypatch.setattr(blackcode, "remember_project_id",
+                            lambda package, pid: seen["remembered"].append((package, pid)))
+        monkeypatch.setattr(blackcode, "resolve_project", lambda ref: 99)
+
+        def create_issue(project_id, title, description, severity="medium", evidence_path=None):
+            seen["created"].append({"project_id": project_id, "title": title,
+                                    "description": description, "severity": severity,
+                                    "evidence": evidence_path})
+            return {"number": 42, "url": "https://issues.blackcode.ch/i/42"}
+
+        def issue_status(number):
+            seen["status_calls"].append(number)
+            return {"number": number, "status": "done", "resolved": True, "priority": 2,
+                    "assignees": [], "updated_at": None, "completed_at": None,
+                    "url": f"https://issues.blackcode.ch/i/{number}"}
+
+        monkeypatch.setattr(blackcode, "create_issue", create_issue)
+        monkeypatch.setattr(blackcode, "issue_status", issue_status)
+        return seen
+
+    @pytest.fixture
+    def cluster(self, eco):
+        clusters.save(NAME, "search-prefix-only",
+                      title="Search matches only a prefix",
+                      root="One un-tokenised backend index behind both clients.",
+                      confidence="confirmed",
+                      members=[{"package": self.ANDROID, "module": "search", "finding": "F001"},
+                               {"package": self.WEB, "module": "search", "finding": "F001"}])
+        clusters.apply(NAME)
+
+    def test_one_cluster_becomes_one_issue_stamped_on_every_member(self, bk, cluster):
+        out = call("file_cluster", {"id": "search-prefix-only"})
+        assert "#42" in out
+        assert len(bk["created"]) == 1
+
+        for package in (self.ANDROID, self.WEB):
+            finding = store.list_findings(package, "search")[0]
+            assert finding["issue_id"] == 42
+            assert finding["issue_url"] == "https://issues.blackcode.ch/i/42"
+
+    def test_the_issue_body_carries_every_report_not_a_summary(self, bk, cluster):
+        """The spread between two apps' actuals is the evidence for the claim that they are
+        one defect. Summarising it away files a ticket nobody can check."""
+        call("file_cluster", {"id": "search-prefix-only"})
+        body = bk["created"][0]["description"]
+        assert "patient-android" in body and "clinic-web" in body
+        assert body.count("surname matches") == 2      # both reports' expected
+        assert "confirmed" in body
+        assert "One un-tokenised backend index" in body
+
+    def test_the_issue_takes_the_worst_severity_any_report_gave_it(self, bk, eco):
+        """The claim is that these are one defect, so one app rating it `low` does not make a
+        critical one less critical."""
+        store.add_finding(self.ANDROID, "search",
+                          {"title": "search leaks other clinics' patients", "kind": "bug",
+                           "severity": "critical", "expected": "own only", "actual": "all"})
+        store.add_finding(self.WEB, "search",
+                          {"title": "same on the portal", "kind": "bug", "severity": "low",
+                           "expected": "own only", "actual": "all"})
+        clusters.save(NAME, "cross-tenant-leak", title="Search crosses tenants",
+                      confidence="likely",
+                      members=[{"package": self.ANDROID, "module": "search", "finding": "F002"},
+                               {"package": self.WEB, "module": "search", "finding": "F002"}])
+        clusters.apply(NAME)
+
+        call("file_cluster", {"id": "cross-tenant-leak"})
+        assert bk["created"][0]["severity"] == "critical"
+
+    def test_it_refuses_to_file_a_defect_that_is_already_tracked(self, bk, cluster):
+        """The exact outcome this tier exists to prevent. A second ticket for a defect that
+        already has one is the duplication problem, moved up a tier."""
+        store.set_finding_tracking(self.WEB, "search", "F001",
+                                   issue_id=9, issue_url="https://issues.blackcode.ch/i/9")
+        out = call("file_cluster", {"id": "search-prefix-only"})
+        assert "already tracked" in out
+        assert "https://issues.blackcode.ch/i/9" in out    # says where, not just "no"
+        assert "link_cluster" in out                        # ...and what to do instead
+        assert bk["created"] == []                          # nothing was filed
+
+    def test_filing_into_a_named_project_remembers_it_for_next_time(self, bk, cluster):
+        call("file_cluster", {"id": "search-prefix-only", "project": "Metaesthetics"})
+        assert bk["created"][0]["project_id"] == 99
+        assert bk["remembered"] == [(NAME, 99)]
+
+    def test_link_cluster_checks_the_issue_exists_before_stamping_anything(self, bk, cluster,
+                                                                          monkeypatch):
+        """A typo'd number would otherwise stamp every member with a link to nothing, which
+        reads exactly like a tracked defect."""
+        import blackcode
+
+        def boom(number):
+            raise blackcode.BlackcodeError("not found — no such issue")
+
+        monkeypatch.setattr(blackcode, "issue_status", boom)
+        out = call("link_cluster", {"id": "search-prefix-only", "issue": 404})
+        assert "Could not read issue #404" in out
+        assert store.list_findings(self.ANDROID, "search")[0].get("issue_url") is None
+
+    def test_link_cluster_attaches_an_existing_issue_to_every_member(self, bk, cluster):
+        out = call("link_cluster", {"id": "search-prefix-only", "issue": 42})
+        assert "#42" in out
+        for package in (self.ANDROID, self.WEB):
+            finding = store.list_findings(package, "search")[0]
+            assert finding["issue_id"] == 42
+            assert finding["resolved"] is True     # it took the live status too
+
+    def test_sync_checks_each_issue_once_not_once_per_finding(self, bk, cluster):
+        """A cluster filed as one ticket points every member at the same number. Checking it
+        once per finding is five subprocesses for one answer."""
+        call("file_cluster", {"id": "search-prefix-only"})
+        bk["status_calls"].clear()
+        out = call("sync_issue_status", {})
+        assert bk["status_calls"] == [42]           # two findings, one call
+        assert "2 changed" in out
+        assert all(store.list_findings(p, "search")[0]["resolved"]
+                   for p in (self.ANDROID, self.WEB))
+
+    def test_sync_says_nothing_changed_rather_than_listing_everything(self, bk, cluster):
+        call("file_cluster", {"id": "search-prefix-only"})
+        call("sync_issue_status", {})
+        out = call("sync_issue_status", {})
+        assert "Nothing changed" in out
+        assert "2 already matched" in out
+
+    def test_sync_with_nothing_filed_says_so(self, bk, eco):
+        assert "has been filed to Blackcode yet" in call("sync_issue_status", {})
+
+    def test_every_blackcode_tool_says_so_when_the_cli_is_missing(self, monkeypatch, cluster):
+        """Four tools, one message. A missing CLI must not surface as a stack trace or as an
+        empty result that reads like 'no issues'."""
+        import blackcode
+        monkeypatch.setattr(blackcode, "is_available", lambda: False)
+        for name, args in (("search_issues", {}),
+                           ("file_cluster", {"id": "search-prefix-only"}),
+                           ("link_cluster", {"id": "search-prefix-only", "issue": 1}),
+                           ("sync_issue_status", {})):
+            assert "not installed or not on PATH" in call(name, args), name
+
+    def test_the_prompt_offers_no_blackcode_tool_this_tier_lacks(self, eco):
+        """`file_issue` and `check_issue_status` are the tester's, and are per-finding. Naming
+        them here would send this tier looking for a tool it does not have."""
+        prompt = prompts.build_system_prompt(NAME, "main", "Main", "")
+        assert "file_cluster" in prompt and "sync_issue_status" in prompt
+        assert "file_issue" not in prompt
+        assert "check_issue_status" not in prompt
+
+
 def test_a_finding_without_a_severity_does_not_break_the_prompt(eco):
     """`record_finding` always sets a severity; `store.add_finding` does not require one.
 

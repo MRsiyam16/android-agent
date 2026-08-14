@@ -23,6 +23,14 @@ It also cannot file a finding. A finding is one named test case with a screensho
 filed by the agent that watched it happen; this tier has watched nothing. What it produces
 instead is a *cluster* — the claim that several already-filed findings are one defect — which
 carries its own confidence precisely because it is inference rather than observation.
+
+**Blackcode is the one place this tier writes outside the harness.** The tester tier files one
+issue per finding, which is correct for it and wrong for the product: a defect in a shared
+backend, filed by five apps, becomes five tickets that five people close separately. Filing a
+*cluster* is the one operation only this tier can do, because a cluster is the only object in
+the system that spans apps. So it gets `file_cluster` (one ticket, every member stamped),
+`link_cluster` (that defect is already tracked as #42), `sync_issue_status` (what got fixed,
+across the whole product) and read-only `search_issues`.
 """
 from __future__ import annotations
 
@@ -32,8 +40,10 @@ from typing import Any, Optional
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 import clusters as clusters_mod
+import config
 import ecosystem as ecosystem_mod
 from agent import store
+from agent.store import StoreWriteError
 
 __all__ = ["build_ecosystem_server", "ECOSYSTEM_TOOL_NAMES", "ecosystem_tool_names"]
 
@@ -67,6 +77,71 @@ def _tally_line(tally: dict[str, int]) -> str:
     parts = [f"{tally[k]} {k if tally[k] == 1 else plural[k]}"
              for k in _KIND_ORDER if tally.get(k)]
     return ", ".join(parts) if parts else "nothing filed"
+
+
+#: Worst first. A cluster's issue takes the worst severity any of its reports carried — the
+#: whole claim is that these are one defect, and one app rating it "low" does not make a
+#: critical one less critical.
+_SEVERITY_ORDER = ("critical", "high", "medium", "low", "none")
+
+
+def _blackcode_missing() -> Optional[str]:
+    """The error text when `bk` is not installed, or None when it is."""
+    import blackcode
+    if blackcode.is_available():
+        return None
+    return (f"The Blackcode CLI (`{config.BLACKCODE_CLI}`) is not installed or not on PATH. "
+            f"Install it with `npm install -g @blackcode_sa/bc-issues`.")
+
+
+def _worst_severity(members: list[dict[str, Any]]) -> str:
+    for severity in _SEVERITY_ORDER:
+        if any(str(m.get("severity") or "") == severity for m in members):
+            return severity
+    return "medium"
+
+
+def _cluster_description(name: str, cluster: dict[str, Any],
+                         full: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+    """Markdown body for an issue filed from a cluster.
+
+    Every report is spelled out under its own heading — which app, which module, what that
+    agent expected and saw. Whoever picks this ticket up needs all of them: the discriminator
+    between "one backend fault" and "two client bugs that rhyme" is usually the difference
+    between two apps' actuals, and summarising it away is deleting the evidence for the claim
+    the ticket is making.
+    """
+    lines = [
+        f"One defect, reported separately by {len(full)} "
+        + ("test module" if len(full) == 1 else "test modules")
+        + (f" across {len(cluster['roles'])} apps" if cluster["scope"] == "cross-app"
+           else " in one app") + ".",
+        "",
+        f"**Confidence: {cluster.get('confidence', 'tentative')}** — this grouping is an "
+        "inference made from the outside by the QA Tester AI ecosystem manager, not something "
+        "any single test observed.",
+        "",
+    ]
+    if cluster.get("root"):
+        lines += ["## Root-cause hypothesis", cluster["root"], ""]
+
+    lines.append("## Reports")
+    for member, finding in full:
+        lines += ["", f"### {member['role']} — {member.get('module_title') or member['module']} "
+                      f"(`{member['finding']}`)",
+                  f"*{finding.get('kind', 'bug')} / {finding.get('severity', '?')}* — "
+                  f"{finding.get('title', '')}"]
+        if finding.get("expected"):
+            lines.append(f"- **Expected:** {finding['expected']}")
+        if finding.get("actual"):
+            lines.append(f"- **Actual:** {finding['actual']}")
+        steps = finding.get("steps") or []
+        if steps:
+            lines.append("- **Steps:** " + " → ".join(str(s) for s in steps))
+    lines.append("")
+    lines.append(f"---\nFiled automatically by QA Tester AI — ecosystem `{name}`, cluster "
+                 f"`{cluster['id']}`.")
+    return "\n".join(lines)
 
 
 def _finding_line(finding: dict[str, Any]) -> str:
@@ -458,12 +533,289 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         return _ok(f"Updated {member['role']}/{slug}: "
                    + ", ".join(f"{k} -> {v!r}" for k, v in updates.items()))
 
+    # -- Blackcode ------------------------------------------------------------------------
+    def _members_with_findings(cluster: dict[str, Any]):
+        """Each member paired with its full finding on disk. Members are already resolved
+        against the store, so a miss here means it vanished between calls — treated as an
+        orphan rather than filed as a member with no evidence."""
+        out = []
+        for member in cluster["members"]:
+            findings = store.list_findings(member["package"], member["module"])
+            finding = next((f for f in findings if f.get("id") == member["finding"]), None)
+            if finding is not None:
+                out.append((member, finding))
+        return out
+
+    def _project_for(cluster: dict[str, Any], explicit: Optional[str]) -> tuple[Any, str]:
+        """(project id, how it was chosen) — or (None, message) when it cannot be decided.
+
+        Order matters and is deliberately boring. An explicit argument wins. A single-app
+        cluster otherwise goes to that app's own Blackcode project, because that is where its
+        findings already go. A cross-app one goes to the ecosystem's, because it belongs to the
+        product rather than to whichever app happened to notice first. Nothing is guessed: with
+        neither remembered, the tool asks.
+        """
+        import blackcode
+        if explicit:
+            project_id = blackcode.resolve_project(explicit)
+            # Remembered against the supervisor, so the *next* cluster does not have to be
+            # told again — the same bargain file_issue strikes per project.
+            blackcode.remember_project_id(name, project_id)
+            return project_id, f"as given ({explicit})"
+
+        if cluster["scope"] == "single-app" and cluster["members"]:
+            package = cluster["members"][0]["package"]
+            stored = blackcode.stored_project_id(package)
+            if stored is not None:
+                return stored, f"the {cluster['members'][0]['role']} project's own"
+
+        stored = blackcode.stored_project_id(name)
+        if stored is not None:
+            return stored, f"the {name} product project"
+
+        projects = blackcode.list_projects()
+        names = ", ".join(f"{p['name']!r} (id {p['id']})" for p in projects) or "(none found)"
+        return None, (f"No Blackcode project is set for {name!r} yet. Call again with "
+                      f"`project` set to one of: {names}")
+
+    @tool("search_issues",
+          "Search or browse Blackcode issues across the workspace — what is already tracked, "
+          "and what is still open. Read-only; touches nothing here. Use it before filing a "
+          "cluster, so a defect a developer already raised does not get a second ticket.",
+          {"type": "object",
+           "properties": {
+               "query": {"type": "string",
+                         "description": "Text to search title/description, or an issue #number"},
+               "project": {"type": "string", "description": "Blackcode project id or exact name"},
+               "status": {"type": "string",
+                          "description": "backlog/todo/in_progress/done/cancelled"},
+           },
+           "additionalProperties": False})
+    async def search_issues(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+        missing = _blackcode_missing()
+        if missing:
+            return _err(missing)
+        try:
+            project_id = None
+            if args.get("project"):
+                project_id = await asyncio.to_thread(blackcode.resolve_project, args["project"])
+            results = await asyncio.to_thread(
+                blackcode.search_issues, args.get("query") or "", project_id, args.get("status"))
+        except blackcode.BlackcodeError as exc:
+            return _err(str(exc))
+        if not results:
+            return _ok("No matching issues.")
+        return _ok("\n".join(
+            f"#{r['number']} [{r['status']}] {r['title']} ({r['project_name']}) — {r['url']}"
+            for r in results))
+
+    @tool("file_cluster",
+          "File a whole cluster as ONE Blackcode issue, and stamp that issue on every finding "
+          "in it. This is the operation only this tier can do: the same backend fault filed by "
+          "five apps is five tickets from five testers, and one ticket from here. The issue "
+          "body spells out every report — which app, what it expected, what it saw — because "
+          "that spread is the evidence for the claim that they are one defect. A visible "
+          "action outside this dashboard (a real ticket a team will see), so file when the "
+          "user asks you to, not on your own initiative because a cluster exists. `project` is "
+          "needed only the first time; after that it is remembered.",
+          {"type": "object",
+           "properties": {
+               "id": {"type": "string", "description": "Cluster id"},
+               "project": {"type": "string",
+                           "description": "Blackcode project id or exact name. Only needed "
+                                          "the first time this product files an issue."},
+           },
+           "required": ["id"], "additionalProperties": False})
+    async def file_cluster(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+        missing = _blackcode_missing()
+        if missing:
+            return _err(missing)
+
+        cluster_id = str(args.get("id") or "").strip()
+        cluster = await asyncio.to_thread(clusters_mod.get, name, cluster_id)
+        if cluster is None:
+            return _err(f"No cluster {cluster_id!r} in {name!r}. Use list_clusters.")
+        if not cluster["members"]:
+            return _err(f"{cluster_id!r} has no members whose findings are still on disk — "
+                        f"nothing to file.")
+
+        # Refused rather than duplicated. A member already tracked means a ticket for this
+        # defect exists; a second one is exactly the outcome this tier exists to prevent, and
+        # `link_cluster` is the operation for "it is already #42".
+        filed = [m for m in cluster["members"] if m.get("issue_url")]
+        if filed:
+            already = "; ".join(f"{m['role']}/{m['module']}/{m['finding']} -> {m['issue_url']}"
+                                for m in filed)
+            return _err(
+                f"{cluster_id!r} is already tracked, at least in part: {already}. Nothing was "
+                f"filed. If that issue covers this defect, use link_cluster to attach the rest "
+                f"of the members to it; if it does not, drop those members from the cluster "
+                f"first.")
+
+        full = await asyncio.to_thread(_members_with_findings, cluster)
+        if not full:
+            return _err(f"None of {cluster_id!r}'s findings could be read back — nothing filed.")
+
+        try:
+            project_id, how = await asyncio.to_thread(_project_for, cluster, args.get("project"))
+        except blackcode.BlackcodeError as exc:
+            return _err(str(exc))
+        if project_id is None:
+            return _err(how)
+
+        # The first member's screenshot goes inline. One image, not all of them: the ticket
+        # names every report, and whoever opens it can follow each back here.
+        evidence = next((f.get("evidence") for _, f in full if f.get("evidence")), None)
+        try:
+            result = await asyncio.to_thread(
+                blackcode.create_issue, project_id, cluster.get("title") or cluster_id,
+                _cluster_description(name, cluster, full),
+                _worst_severity([f for _, f in full]), evidence)
+        except blackcode.BlackcodeError as exc:
+            return _err(f"Could not file the issue: {exc}")
+
+        # The issue exists from here on, so a stamping failure is reported, never swallowed —
+        # a cluster that looks unfiled but has a live ticket is how the second one gets filed.
+        stamped, failed = [], []
+        for member, _finding in full:
+            try:
+                await asyncio.to_thread(
+                    store.set_finding_tracking, member["package"], member["module"],
+                    member["finding"], issue_id=result["number"], issue_url=result["url"])
+                stamped.append(f"{member['role']}/{member['finding']}")
+            except StoreWriteError as exc:
+                failed.append(f"{member['role']}/{member['finding']} ({exc})")
+
+        out = (f"Filed {cluster_id!r} as Blackcode issue #{result['number']} into {how} "
+               f"project: {result['url']}\nStamped on {len(stamped)} finding(s): "
+               f"{', '.join(stamped)}")
+        if failed:
+            out += (f"\n!! The issue WAS created, but these findings could not be marked as "
+                    f"tracked and will still look unfiled: {'; '.join(failed)}")
+        return _ok(out)
+
+    @tool("link_cluster",
+          "Attach an existing Blackcode issue to every finding in a cluster — for when the "
+          "defect is already tracked, whether a tester filed one report of it or a developer "
+          "raised it directly. Creates nothing; it records where this defect already lives so "
+          "the rest of its reports stop looking untracked.",
+          {"type": "object",
+           "properties": {
+               "id": {"type": "string", "description": "Cluster id"},
+               "issue": {"type": "integer", "description": "Blackcode issue number"},
+           },
+           "required": ["id", "issue"], "additionalProperties": False})
+    async def link_cluster(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+        missing = _blackcode_missing()
+        if missing:
+            return _err(missing)
+
+        cluster_id = str(args.get("id") or "").strip()
+        cluster = await asyncio.to_thread(clusters_mod.get, name, cluster_id)
+        if cluster is None:
+            return _err(f"No cluster {cluster_id!r} in {name!r}. Use list_clusters.")
+
+        # Checked live before anything is written: a typo'd number would otherwise stamp every
+        # member with a link to an issue that does not exist, which reads exactly like a
+        # tracked defect.
+        try:
+            live = await asyncio.to_thread(blackcode.issue_status, int(args["issue"]))
+        except blackcode.BlackcodeError as exc:
+            return _err(f"Could not read issue #{args['issue']}: {exc}")
+
+        stamped, failed = [], []
+        for member in cluster["members"]:
+            try:
+                await asyncio.to_thread(
+                    store.set_finding_tracking, member["package"], member["module"],
+                    member["finding"], issue_id=live["number"], issue_url=live["url"],
+                    resolved=live["resolved"])
+                stamped.append(f"{member['role']}/{member['finding']}")
+            except StoreWriteError as exc:
+                failed.append(f"{member['role']}/{member['finding']} ({exc})")
+
+        out = (f"Linked {cluster_id!r} to issue #{live['number']} [{live['status']}]: "
+               f"{live['url']}\nStamped on {len(stamped)} finding(s): {', '.join(stamped)}")
+        if failed:
+            out += f"\n!! Could not stamp: {'; '.join(failed)}"
+        return _ok(out)
+
+    @tool("sync_issue_status",
+          "Ask Blackcode what has actually been fixed, across every app in this product, and "
+          "update each finding's resolved flag to match. This is how the board stops showing "
+          "defects that shipped a fix weeks ago. Optionally narrowed to one app. Reports only "
+          "what changed, plus anything it could not check.",
+          {"type": "object",
+           "properties": {"app": {"type": "string",
+                                  "description": "Role or package, to narrow to one app"}},
+           "additionalProperties": False})
+    async def sync_issue_status(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+        missing = _blackcode_missing()
+        if missing:
+            return _err(missing)
+
+        found = await asyncio.to_thread(ecosystem_mod.findings, name)
+        if args.get("app"):
+            member = await asyncio.to_thread(_resolve_app, str(args["app"]))
+            if member is None:
+                return _err(f"No app {args['app']!r} in {name!r}. The apps are: {_app_names()}.")
+            found = [f for f in found if f["package"] == member["package"]]
+        tracked = [f for f in found if f.get("issue_id")]
+        if not tracked:
+            return _ok("Nothing in this product has been filed to Blackcode yet, so there is "
+                       "no status to sync.")
+
+        # One `bk` call per distinct issue, not per finding. A cluster filed as one ticket has
+        # every member pointing at the same number, and checking it five times is five
+        # subprocesses for one answer.
+        by_issue: dict[int, list[dict[str, Any]]] = {}
+        for finding in tracked:
+            by_issue.setdefault(int(finding["issue_id"]), []).append(finding)
+
+        changed, unreachable, unchanged = [], [], 0
+        for number, group in sorted(by_issue.items()):
+            try:
+                live = await asyncio.to_thread(blackcode.issue_status, number)
+            except blackcode.BlackcodeError as exc:
+                unreachable.append(f"#{number} ({exc})")
+                continue
+            for finding in group:
+                if bool(finding.get("resolved")) == live["resolved"]:
+                    unchanged += 1
+                    continue
+                try:
+                    await asyncio.to_thread(
+                        store.set_finding_tracking, finding["package"], finding["module_slug"],
+                        finding["id"], resolved=live["resolved"])
+                except StoreWriteError as exc:
+                    unreachable.append(f"{finding['role']}/{finding['id']} (could not save: {exc})")
+                    continue
+                changed.append(f"{finding['role']}/{finding['module_slug']}/{finding['id']} "
+                               f"(#{number}) -> {live['status']}"
+                               + (" — now resolved" if live["resolved"] else " — reopened"))
+
+        lines = [f"Checked {len(by_issue)} issue(s) covering {len(tracked)} finding(s)."]
+        if changed:
+            lines += [f"{len(changed)} changed:"] + changed
+        else:
+            lines.append("Nothing changed.")
+        if unchanged:
+            lines.append(f"{unchanged} already matched.")
+        if unreachable:
+            lines.append("Could not check: " + "; ".join(unreachable))
+        return _ok("\n".join(lines))
+
     return create_sdk_mcp_server(
         name="ecosystem",
         version="1.0.0",
         tools=[list_apps, read_app, read_finding, unclustered_defects,
                list_clusters, read_cluster, save_cluster, delete_cluster,
-               ecosystem_report, create_module, update_module],
+               ecosystem_report, create_module, update_module,
+               search_issues, file_cluster, link_cluster, sync_issue_status],
     )
 
 
@@ -483,6 +835,10 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__ecosystem_report",
     "mcp__ecosystem__create_module",
     "mcp__ecosystem__update_module",
+    "mcp__ecosystem__search_issues",
+    "mcp__ecosystem__file_cluster",
+    "mcp__ecosystem__link_cluster",
+    "mcp__ecosystem__sync_issue_status",
 ]
 
 
