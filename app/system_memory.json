@@ -268,16 +268,8 @@
       "text": "On this project (metaesthetics-staging.web.app, and likely any Firebase-Auth web app), reset_app_data followed by launch() does NOT guarantee a truly logged-out session. The app renders the public login page fine (looks logged out), but Firebase Auth's own persistence (typically IndexedDB) can survive whatever reset_app_data clears (likely just cookies/localStorage), so a background auth-state listener in the app still finds the old session and redirects away from login/signup routes within a second or two of any interaction. If a test needs a genuinely clean, unauthenticated browser state after a broken/cancelled account, reset_app_data + launch() is not sufficient to prove it — read_screen immediately after may show a clean login form that then gets hijacked by a delayed redirect. There is currently no tool available to this harness to clear IndexedDB directly or force a new incognito browser context, so once a broken session like this is created there is no in-session way to recover to a clean state."
     }
   },
-  "run_count": 137,
+  "run_count": 138,
   "runs": [
-    {
-      "at": "2026-08-13T10:27:53+00:00",
-      "ok": true,
-      "seconds": 21.9,
-      "taps": 0,
-      "tool": "agent:clinic-onboarding",
-      "turns": 1
-    },
     {
       "at": "2026-08-13T10:33:28+00:00",
       "ok": true,
@@ -509,6 +501,14 @@
       "taps": 0,
       "tool": "agent:calendar",
       "turns": 1
+    },
+    {
+      "at": "2026-08-14T15:45:41+00:00",
+      "ok": true,
+      "seconds": 9.8,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 4
     }
   ],
   "schema": 1,
@@ -640,5 +640,5 @@
       "unit": "s"
     }
   },
-  "updated_at": "2026-08-14T15:23:27+00:00"
+  "updated_at": "2026-08-14T15:45:41+00:00"
 }

@@ -34,69 +34,6 @@ router = APIRouter()
 sessions = agent_bridge.sessions
 
 
-#: Attached devices, cached briefly. `_device_for` runs on every warm and every message, and
-#: an uncached listing shells out to adb *and* pymobiledevice3 each time.
-_attached_cache: dict[str, object] = {"at": 0.0, "value": []}
-
-
-def _attached() -> list[dict[str, str]]:
-    import device as device_mod
-
-    now = time.monotonic()
-    if now - float(_attached_cache["at"]) > 5:
-        try:
-            _attached_cache["value"] = device_mod.list_devices()
-        except Exception:  # noqa: BLE001 - a listing failure must not block a run
-            _attached_cache["value"] = []
-        _attached_cache["at"] = now
-    return list(_attached_cache["value"])   # type: ignore[arg-type]
-
-
-def _device_for(package: str) -> tuple[Optional[str], Optional[str]]:
-    """(serial, platform) for this project's sessions.
-
-    Every session used to inherit `state.device_serial()` — the serial of whatever device last
-    posted telemetry. With one phone that is right by accident. With an iPad and an iPhone
-    both in play it is wrong half the time, and running the iPad suite would quietly drive the
-    iPhone: same adapter, same shaped UDID, no error anywhere.
-
-    So the order is: what the project is pinned to, then the live serial *if it is the right
-    kind of device*, then the only attached device of that kind. Nothing here guesses across
-    platforms — an iOS project is never handed an Android serial just because it is the one
-    that happens to be there.
-
-    Web projects have no device at all; their target is the URL, which is the package.
-    """
-    meta = projects.read_meta(package) or {}
-    platform = meta.get("platform")
-
-    if (platform or "").lower() == "web":
-        return None, platform
-
-    pinned = meta.get("device_serial")
-    if pinned:
-        return str(pinned), platform
-
-    live = state.device_serial()
-    attached = _attached()
-    if live:
-        match = next((d for d in attached if d["serial"] == live), None)
-        # No match means nothing is listing it — trust it rather than override, since a
-        # headless run posting telemetry is exactly a device this process cannot enumerate.
-        if match is None or not platform or match.get("platform") == platform:
-            return live, platform
-
-    same_kind = [d for d in attached if not platform or d.get("platform") == platform]
-    if len(same_kind) == 1:
-        return same_kind[0]["serial"], platform
-    # Two of the same kind and no pin: let the adapter pick and say so in the logs, rather
-    # than choosing one here and being confidently wrong about which iPad you meant.
-    if len(same_kind) > 1:
-        logger.info("%s: %d %s devices attached and none pinned — pin one with "
-                    "POST /projects/{package}/device", package, len(same_kind), platform)
-    return None, platform
-
-
 @router.get("/agent/status")
 async def agent_status():
     """Which sessions are live, busy, blocked on a question, or parked on a rate limit."""
@@ -122,13 +59,13 @@ async def list_attached_devices():
     iPhone are both `ios` with identically-shaped UDIDs, so without a pin a run on one can
     silently drive the other.
     """
-    attached = await asyncio.to_thread(_attached)
+    found = await asyncio.to_thread(agent_bridge.attached)
     pins: dict[str, list[str]] = {}
     for package in project_paths.known_packages():
         serial = (projects.read_meta(package) or {}).get("device_serial")
         if serial:
             pins.setdefault(str(serial), []).append(package)
-    return [{**d, "pinned_to": pins.get(d["serial"], [])} for d in attached]
+    return [{**d, "pinned_to": pins.get(d["serial"], [])} for d in found]
 
 
 @router.post("/projects/{package:path}/device")
@@ -141,7 +78,7 @@ async def pin_device(package: str, payload: AgentTriggerPayload | None = None):
     """
     serial = (payload.device_serial if payload else None) or None
     meta = projects.write_meta(package, device_serial=serial)
-    _attached_cache["at"] = 0.0     # so the next read re-checks rather than serving a stale pin
+    agent_bridge.forget_attached()   # so the next read re-checks rather than serving a stale pin
     return {"package": package, "device_serial": meta.get("device_serial")}
 
 
@@ -170,7 +107,7 @@ async def warm_agent(package: str, slug: str, payload: AgentTriggerPayload | Non
     if agent_store.get_subproject(package, slug) is None:
         raise HTTPException(status_code=404, detail="Unknown sub-project")
     agent_store.set_last_opened(package, slug)
-    pinned, platform = _device_for(package)
+    pinned, platform = agent_bridge.device_for(package)
     serial = (payload.device_serial if payload else None) or pinned
     try:
         return await sessions.warm(package, slug, serial=serial, platform=platform)
@@ -232,7 +169,7 @@ async def post_message(package: str, slug: str, payload: AgentMessagePayload):
         raise HTTPException(status_code=400, detail="text is required")
     if agent_store.get_subproject(package, slug) is None:
         raise HTTPException(status_code=404, detail="Unknown sub-project — create it first")
-    pinned, platform = _device_for(package)
+    pinned, platform = agent_bridge.device_for(package)
     serial = payload.device_serial or pinned
     session = sessions.get(package, slug, serial=serial, platform=platform)
     asyncio.create_task(session.send(payload.text))
@@ -286,7 +223,7 @@ async def start_recon(package: str, payload: AgentTriggerPayload | None = None):
     agent_store.create_subproject(package, "Recon", "map the app and propose modules",
                                   status="approved")
     projects.ensure_project(package)
-    pinned, platform = _device_for(package)
+    pinned, platform = agent_bridge.device_for(package)
     serial = (payload.device_serial if payload else None) or pinned
     session = sessions.get(package, "recon", serial=serial, platform=platform)
     asyncio.create_task(session.send(recon_prompt()))
@@ -318,7 +255,7 @@ async def start_main(package: str, payload: AgentTriggerPayload | None = None):
         "follows from it, and what the modules have found",
         status="approved")
     projects.ensure_project(package)
-    pinned, platform = _device_for(package)
+    pinned, platform = agent_bridge.device_for(package)
     serial = (payload.device_serial if payload else None) or pinned
     session = sessions.get(package, slug, serial=serial, platform=platform)
     asyncio.create_task(session.send(onboarding_prompt(package)))
@@ -374,7 +311,7 @@ async def set_model(package: str, slug: str, payload: ModelPayload):
     """Move a module onto a different model. Reconnects, resuming the conversation."""
     if agent_store.get_subproject(package, slug) is None:
         raise HTTPException(status_code=404, detail="Unknown sub-project")
-    pinned, platform = _device_for(package)
+    pinned, platform = agent_bridge.device_for(package)
     session = sessions.get(package, slug, serial=pinned, platform=platform)
     try:
         return await session.set_model(payload.model)

@@ -554,6 +554,91 @@ async function renderUnclustered() {
   });
 }
 
+async function renderRetests() {
+  canvasTitle.textContent = 'Re-tests';
+  canvasSub.textContent = 'Runs the manager wants because something was marked fixed. They '
+    + 'wait for you because it cannot see whether the fix reached the build under test — and '
+    + '"closed" in a tracker covers fixed, duplicate and will-not-do.';
+
+  const rows = await api(ecoUrl('/retests'));
+  if (!rows.length) {
+    canvas.appendChild(empty('Nothing queued. Run sync_issue_status from the manager to check '
+                             + 'Blackcode for defects that have been closed.'));
+    return;
+  }
+
+  const groups = [['pending', 'Waiting for you'], ['approved', 'Approved and started'],
+                  ['dismissed', 'Dismissed']];
+  groups.forEach(([status, label]) => {
+    const mine = rows.filter((r) => r.status === status);
+    if (!mine.length) return;
+    canvas.appendChild(sectionTitle(label, `${mine.length}`));
+    mine.forEach((entry) => canvas.appendChild(retestRow(entry)));
+  });
+}
+
+function retestRow(entry) {
+  const box = el('div', 'retest' + (entry.status === 'pending' ? ' pending' : ''));
+
+  const head = el('div', 'retest-head');
+  head.append(chip(entry.role || entry.package, 'member-role'),
+              el('span', 'retest-ref', `${entry.module} · ${entry.finding}`),
+              el('span', 'retest-title', entry.title || ''));
+  if (entry.issue_url) {
+    const link = el('a', 'member-link', `#${entry.issue_id} ↗`);
+    link.href = entry.issue_url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    head.appendChild(link);
+  }
+  box.appendChild(head);
+  box.appendChild(el('div', 'retest-reason', entry.reason || ''));
+
+  if (entry.status !== 'pending') {
+    box.appendChild(el('div', 'retest-decided',
+                       `${entry.status} ${entry.decided_at || ''}`));
+    return box;
+  }
+
+  const actions = el('div', 'retest-actions');
+  const approve = el('button', 'chip-btn accent', '▶ Approve & run');
+  const dismiss = el('button', 'chip-btn', 'Dismiss');
+  const note = el('span', 'retest-note', '');
+
+  // Both disabled on the first click. Approving starts a real run on a real device; a double
+  // click would send the module a second instruction mid-turn, which the lock refuses — so
+  // the visible outcome would be an error about a run you successfully started.
+  const lock = () => { approve.disabled = true; dismiss.disabled = true; };
+  const unlock = () => { approve.disabled = false; dismiss.disabled = false; };
+
+  approve.addEventListener('click', async () => {
+    lock();
+    note.textContent = 'starting…';
+    try {
+      await api(ecoUrl(`/retests/${encodeURIComponent(entry.id)}/approve`), { method: 'POST' });
+      scheduleRefresh(300);
+    } catch (err) {
+      note.textContent = err.message;
+      note.className = 'retest-note failed';
+      unlock();
+    }
+  });
+  dismiss.addEventListener('click', async () => {
+    lock();
+    try {
+      await api(ecoUrl(`/retests/${encodeURIComponent(entry.id)}/dismiss`), { method: 'POST' });
+      scheduleRefresh(300);
+    } catch (err) {
+      note.textContent = err.message;
+      unlock();
+    }
+  });
+
+  actions.append(approve, dismiss, note);
+  box.appendChild(actions);
+  return box;
+}
+
 // -- shell ----------------------------------------------------------------------------
 function markActive() {
   document.querySelectorAll('.nav-item').forEach((item) => {
@@ -579,6 +664,7 @@ async function show(name, arg) {
     if (name === 'app') await renderApp(arg);
     else if (name === 'clusters') await renderClusters();
     else if (name === 'unclustered') await renderUnclustered();
+    else if (name === 'retests') await renderRetests();
     else renderOverview();
   } catch (err) {
     canvas.appendChild(el('div', 'canvas-warn', 'Could not load this view: ' + err.message));
@@ -631,6 +717,16 @@ function renderRail() {
 
   document.getElementById('countClusters').textContent = board.clusters.clusters;
   document.getElementById('countUnclustered').textContent = board.unclustered;
+
+  // The pending count, not the total: the queue is a thing to act on, and a badge that keeps
+  // climbing as you approve things is one you stop reading.
+  const retestPill = document.getElementById('countRetests');
+  const pending = (board.retests || {}).pending || 0;
+  retestPill.textContent = pending;
+  retestPill.classList.toggle('nav-count-due', pending > 0);
+  retestPill.title = pending
+    ? `${pending} re-test(s) waiting for you to approve or dismiss`
+    : 'Nothing waiting';
 
   railFoot.textContent = board.supervisor
     ? 'Manager: ' + board.supervisor

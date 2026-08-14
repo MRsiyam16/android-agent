@@ -16,8 +16,12 @@ all** — not a restricted one, none — for two reasons:
 * **One phone, one driver** (see manager_tools' header). This tier exists to look at five
   projects whose modules run on shared hardware. It is the session most likely to be open
   while another is driving a device, so it is the one that most needs to be incapable of
-  touching one. Until there is a lock across sessions, an ecosystem agent that could start a
-  run would be two agents on one screen by design rather than by accident.
+  touching one.
+
+It *can* now start a run — `run_module` — and the second point above is exactly why that is
+safe rather than reckless. It does not drive the device; it hands an instruction to the module
+that owns it, and `device_locks` refuses if something else is already there. Starting a run and
+driving one are different powers, and this tier has only the first.
 
 It also cannot file a finding. A finding is one named test case with a screenshot behind it,
 filed by the agent that watched it happen; this tier has watched nothing. What it produces
@@ -42,6 +46,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 import clusters as clusters_mod
 import config
 import ecosystem as ecosystem_mod
+import retests as retests_mod
 from agent import store
 from agent.store import StoreWriteError
 
@@ -776,7 +781,7 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         for finding in tracked:
             by_issue.setdefault(int(finding["issue_id"]), []).append(finding)
 
-        changed, unreachable, unchanged = [], [], 0
+        changed, unreachable, newly_queued, unchanged = [], [], [], 0
         for number, group in sorted(by_issue.items()):
             try:
                 live = await asyncio.to_thread(blackcode.issue_status, number)
@@ -797,6 +802,20 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                 changed.append(f"{finding['role']}/{finding['module_slug']}/{finding['id']} "
                                f"(#{number}) -> {live['status']}"
                                + (" — now resolved" if live["resolved"] else " — reopened"))
+                # A defect that just closed is a defect nobody has re-checked on the device.
+                # Queued rather than run: from here it is impossible to tell whether the fix
+                # is deployed to the environment under test, and "closed" covers fixed,
+                # duplicate and will-not-do. Idempotent, so repeated syncs do not pile up.
+                if live["resolved"]:
+                    queued = await asyncio.to_thread(
+                        retests_mod.queue, name, finding["package"], finding["module_slug"],
+                        finding["id"], role=finding.get("role", ""),
+                        title=str(finding.get("title") or ""),
+                        reason=f"Issue #{number} was closed as {live['status']} — not yet "
+                               f"re-checked on the device.",
+                        issue_id=number, issue_url=str(live.get("url") or ""))
+                    if queued is not None:
+                        newly_queued.append(f"{finding['role']}/{finding['id']}")
 
         lines = [f"Checked {len(by_issue)} issue(s) covering {len(tracked)} finding(s)."]
         if changed:
@@ -805,9 +824,110 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
             lines.append("Nothing changed.")
         if unchanged:
             lines.append(f"{unchanged} already matched.")
+        if newly_queued:
+            lines.append(f"Queued {len(newly_queued)} re-test(s) for the user to approve — "
+                         f"marked closed in Blackcode is not the same as checked on the "
+                         f"device: {', '.join(newly_queued)}")
         if unreachable:
             lines.append("Could not check: " + "; ".join(unreachable))
         return _ok("\n".join(lines))
+
+    # -- running things -------------------------------------------------------------------
+    @tool("run_module",
+          "Start a module running, in whichever app it lives in. This is how work you "
+          "commission actually happens — create_module puts a module in an app's rail; this "
+          "sends it its instruction and it begins. The run happens in that app's own session "
+          "with its own device: you are starting it, not driving it, and you will not see its "
+          "screen. Refused if something else is already driving that target, because two "
+          "agents on one device interleave their actions. Say in `instruction` what to "
+          "establish, including what another app already found — that context is the reason "
+          "this is worth starting from up here rather than opening it by hand.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role (e.g. patient-android) or package"},
+               "module": {"type": "string", "description": "Module slug"},
+               "instruction": {"type": "string",
+                               "description": "What this run should establish"},
+           },
+           "required": ["app", "module", "instruction"], "additionalProperties": False})
+    async def run_module(args: dict[str, Any]) -> dict[str, Any]:
+        from backend import agent_bridge
+
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+        slug = str(args.get("module") or "").strip()
+        instruction = str(args.get("instruction") or "").strip()
+        if not instruction:
+            return _err("A run needs an instruction — say what it should establish.")
+
+        try:
+            started = agent_bridge.start_run(member["package"], slug, instruction)
+        except agent_bridge.RunRefused as exc:
+            return _err(str(exc))
+        return _ok(f"Started {member['role']}/{slug} on {started['target']}. It runs in that "
+                   f"project's own session — watch it there, or ask me again later and I will "
+                   f"read what it filed.")
+
+    @tool("queue_retest",
+          "Ask for a finding to be re-tested, pending the user's approval. Use this for work "
+          "a *fix* prompted — an issue closed in Blackcode, a developer saying something is "
+          "done — rather than work you planned. It does not start anything: it goes on the "
+          "queue in the manager dashboard for the user to approve or dismiss. The reason it "
+          "waits is that you cannot see whether the fix is deployed to the environment under "
+          "test, and 'closed' in a tracker covers fixed, duplicate and will-not-do.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role or package"},
+               "module": {"type": "string", "description": "Module slug"},
+               "finding": {"type": "string", "description": "Finding id, e.g. F007"},
+               "reason": {"type": "string",
+                          "description": "Why this needs re-testing, in a line"},
+               "instruction": {"type": "string",
+                               "description": "What the re-test should check, if approved"},
+           },
+           "required": ["app", "module", "finding", "reason"], "additionalProperties": False})
+    async def queue_retest(args: dict[str, Any]) -> dict[str, Any]:
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+        slug = str(args.get("module") or "").strip()
+        finding_id = str(args.get("finding") or "").strip()
+        findings = await asyncio.to_thread(store.list_findings, member["package"], slug)
+        finding = next((f for f in findings if f.get("id") == finding_id), None)
+        if finding is None:
+            known = ", ".join(f["id"] for f in findings) or "none"
+            return _err(f"No finding {finding_id!r} in {member['role']}/{slug}. It has: {known}.")
+
+        entry = await asyncio.to_thread(
+            retests_mod.queue, name, member["package"], slug, finding_id,
+            role=member["role"], title=str(finding.get("title") or ""),
+            reason=str(args.get("reason") or ""),
+            issue_id=finding.get("issue_id"), issue_url=str(finding.get("issue_url") or ""),
+            instruction=str(args.get("instruction") or ""))
+        if entry is None:
+            return _ok(f"{member['role']}/{slug}/{finding_id} is already on the re-test queue "
+                       f"— not added twice.")
+        return _ok(f"Queued a re-test of {member['role']}/{slug}/{finding_id} for approval. It "
+                   f"has NOT started; it is waiting for the user in the manager dashboard.")
+
+    @tool("list_retests",
+          "The re-test queue: what is waiting for the user's approval, what they approved and "
+          "what they dismissed. Read it before queueing, and before claiming a defect is "
+          "confirmed fixed — 'closed in Blackcode' and 'checked on the device' are different "
+          "claims, and only an approved re-test that ran turns one into the other.",
+          {"type": "object",
+           "properties": {"status": {"type": "string",
+                                     "enum": ["pending", "approved", "dismissed"]}},
+           "additionalProperties": False})
+    async def list_retests(args: dict[str, Any]) -> dict[str, Any]:
+        rows = await asyncio.to_thread(retests_mod.list_queued, name, args.get("status"))
+        if not rows:
+            return _ok("Nothing on the re-test queue.")
+        return _ok("\n".join(
+            f"[{r['status']}] {r['role']}/{r['module']}/{r['finding']} — {r['title']}"
+            + (f"  (#{r['issue_id']})" if r.get("issue_id") else "")
+            + f"\n      {r['reason']}" for r in rows))
 
     return create_sdk_mcp_server(
         name="ecosystem",
@@ -815,7 +935,8 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         tools=[list_apps, read_app, read_finding, unclustered_defects,
                list_clusters, read_cluster, save_cluster, delete_cluster,
                ecosystem_report, create_module, update_module,
-               search_issues, file_cluster, link_cluster, sync_issue_status],
+               search_issues, file_cluster, link_cluster, sync_issue_status,
+               run_module, queue_retest, list_retests],
     )
 
 
@@ -839,6 +960,9 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__file_cluster",
     "mcp__ecosystem__link_cluster",
     "mcp__ecosystem__sync_issue_status",
+    "mcp__ecosystem__run_module",
+    "mcp__ecosystem__queue_retest",
+    "mcp__ecosystem__list_retests",
 ]
 
 

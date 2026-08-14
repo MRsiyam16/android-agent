@@ -200,17 +200,17 @@ class TestDeviceRouting:
     @pytest.fixture
     def attached(self, monkeypatch):
         """Two iOS devices and one Android, as if all three were plugged in."""
-        from backend.routes import agent as agent_routes
+        from backend import agent_bridge
 
         devices = [{"serial": "udid-ipad", "platform": "ios"},
                    {"serial": "udid-iphone", "platform": "ios"},
                    {"serial": "R5CT30", "platform": "android"}]
-        monkeypatch.setattr(agent_routes, "_attached", lambda: devices)
+        monkeypatch.setattr(agent_bridge, "attached", lambda: devices)
         return devices
 
     def _device_for(self, package):
-        from backend.routes.agent import _device_for
-        return _device_for(package)
+        from backend.agent_bridge import device_for
+        return device_for(package)
 
     def test_a_pinned_project_always_gets_its_own_device(self, projects_on_disk, attached,
                                                          monkeypatch):
@@ -229,9 +229,8 @@ class TestDeviceRouting:
         assert serial != "R5CT30"
 
     def test_with_one_device_of_the_right_kind_it_is_chosen(self, projects_on_disk, monkeypatch):
-        from backend import state
-        from backend.routes import agent as agent_routes
-        monkeypatch.setattr(agent_routes, "_attached",
+        from backend import agent_bridge, state
+        monkeypatch.setattr(agent_bridge, "attached",
                             lambda: [{"serial": "udid-ipad", "platform": "ios"}])
         monkeypatch.setattr(state, "device_serial", lambda: None)
         assert self._device_for("ipad Test") == ("udid-ipad", "ios")

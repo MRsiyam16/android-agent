@@ -5,9 +5,10 @@ largest thing the system knew about. These are the endpoints that only mean anyt
 that line: which apps make up an ecosystem, and which of their separately-filed findings are
 really one defect.
 
-Read-only except for the cluster edits. Nothing here starts a run or touches a device — the
-manager tier that does is a separate build, and keeping this module incapable of it is the
-same discipline as the manager module not being registered `record_finding`.
+Read-only except for the cluster edits and the re-test queue. Nothing here *drives* a device:
+approving a re-test hands an instruction to the module that owns the device and returns, the
+same as pressing Send in the cockpit does. Starting a run and driving one are different
+powers, and only the first is here.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 
 import clusters as clusters_mod
 import ecosystem as ecosystem_mod
+import retests as retests_mod
 
 logger = logging.getLogger("server.ecosystem")
 router = APIRouter()
@@ -84,6 +86,7 @@ async def get_board(name: str):
         "clusters": clusters_mod.summary(name),
         "cross_app": [c for c in rows if c["scope"] == "cross-app"],
         "unclustered": len(unclustered),
+        "retests": retests_mod.summary(name),
     }
 
 
@@ -167,6 +170,50 @@ async def remove_member(name: str, cluster_id: str, package: str, module: str, f
 async def apply_stamps(name: str):
     """Rebuild every finding's cluster stamp from the store. Idempotent."""
     return clusters_mod.apply(name)
+
+
+@router.get("/ecosystems/{name}/retests")
+async def get_retests(name: str, status: Optional[str] = None):
+    """The re-test queue: runs the manager wants, waiting on you."""
+    return retests_mod.list_queued(name, status)
+
+
+@router.post("/ecosystems/{name}/retests/{entry_id:path}/approve")
+async def approve_retest(name: str, entry_id: str):
+    """Approve a queued re-test and start it.
+
+    The run is started *before* the entry is marked approved, and the entry is left pending if
+    it will not start. An approval that records success while the module never ran is the one
+    failure this queue exists to prevent — it would read, later, as a defect that was
+    re-checked and passed.
+    """
+    from .. import agent_bridge
+
+    entry = retests_mod.get(name, entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No queued re-test {entry_id!r}")
+    if entry["status"] != "pending":
+        raise HTTPException(status_code=409,
+                            detail=f"That re-test was already {entry['status']}.")
+
+    instruction = entry.get("instruction") or (
+        f"Re-test {entry['finding']} — \"{entry['title']}\". {entry['reason']} "
+        f"Run the case again and record what you actually observe now: a pass if it is fixed, "
+        f"or a fresh finding if it is not. Do not assume the fix landed in this build.")
+    try:
+        agent_bridge.start_run(entry["package"], entry["module"], instruction)
+    except agent_bridge.RunRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return retests_mod.decide(name, entry_id, "approved")
+
+
+@router.post("/ecosystems/{name}/retests/{entry_id:path}/dismiss")
+async def dismiss_retest(name: str, entry_id: str):
+    """Say no. Recorded rather than deleted, so the next sync does not raise it again."""
+    entry = retests_mod.decide(name, entry_id, "dismissed")
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No queued re-test {entry_id!r}")
+    return entry
 
 
 @router.post("/projects/{package:path}/ecosystem")
