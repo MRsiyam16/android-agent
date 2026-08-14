@@ -498,7 +498,13 @@ def link_finding(package: str, slug: str, finding_id: str,
 #: Fields `set_finding_tracking` is allowed to touch. Kept narrow on purpose — this is the
 #: one place a finding is edited after the fact from outside the test run that filed it, so
 #: it must not become a general-purpose patch that could silently rewrite `expected`/`actual`.
-FINDING_TRACKING_FIELDS = ("resolved", "issue_url", "issue_id")
+#:
+#: `cluster` is the id of the defect this finding turned out to be one report of — five apps
+#: on one backend means the same defect gets filed once per app by agents that cannot see
+#: each other, and a quarter of the first ecosystem-wide pass was duplicates. `clusters.py`
+#: owns the grouping and stamps this field; it is a cache of that file, not a second source
+#: of truth, so a module agent can see "already known" without loading the whole ecosystem.
+FINDING_TRACKING_FIELDS = ("resolved", "issue_url", "issue_id", "cluster")
 
 
 def set_finding_tracking(package: str, slug: str, finding_id: str,
