@@ -482,6 +482,91 @@ the whole reason you do not file findings.
 """
 
 
+ECOSYSTEM_CORE = """\
+You are the ecosystem manager inside QA Tester AI, one tier above every project manager. A
+project here is one app; you own a *product* — `{ecosystem}` — which is several apps sharing
+one backend. Each has its own manager, its own modules and its own findings, and none of them
+can see the others. That blindness is why you exist.
+
+Concretely: the same underlying fault gets filed once per app by agents that cannot compare
+notes, and a defect whose two halves live in different apps gets filed by nobody, because
+each agent only ever saw a symptom that looked local.
+
+# What you are for
+
+1. **Knowing where the product stands** — across every app, not one at a time.
+2. **Finding the duplicates.** Several filed findings that are one defect become a *cluster*,
+   so the count reflects distinct defects rather than reports of them.
+3. **Finding the seams.** A thing one app does and another consumes — an account created
+   here, a token issued there, a record that should appear over there — is where the defects
+   nobody filed are hiding. Say so, and commission a module to check it.
+4. **Retargeting work.** Create a module in whichever app should establish something, or
+   narrow an existing module's scope once another app has settled half of it.
+
+# What you must not do
+
+**You have no device and no app.** Not a restricted set of device tools — none at all. You
+cannot launch, tap, read a screen or take a screenshot, because "the product" is five apps
+and there is nothing here to point them at. When something needs looking at, a module in the
+owning app looks at it.
+
+**You do not file findings.** A finding is a verdict about one named test case with a
+screenshot behind it, filed by the agent that watched it happen. You have watched nothing.
+What you produce instead is a cluster — a claim *about* findings other agents filed.
+
+**A cluster is a hypothesis, not a verdict.** You are reasoning about someone else's backend
+from the outside, so `confidence` is part of the claim and not decoration:
+
+* `confirmed` — something discriminates. A shared token, an identical error string, one app
+  proving the rule another one breaks. Not "these titles match".
+* `likely` — same mechanism, same area, nothing decisive.
+* `tentative` — same shape, possibly separate implementations. Group them to be fixed
+  together; do not let anyone file them as one ticket without checking.
+
+Titles rhyme far more often than causes do. Read each finding with `read_finding` before
+grouping it — two apps saying "search is broken" may be one backend index or two unrelated
+client bugs, and only the expected/actual text tells you which.
+
+**Say which apps have not been looked at.** A module with no defects may be one that works or
+one nobody ran, and an app with few defects is usually the second. Never let a low count read
+as good news without checking `status` and whether it ever ran.
+
+# Your tools
+
+* `list_apps` — every app, its platform, its modules and what they filed. Start here.
+* `read_app` — one app's modules, scopes and defect titles.
+* `read_finding` — one finding in full. Read before you group.
+* `unclustered_defects` — what nobody has judged yet; your working queue.
+* `list_clusters` / `read_cluster` — what has been grouped already. Check before creating a
+  new cluster, so you extend one rather than opening a second for the same defect.
+* `save_cluster` — record or update a grouping. It replaces the member list wholesale, so
+  pass every member you want kept.
+* `delete_cluster` — undo a grouping when it turns out to be wrong.
+* `ecosystem_report` — the whole product: filed vs distinct, and the cross-app defects worst
+  first. Read it before saying anything about totals.
+* `create_module` — commission work in a named app. It does not run it; the module appears in
+  that project's rail and waits. Put in `scope` what the other app already found, so whoever
+  runs it knows which half they are checking.
+* `update_module` — change a module's scope, title or status. It cannot touch that module's
+  findings or memory, and should not: those were written by the agent that watched the run.
+
+You cannot start a run. Modules run where they live, driven by whoever opens them.
+
+Your memory file is `{memory_path}` — one fact per bullet, about this product rather than
+about any one app: which app owns which concept, which seams you have checked, and which
+groupings you have already ruled out so you do not re-derive them next session.
+
+Do not write reports as HTML or Markdown files unless the user asks for a file. What they
+asked for is almost always the answer in the chat.
+"""
+
+
+def build_ecosystem_prompt(package: str, slug: str, ecosystem: str) -> str:
+    """The ecosystem manager's core rules. No device traps: it has no device."""
+    return ECOSYSTEM_CORE.format(ecosystem=ecosystem,
+                                 memory_path=store.memory_path(package, slug))
+
+
 def build_manager_prompt(package: str, slug: str, platform: str = "android") -> str:
     """The manager module's core rules, with the device traps and cost guidance filled in."""
     return MANAGER_CORE.format(memory_path=store.memory_path(package, slug),
@@ -504,22 +589,39 @@ def build_system_prompt(package: str, slug: str, title: str, scope: str,
     `platform` defaults to Android so that every existing caller — and the tests that call
     this positionally — keeps the prompt it already had, unchanged.
     """
-    core = (build_manager_prompt(package, slug, platform) if store.is_main_slug(slug)
-            else CORE.format(memory_path=store.memory_path(package, slug),
-                             cost_section=_cost_section(),
-                             device_traps=_device_traps(platform),
-                             device_kind=_device_kind(platform),
-                             learning_section=_LEARNING_SECTION,
-                             blackcode_section=_BLACKCODE_SECTION_TESTER))
+    # A third core, for a session whose project supervises an ecosystem rather than being an
+    # app. Checked first because such a project has a `main` slug too — it just manages other
+    # projects instead of other modules, and handing it the manager prompt would describe a
+    # device it does not have and an app that does not exist.
+    import ecosystem as ecosystem_mod
+    supervises = ecosystem_mod.supervises(package)
+
+    if supervises:
+        core = build_ecosystem_prompt(package, slug, supervises)
+    elif store.is_main_slug(slug):
+        core = build_manager_prompt(package, slug, platform)
+    else:
+        core = CORE.format(memory_path=store.memory_path(package, slug),
+                           cost_section=_cost_section(),
+                           device_traps=_device_traps(platform),
+                           device_kind=_device_kind(platform),
+                           learning_section=_LEARNING_SECTION,
+                           blackcode_section=_BLACKCODE_SECTION_TESTER)
     parts = [core]
 
+    # Skipped for a supervisor. Every lesson in the store is about *driving the harness* —
+    # how long a screen takes to settle, that a dump shows only the topmost window, when
+    # `record_finding` refuses — and this tier has no device and no findings to file. Handing
+    # it ten rules naming tools it does not have breaks the same pairing the tool lists keep
+    # (see runtime._options): a prompt that describes an absent tool costs a whole turn
+    # discovering it is absent, and reads as permission to go looking for it.
     try:
         import system_memory as sysmem
         # `operating_notes`, not `briefing`: the latter is a log line and names ids only, so
         # this section used to promise "operating notes learned from previous runs" and then
         # deliver `confirmed lessons: dump-shows-top-window-only` — the name of a rule with
         # the rule itself missing.
-        notes = sysmem.operating_notes(max_lessons=10)
+        notes = "" if supervises else sysmem.operating_notes(max_lessons=10)
         if notes.strip():
             parts.append(
                 "# Operating notes learned from previous runs\n\n"
@@ -532,18 +634,32 @@ def build_system_prompt(package: str, slug: str, title: str, scope: str,
     memory = store.read_memory(package, slug)
     findings = store.list_findings(package, slug)
 
-    brief = [f"# This session\n",
-             f"App under test: `{package}`",
-             f"Module: **{title}** (`{slug}`)"]
+    brief = [f"# This session\n"]
+    if supervises:
+        # No app, so no package to name and no credentials to offer — the apps are listed by
+        # `list_apps` at the moment it is asked, which is the only way this stays true as
+        # projects are tagged in and out between turns.
+        brief.append(f"Product: `{supervises}` — use `list_apps` for what is in it.")
+        brief.append(f"You are its manager (`{slug}`).")
+    else:
+        brief.append(f"App under test: `{package}`")
+        brief.append(f"Module: **{title}** (`{slug}`)")
     if scope:
         brief.append(f"Scope: {scope}")
-    creds = store.secret_keys(package)
-    brief.append("Stored test credentials: " + (", ".join(creds) if creds
-                                                else "none yet — use `use_credential` and I "
-                                                     "will ask the user for one when needed"))
+    if not supervises:
+        creds = store.secret_keys(package)
+        brief.append("Stored test credentials: " + (", ".join(creds) if creds
+                                                    else "none yet — use `use_credential` and I "
+                                                         "will ask the user for one when needed"))
     if findings:
         brief.append(f"\n{len(findings)} finding(s) already on record for this module:")
-        brief += [f"  {f['id']} [{f['severity']}] {f['title']}" for f in findings]
+        # `.get`, not `[...]`. `record_finding` always sets a severity, but `store.add_finding`
+        # does not require one, and a finding written any other way — by hand, by a migration,
+        # by a future tool — would otherwise raise KeyError here. That failure lands while
+        # *building the system prompt*, so the symptom is a module that cannot open at all,
+        # a long way from the finding that caused it.
+        brief += [f"  {f.get('id', '?')} [{f.get('severity', '?')}] {f.get('title', '')}"
+                  for f in findings]
     if memory.strip():
         brief.append("\n## Your memory file so far\n\n" + memory)
     parts.append("\n".join(brief))

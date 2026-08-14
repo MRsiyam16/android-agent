@@ -41,6 +41,11 @@ logger = logging.getLogger("ecosystem")
 #: Worst-first, matching `store.FINDING_KINDS` — a reader wants the defects before the passes.
 DEFECT_KINDS = ("bug", "warning", "suggestion")
 
+#: The role a supervisor project holds. It is a role like any other so that one key answers
+#: "what is this project" for every project, rather than a second flag only some carry — but
+#: it is the one role with no app behind it, which is what `supervises` exists to detect.
+SUPERVISOR_ROLE = "supervisor"
+
 _LOCK = threading.RLock()
 
 
@@ -96,6 +101,11 @@ def members(name: str) -> list[dict[str, Any]]:
         meta = _meta(package)
         if str(meta.get("ecosystem") or "") != name:
             continue
+        # The supervisor is in the ecosystem but is not one of its apps — it has no package to
+        # launch and files nothing. Counting it here would report six apps where there are
+        # five, and put an always-empty row in every listing built from this.
+        if str(meta.get("role") or "") == SUPERVISOR_ROLE:
+            continue
         out.append({
             "package": package,
             "role": str(meta.get("role") or "untagged"),
@@ -122,6 +132,33 @@ def role_of(package: str) -> Optional[str]:
     """This project's role, or None if it is not in an ecosystem."""
     meta = _meta(package)
     return str(meta["role"]) if meta.get("ecosystem") and meta.get("role") else None
+
+
+def supervises(package: str) -> Optional[str]:
+    """The ecosystem this project supervises, or None if it is an app like any other.
+
+    A supervisor project has no package to launch, no device, nothing to tap — it is five
+    apps at once. `runtime._options` reads this to build a session with **no device server
+    registered at all**, which is what makes an ecosystem agent incapable of driving a phone
+    rather than merely discouraged from it.
+    """
+    meta = _meta(package)
+    name = str(meta.get("ecosystem") or "")
+    return name if name and str(meta.get("role") or "") == SUPERVISOR_ROLE else None
+
+
+def create_supervisor(name: str) -> str:
+    """Create (or return) the supervisor project for an ecosystem.
+
+    Its package is the ecosystem's own name. That keeps it addressable by every existing
+    project path without a second concept — it is a project folder like the others, holding a
+    conversation, a memory file and nothing else — while `supervises` keeps it out of the
+    app listings that would otherwise count it as a sixth app.
+    """
+    from backend import projects as backend_projects
+    with _LOCK:
+        backend_projects.write_meta(name, ecosystem=name, role=SUPERVISOR_ROLE)
+    return name
 
 
 # -- the view across them -------------------------------------------------------------------

@@ -37,9 +37,11 @@ from claude_agent_sdk import (
 )
 
 import config
+import ecosystem
 import system_memory as sysmem
 from agent import device_tools, prompts, store
 from agent.device_tools import DeviceSession, build_device_server
+from agent.ecosystem_tools import build_ecosystem_server, ecosystem_tool_names
 from agent.manager_tools import build_manager_server, manager_tool_names
 from agent.stepper import Stepper, build_stepper_server, stepper_tool_names
 
@@ -143,23 +145,36 @@ class AgentSession:
         # describes but the session does not have costs a whole turn discovering it is absent.
         # The same is true in reverse — a tool the prompt says it does not have, sitting in the
         # tool definitions, is an invitation to reach for it.
+        # A third tier sits above both: a session whose *project* supervises an ecosystem. It
+        # has no app behind it — it is five apps at once — so it gets no device server at all,
+        # not a restricted one. That absence is what makes it incapable of driving a phone
+        # while another module's run is using it, which matters more here than anywhere else:
+        # there is still no lock across sessions, and this is the session most likely to be
+        # open while another is tapping.
+        supervises = ecosystem.supervises(self.package)
         manager = store.is_main_slug(self.slug)
         is_web = self.device.resolved_platform == "web"
-        if manager:
-            names = (device_tools.MANAGER_WEB_DEVICE_TOOL_NAMES if is_web
-                     else device_tools.MANAGER_DEVICE_TOOL_NAMES)
+        mcp_servers: dict[str, Any] = {}
+
+        if supervises:
+            allowed = ecosystem_tool_names() + FILE_TOOLS
+            mcp_servers["ecosystem"] = build_ecosystem_server(self.device, supervises)
         else:
-            names = (device_tools.WEB_DEVICE_TOOL_NAMES if is_web
-                     else device_tools.DEVICE_TOOL_NAMES)
-        allowed = names + FILE_TOOLS
-        mcp_servers: dict[str, Any] = {
-            "device": build_device_server(self.device, can_file_findings=not manager)}
-        if config.AGENT_USE_CHEAP_TIER:
-            mcp_servers["cheap"] = build_stepper_server(self.stepper, self.device)
-            allowed += stepper_tool_names()
-        if manager:
-            mcp_servers["manager"] = build_manager_server(self.device)
-            allowed += manager_tool_names()
+            if manager:
+                names = (device_tools.MANAGER_WEB_DEVICE_TOOL_NAMES if is_web
+                         else device_tools.MANAGER_DEVICE_TOOL_NAMES)
+            else:
+                names = (device_tools.WEB_DEVICE_TOOL_NAMES if is_web
+                         else device_tools.DEVICE_TOOL_NAMES)
+            allowed = names + FILE_TOOLS
+            mcp_servers["device"] = build_device_server(
+                self.device, can_file_findings=not manager)
+            if config.AGENT_USE_CHEAP_TIER:
+                mcp_servers["cheap"] = build_stepper_server(self.stepper, self.device)
+                allowed += stepper_tool_names()
+            if manager:
+                mcp_servers["manager"] = build_manager_server(self.device)
+                allowed += manager_tool_names()
 
         async def gate(payload: dict[str, Any], _tool_use_id: Optional[str],
                        _ctx: Any) -> dict[str, Any]:
