@@ -204,6 +204,61 @@ def test_coverage_reaches_the_board(client):
     assert sorted(body["totals"]["coverage"]["unsurveyed"]) == ["clinic-web", "patient-android"]
 
 
+# -- defect status ----------------------------------------------------------------------
+def test_resolved_is_one_bucket_and_the_rest_are_open_counts(eco):
+    """A closed warning and a closed bug are both work that is done. Splitting `resolved` by
+    kind would put the same colour in four places on the bar."""
+    store.add_finding(ANDROID, "search", {"title": "b", "kind": "warning"})
+    store.add_finding(ANDROID, "search", {"title": "c", "kind": "suggestion"})
+    store.set_finding_tracking(ANDROID, "search", "F002", resolved=True)
+
+    app = next(a for a in ecosystem.app_index(NAME) if a["package"] == ANDROID)
+    assert app["defect_status"] == {"resolved": 1, "bug": 1, "warning": 0, "suggestion": 1}
+    # ...and it deliberately does not add up to `defects`, which is everything ever filed.
+    assert app["defects"] == 3
+
+
+def test_passes_are_not_defects_in_either_direction(eco):
+    store.add_finding(ANDROID, "search", {"title": "works", "kind": "pass"})
+    store.set_finding_tracking(ANDROID, "search", "F002", resolved=True)
+    app = next(a for a in ecosystem.app_index(NAME) if a["package"] == ANDROID)
+    assert app["defect_status"]["resolved"] == 0
+
+
+def test_the_total_counts_every_app_including_unsurveyed_ones(eco):
+    """Unlike coverage. A defect that exists, exists — what an unsurveyed app makes unknown is
+    how many *more* it would find, and that is `incomplete`, not a missing count."""
+    ipad = "com.metaesthetics.doctor"
+    backend_projects.write_meta(ipad, platform="ios")
+    ecosystem.tag(ipad, NAME, "doctor-ipad")
+    store.create_subproject(ipad, "Calculator test", status="tested")
+    store.add_finding(ipad, "calculator-test", {"title": "wrong sum", "kind": "bug"})
+
+    totals = ecosystem.summary(NAME)
+    assert totals["defect_status"]["bug"] == 3          # two seeded apps plus the ipad
+    assert "doctor-ipad" in totals["incomplete"]
+
+
+def test_incomplete_names_apps_with_modules_nobody_ran(eco):
+    """What the hatched cap on the defect bar means: there are defects here nobody has looked
+    for yet. Not a quantity — a warning that the total is a floor."""
+    assert sorted(ecosystem.summary(NAME)["incomplete"]) == ["clinic-web", "patient-android"]
+
+    for package in (ANDROID, WEB):
+        store.update_subproject(package, "search", status="tested",
+                                last_run_at="2026-08-01T00:00:00Z")
+        store.create_subproject(package, "Main")
+        store.update_subproject(package, "main", last_run_at="2026-08-01T00:00:00Z")
+    assert ecosystem.summary(NAME)["incomplete"] == []
+
+
+def test_defect_status_reaches_the_board(client):
+    body = client.get(f"/ecosystems/{NAME}/board").json()
+    assert set(body["totals"]["defect_status"]) == {"resolved", "bug", "warning", "suggestion"}
+    assert all("defect_status" in app for app in body["apps"])
+    assert "incomplete" in body["totals"]
+
+
 # -- event stamping ---------------------------------------------------------------------
 def test_every_event_carries_the_project_that_emitted_it(eco):
     """Filtering on slug alone is not enough: `main` is every project's manager module, and

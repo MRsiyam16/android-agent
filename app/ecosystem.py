@@ -266,6 +266,30 @@ def coverage(mods: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def defect_status(findings: list[dict[str, Any]]) -> dict[str, int]:
+    """Filed defects split into the four states worth colouring separately.
+
+    `resolved` is one bucket regardless of kind: a closed warning and a closed bug are both
+    work that is done, and splitting them would put the same colour in four places. The other
+    three are *open* counts, which is why they do not add up to this app's `counts` tally —
+    that one is everything ever filed, this one is what is still outstanding.
+
+    Deliberately a different unit from `coverage`. Modules and findings cannot share a bar:
+    "6 of 13 tested" and "31 bugs" have no common denominator, and a bar whose segments count
+    different things is not readable as a proportion of anything.
+    """
+    status = {"resolved": 0, "bug": 0, "warning": 0, "suggestion": 0}
+    for finding in findings:
+        kind = str(finding.get("kind") or "")
+        if kind not in DEFECT_KINDS:
+            continue
+        if finding.get("resolved"):
+            status["resolved"] += 1
+        else:
+            status[kind] += 1
+    return status
+
+
 def app_index(name: str) -> list[dict[str, Any]]:
     """Every app with its module counts and outcome tally — one row per app.
 
@@ -300,6 +324,7 @@ def app_index(name: str) -> list[dict[str, Any]]:
             "coverage": coverage(mods),
             "counts": tally,
             "defects": sum(tally[k] for k in DEFECT_KINDS),
+            "defect_status": defect_status(store.list_all_findings(member["package"])),
         })
     return out
 
@@ -340,6 +365,16 @@ def summary(name: str) -> dict[str, Any]:
             "percent": round(100 * known_tested / known_testable) if known_testable else None,
             "unsurveyed": [a["role"] for a in unsurveyed],
         },
+        # Rolled up over every app, surveyed or not: unlike coverage this is a count of things
+        # that exist rather than a fraction of something nobody scoped, so an unsurveyed app's
+        # defects belong in it. What is unknown is how many more it would have found, and that
+        # is `incomplete` — not a number, a warning that this total is a floor.
+        "defect_status": {
+            key: sum(a["defect_status"][key] for a in apps)
+            for key in ("resolved", "bug", "warning", "suggestion")
+        },
+        "incomplete": sorted(a["role"] for a in apps
+                             if not a["coverage"]["surveyed"] or a["never_run"]),
     }
 
 

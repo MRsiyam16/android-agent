@@ -46,7 +46,9 @@
 /* An app row is three stacked lines rather than one, because the bar is the point: the rail
    is where you decide what to work on next, and "which app is least covered" is that
    decision. */
-.nav-app { flex-direction: column; align-items: stretch; gap: 5px; }
+.nav-app { flex-direction: column; align-items: stretch; gap: 4px; }
+.nav-app .bar { height: 4px; }
+.nav-app .bar + .bar { margin-top: -1px; }
 .nav-app-top { display: flex; align-items: center; gap: 8px; }
 .nav-sub { font-size: 10.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .nav-item.active .nav-sub { color: var(--ink-muted); }
@@ -107,11 +109,37 @@
   opacity: 0.55;
 }
 
+/* The defect bar's four states. Same colours as the kind chips everywhere else on this page,
+   so a red block and a red `bug` chip are obviously the same claim. `resolved` is one bucket
+   for every kind: a closed warning and a closed bug are both work that is done. */
+.seg-resolved { background: var(--success); }
+.seg-bug { background: var(--danger); }
+.seg-warning { background: var(--accent-orange); }
+.seg-suggestion { background: var(--accent-blue); }
+/* Nothing filed against something that *has* been looked at — a claim, not an absence. */
+.bar-clean { background: var(--success); opacity: 0.35; }
+
+.legend-resolved::before { background: var(--success); }
+.legend-bug::before { background: var(--danger); }
+.legend-warning::before { background: var(--accent-orange); }
+.legend-suggestion::before { background: var(--accent-blue); }
+
 .coverage-panel {
   background: var(--surface-1); border: 1px solid var(--hairline);
   border-radius: var(--radius-lg); padding: 16px 18px; margin-bottom: 18px;
 }
+/* Two columns, each with its own denominator named under the figure. They are never the same
+   shape — an app can be fully tested with everything still broken, or barely tested with the
+   little it found already fixed — and the labels are what stop one being read as the other. */
+.coverage-panel.two-up {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px 32px;
+}
+.coverage-col { min-width: 0; }
 .coverage-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+.coverage-figure small {
+  font-family: var(--font-body); font-size: 11px; font-weight: 500;
+  color: var(--ink-faint); letter-spacing: 0;
+}
 .coverage-title {
   font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase;
   color: var(--ink-faint); font-weight: 600;
@@ -124,6 +152,9 @@
 .legend { font-size: 11px; color: var(--ink-muted); display: inline-flex; align-items: center; gap: 6px; }
 .legend::before { content: ''; width: 8px; height: 8px; border-radius: 2px; background: var(--surface-3); }
 .legend-done::before { background: var(--success); }
+/* Written out rather than left to inherit the base swatch: every other legend marker names
+   its colour here, and one that works only by default is one an edit can silently break. */
+.legend-todo::before { background: var(--surface-3); }
 .legend-unknown::before {
   background: repeating-linear-gradient(-45deg, var(--ink-faint) 0 2px, transparent 2px 4px);
 }
@@ -150,9 +181,14 @@
   color: var(--ink-faint); border: 1px solid var(--hairline);
   border-radius: var(--radius-pill); padding: 2px 7px;
 }
-.app-card > .bar { margin-top: 6px; }
-.app-stat { font-size: 13px; color: var(--ink-muted); margin-top: 2px; }
+.app-card > .bar { margin-top: 4px; }
+.app-card > .bar + .bar { margin-top: 3px; }
+.app-stat { font-size: 13px; color: var(--ink-muted); margin-top: 2px; display: flex; align-items: baseline; gap: 8px; }
 .app-stat b { font-family: var(--font-display); font-size: 22px; color: var(--ink); }
+.app-fixed {
+  font-size: 11px; color: var(--success);
+  background: rgba(34, 197, 94, 0.1); border-radius: var(--radius-pill); padding: 2px 8px;
+}
 .app-modules { font-size: 12px; color: var(--ink-muted); }
 /* Orange, not grey: "nobody ran this" is the one number on the board that looks like good
    news and is not. */
@@ -230,6 +266,8 @@
 .k-warning { color: var(--accent-orange); border-color: rgba(255, 122, 61, 0.35); }
 .k-suggestion { color: var(--accent-blue); border-color: rgba(0, 153, 255, 0.35); }
 .k-pass { color: var(--success); border-color: rgba(34, 197, 94, 0.3); }
+/* "nothing filed" — faint, because an empty tally is not a result. */
+.k-none { color: var(--ink-faint); border-style: dashed; }
 .st-tested { color: var(--success); border-color: rgba(34, 197, 94, 0.3); }
 .st-approved { color: var(--accent-blue); border-color: rgba(0, 153, 255, 0.35); }
 

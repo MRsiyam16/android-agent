@@ -105,6 +105,76 @@ function coverageBar(cov, unknownApps) {
   return wrap;
 }
 
+const DEFECT_SEGMENTS = [
+  ['resolved', 'seg-resolved', 'closed — the fix is in'],
+  ['bug', 'seg-bug', 'open bugs'],
+  ['warning', 'seg-warning', 'open warnings'],
+  ['suggestion', 'seg-suggestion', 'open suggestions'],
+];
+
+/** A defect bar: what was found, and how much of it is fixed.
+ *
+ *  A *second* bar rather than more colours on the coverage one, because they count different
+ *  things. Coverage is modules; this is findings. "6 of 13 tested" and "31 bugs" share no
+ *  denominator, and segments that count different units cannot be read as one proportion.
+ *
+ *  `incomplete` — apps with modules nobody has run — adds the same hatched cap the coverage
+ *  bar uses, meaning the defects nobody has looked for yet. It is the one honest way to say
+ *  "and there is more" without inventing how much.
+ */
+function defectBar(status, incomplete) {
+  const wrap = el('div', 'bar');
+  const total = DEFECT_SEGMENTS.reduce((n, [key]) => n + (status[key] || 0), 0);
+  const unknownShare = incomplete && incomplete.length ? 0.16 : 0;
+  const known = 1 - unknownShare;
+
+  if (!total) {
+    const none = el('div', unknownShare ? 'bar-unknown' : 'bar-clean');
+    none.style.width = '100%';
+    none.title = unknownShare
+      ? 'Nothing filed, and there are modules nobody has run — this is absence of testing, '
+        + 'not evidence of health.'
+      : 'Nothing filed against an app whose modules have all been run.';
+    wrap.appendChild(none);
+    return wrap;
+  }
+
+  DEFECT_SEGMENTS.forEach(([key, className, label]) => {
+    const n = status[key] || 0;
+    if (!n) return;
+    const seg = el('div', className);
+    seg.style.width = `${(n / total) * known * 100}%`;
+    seg.title = `${n} ${label}`;
+    wrap.appendChild(seg);
+  });
+
+  if (unknownShare) {
+    const unknown = el('div', 'bar-unknown');
+    unknown.style.width = `${unknownShare * 100}%`;
+    unknown.title = 'Not to scale — ' + incomplete.join(', ')
+      + (incomplete.length === 1 ? ' has' : ' have')
+      + ' modules nobody has run, so there are defects here that have not been found yet. '
+      + 'Drawn at a fixed width because how many is exactly what is unknown.';
+    wrap.appendChild(unknown);
+  }
+  return wrap;
+}
+
+function defectLegend(status, incomplete) {
+  const legend = el('div', 'coverage-legend');
+  DEFECT_SEGMENTS.forEach(([key, className, label]) => {
+    const n = status[key] || 0;
+    if (!n) return;
+    legend.appendChild(chip(`${n} ${key === 'resolved' ? 'fixed' : key + (n === 1 ? '' : 's')}`,
+                            `legend legend-${key}`, `${n} ${label}`));
+  });
+  if (incomplete && incomplete.length) {
+    legend.appendChild(chip('? not yet found', 'legend legend-unknown',
+                            incomplete.join(', ') + ' still have modules nobody has run.'));
+  }
+  return legend;
+}
+
 /** A collapsed row that reveals its detail on click. Built once, filled once, then toggled —
  *  so opening the same cluster twice does not re-render it. */
 function disclosure(head, buildBody, openLabel) {
@@ -239,11 +309,22 @@ function appCard(app) {
   head.append(el('span', 'app-role', app.role), chip(app.platform, 'app-platform'));
   card.appendChild(head);
 
+  const cov = app.coverage;
+  const status = app.defect_status;
+  const open = status.bug + status.warning + status.suggestion;
+  const incomplete = (!cov.surveyed || app.never_run.length) ? [app.role] : null;
+
+  // Open, not filed. The number that matters is what is still wrong, and a card headlining
+  // "24 defects" reads worse after a fix week than before it.
   const stat = el('div', 'app-stat');
-  stat.append(el('b', null, String(app.defects)), el('span', null, ' defects'));
+  stat.append(el('b', null, String(open)), el('span', null, ' open'));
+  if (status.resolved) {
+    stat.appendChild(chip(`${status.resolved} fixed`, 'app-fixed',
+                          `${status.resolved} of this app's defects are closed in Blackcode`));
+  }
   card.appendChild(stat);
 
-  const cov = app.coverage;
+  card.appendChild(defectBar(status, incomplete));
   card.appendChild(coverageBar(cov));
   card.appendChild(el('div', 'app-modules', cov.surveyed
     ? `${cov.tested} of ${cov.testable} modules tested`
@@ -261,34 +342,62 @@ function appCard(app) {
   return card;
 }
 
+function panelHead(title, figure, unit) {
+  const head = el('div', 'coverage-head');
+  head.appendChild(el('span', 'coverage-title', title));
+  const fig = el('span', 'coverage-figure', figure);
+  if (unit) fig.appendChild(el('small', null, ' ' + unit));
+  head.appendChild(fig);
+  return head;
+}
+
+/** Two bars, side by side, each labelled with what it counts.
+ *
+ *  They answer different questions and are never the same shape: an app can be fully tested
+ *  with everything still broken, or barely tested with the little it found already fixed.
+ *  Reading one as the other is the mistake the labels exist to prevent.
+ */
 function coveragePanel(board) {
   const cov = board.totals.coverage;
-  const panel = el('div', 'coverage-panel');
+  const status = board.totals.defect_status;
+  const incomplete = board.totals.incomplete;
+  const open = status.bug + status.warning + status.suggestion;
 
-  const head = el('div', 'coverage-head');
-  head.appendChild(el('span', 'coverage-title', 'Coverage'));
-  head.appendChild(el('span', 'coverage-figure',
-                      cov.percent === null ? '—' : `${cov.percent}%`));
-  panel.appendChild(head);
+  const panel = el('div', 'coverage-panel two-up');
 
-  panel.appendChild(coverageBar(cov, cov.unsurveyed));
-
-  const legend = el('div', 'coverage-legend');
-  legend.append(
+  const left = el('div', 'coverage-col');
+  left.append(
+    panelHead('Coverage', cov.percent === null ? '—' : `${cov.percent}%`, 'of modules'),
+    coverageBar(cov, cov.unsurveyed));
+  const covLegend = el('div', 'coverage-legend');
+  covLegend.append(
     chip(`${cov.tested} tested`, 'legend legend-done'),
     chip(`${cov.testable - cov.tested} waiting`, 'legend legend-todo'));
   if (cov.unsurveyed.length) {
-    legend.appendChild(chip(`? ${cov.unsurveyed.join(', ')}`, 'legend legend-unknown',
-                            NOT_SURVEYED));
+    covLegend.appendChild(chip(`? ${cov.unsurveyed.join(', ')}`, 'legend legend-unknown',
+                               NOT_SURVEYED));
   }
-  panel.appendChild(legend);
-
+  left.appendChild(covLegend);
   if (cov.unsurveyed.length) {
-    panel.appendChild(el('div', 'coverage-note',
-      `${cov.percent}% is of the ${cov.testable} modules somebody has actually scoped. `
+    left.appendChild(el('div', 'coverage-note',
+      `Of the ${cov.testable} modules somebody has actually scoped. `
       + `${cov.unsurveyed.join(', ')} ${cov.unsurveyed.length === 1 ? 'is' : 'are'} not in `
       + 'that number at all, so this is a floor, not a score.'));
   }
+
+  const right = el('div', 'coverage-col');
+  right.append(
+    panelHead('Defects', String(open), open === 1 ? 'still open' : 'still open'),
+    defectBar(status, incomplete),
+    defectLegend(status, incomplete));
+  if (status.resolved) {
+    right.appendChild(el('div', 'coverage-note',
+      `${status.resolved} of ${status.resolved + open} filed defects are closed in Blackcode. `
+      + 'Run `sync_issue_status` from the manager to re-check — a defect fixed weeks ago '
+      + 'still counts as open here until somebody asks.'));
+  }
+
+  panel.append(left, right);
   return panel;
 }
 
@@ -330,15 +439,24 @@ async function renderApp(pkg) {
   canvasTitle.textContent = app.role;
   canvasSub.textContent = `${app.package} · ${app.platform}`;
 
-  const panel = el('div', 'coverage-panel');
-  const head = el('div', 'coverage-head');
-  head.appendChild(el('span', 'coverage-title', 'Coverage'));
-  head.appendChild(el('span', 'coverage-figure',
-                      cov.percent === null ? 'unknown' : `${cov.percent}%`));
-  panel.append(head, coverageBar(cov, cov.surveyed ? null : [app.role]));
-  panel.appendChild(el('div', 'coverage-note', cov.surveyed
-    ? `${cov.tested} of ${cov.testable} modules tested.`
-    : NOT_SURVEYED));
+  const status = app.defect_status;
+  const open = status.bug + status.warning + status.suggestion;
+  const incomplete = (!cov.surveyed || app.never_run.length) ? [app.role] : null;
+
+  const panel = el('div', 'coverage-panel two-up');
+  const left = el('div', 'coverage-col');
+  left.append(
+    panelHead('Coverage', cov.percent === null ? 'unknown' : `${cov.percent}%`, 'of modules'),
+    coverageBar(cov, cov.surveyed ? null : [app.role]),
+    el('div', 'coverage-note', cov.surveyed
+      ? `${cov.tested} of ${cov.testable} modules tested.`
+      : NOT_SURVEYED));
+
+  const right = el('div', 'coverage-col');
+  right.append(panelHead('Defects', String(open), 'still open'),
+               defectBar(status, incomplete),
+               defectLegend(status, incomplete));
+  panel.append(left, right);
   canvas.appendChild(panel);
 
   const [modules, findings] = await Promise.all([
@@ -477,13 +595,22 @@ function renderRail() {
       top.appendChild(chip('⚠', 'nav-warn',
                            `${app.never_run.length} module(s) have never been run`));
     }
-    top.appendChild(el('span', 'nav-count', String(app.defects)));
+    const status = app.defect_status;
+    const open = status.bug + status.warning + status.suggestion;
+    const incomplete = (!app.coverage.surveyed || app.never_run.length) ? [app.role] : null;
+
+    const count = el('span', 'nav-count', String(open));
+    count.title = `${open} open · ${status.resolved} fixed`;
+    top.appendChild(count);
     item.appendChild(top);
 
+    item.appendChild(defectBar(status, incomplete));
     item.appendChild(coverageBar(app.coverage));
-    item.appendChild(el('div', 'nav-sub', app.coverage.surveyed
-      ? `${app.coverage.tested}/${app.coverage.testable} tested`
-      : 'not surveyed'));
+    item.appendChild(el('div', 'nav-sub',
+      (app.coverage.surveyed
+        ? `${app.coverage.tested}/${app.coverage.testable} tested`
+        : 'not surveyed')
+      + (status.resolved ? ` · ${status.resolved} fixed` : '')));
 
     item.addEventListener('click', () => show('app', app.package));
     appNav.appendChild(item);
