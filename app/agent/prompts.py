@@ -211,6 +211,10 @@ If you cannot confirm something, say so plainly. "I could not verify X because Y
 useful result. A fabricated pass or a guessed defect is worse than no answer, and this
 harness has produced both by being confident about a dump.
 
+# Blackcode issue tracking
+
+{blackcode_section}
+
 {cost_section}
 
 # Recording what you did
@@ -265,8 +269,7 @@ settle, what a correct error message says, and any defect already confirmed. Rec
 would make the next run faster or stop it making a wrong call. Do not record what the app
 did on one particular run — that belongs in a finding.
 
-If you learn something about operating *this harness* rather than about the app under test,
-say so in your reply and I will add it to the harness's own system memory.
+{learning_section}
 
 # Communicating
 
@@ -305,6 +308,66 @@ overlap) that a dump cannot show you."""
 def _cost_section() -> str:
     """Whichever cost guidance matches the tools this session will actually have."""
     return _COST_WITH_CHEAP_TIER if config.AGENT_USE_CHEAP_TIER else _COST_SOLO
+
+
+# Shared between CORE and MANAGER_CORE for the same reason `_DEVICE_TRAPS` is: the manager
+# drives the same phone through the same tools and hits the same class of harness-level
+# obstacle, so a copy of this that drifted would leave it stuck on something the tester
+# already knows how to name and move past.
+_LEARNING_SECTION = """\
+# When you get stuck
+
+Not every obstacle is about the app under test. If a tool fails, or something about the
+device behaves in a way that has nothing to do with what you are testing — a harness bug, a
+confusing quirk, a wrong default, a timing assumption that was too aggressive — that is not
+your mistake to work around silently, and it is not a finding either. It is exactly what
+`learn_lesson` exists for.
+
+Call it yourself as soon as you understand what actually went wrong: a short, stable id, the
+rule stated as an instruction for whoever reads it next ("a web project's package can be a
+bare domain with no scheme — launch defaults it to https://"), and the evidence that taught
+you. Every session after you, on every project, reads it back before it starts, so the same
+obstacle should cost the harness a stuck turn exactly once.
+
+Do this *in addition to* explaining the obstacle in your reply, not instead of it — but do
+not stop at explaining it and wait for a human to relay it into memory for you. Calling the
+tool yourself is the whole difference between this harness getting smarter on its own and
+staying exactly as broken as it was the day you hit it. This is separate from your memory
+file above: that is this project's own notes, `learn_lesson` is everyone's."""
+
+
+# Named plainly rather than assumed obvious: a tool that showed up with no explanation of
+# what it talks to is indistinguishable from an unfamiliar, unvetted one, and refusing to
+# invoke that blind is the right call, not overcaution — this section is what turns it back
+# into a capability instead of a thing to be suspicious of. Split tester/manager because the
+# two genuinely have different tools here, the same reason `record_finding` itself is absent
+# from the manager's core rather than merely discouraged.
+_BLACKCODE_INTRO = """\
+Blackcode (issues.blackcode.ch) is this project's real, already-existing issue tracker — the
+same one the board already links to ("View in Blackcode Issues ↗" on any finding that has
+been filed). This harness talks to it on your behalf through the `bk` CLI; you never see or
+need a credential for it. The tools below are a genuine, first-party part of this harness,
+wired in deliberately — not something appearing from outside it."""
+
+_BLACKCODE_SECTION_TESTER = _BLACKCODE_INTRO + """
+
+* `file_issue` — push an already-recorded finding out as a real Blackcode issue, with its
+  evidence screenshot embedded inline. A visible action outside this dashboard (a real ticket
+  a team will see), so call it when the user asks you to file, raise, track or log a finding —
+  not on your own initiative just because a finding exists. The first filing for a project
+  needs a Blackcode project id or exact name; once given, it is remembered.
+* `search_issues` — read-only. Search or browse what's already tracked, e.g. to check for a
+  duplicate before filing, or to answer "what's open on X."
+* `check_issue_status` — is a finding you already filed actually fixed yet? Checks Blackcode's
+  live status and updates the finding's resolved flag here to match."""
+
+_BLACKCODE_SECTION_MANAGER = _BLACKCODE_INTRO + """
+
+You have `search_issues` — read-only, for checking whether something you noticed during
+recon is already tracked, or seeing what's open before scoping a module. You do not have
+`file_issue` or `check_issue_status`: filing publishes a verdict, and you have no
+`record_finding` for the same reason — recon impressions are not findings, and a module you
+create owns turning one into a real, verified case before anything gets filed."""
 
 
 # --------------------------------------------------------------------------------------
@@ -391,6 +454,10 @@ not send messages, do not buy anything, do not delete anything. You are looking 
 there. Use `journey_step` sparingly if at all — recon is not a test case, and a mapping pass
 that draws thirty screens on the board buries the runs that matter.
 
+# Blackcode issue tracking
+
+{blackcode_section}
+
 {cost_section}
 
 # Memory
@@ -402,6 +469,8 @@ and why the breakdown is the shape it is. Read it before you answer anything abo
 and append to it whenever you learn something that would change how the next module is scoped.
 
 Every other module's memory is its own. Read them with `read_module`; do not write to them.
+
+{learning_section}
 
 # Communicating
 
@@ -418,7 +487,9 @@ def build_manager_prompt(package: str, slug: str, platform: str = "android") -> 
     return MANAGER_CORE.format(memory_path=store.memory_path(package, slug),
                                cost_section=_cost_section(),
                                device_traps=_device_traps(platform),
-                               device_kind=_device_kind(platform))
+                               device_kind=_device_kind(platform),
+                               learning_section=_LEARNING_SECTION,
+                               blackcode_section=_BLACKCODE_SECTION_MANAGER)
 
 
 def build_system_prompt(package: str, slug: str, title: str, scope: str,
@@ -437,7 +508,9 @@ def build_system_prompt(package: str, slug: str, title: str, scope: str,
             else CORE.format(memory_path=store.memory_path(package, slug),
                              cost_section=_cost_section(),
                              device_traps=_device_traps(platform),
-                             device_kind=_device_kind(platform)))
+                             device_kind=_device_kind(platform),
+                             learning_section=_LEARNING_SECTION,
+                             blackcode_section=_BLACKCODE_SECTION_TESTER))
     parts = [core]
 
     try:

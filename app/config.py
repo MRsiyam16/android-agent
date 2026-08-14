@@ -75,6 +75,16 @@ WEB_BROWSER_CHANNEL: str = os.environ.get("WEB_BROWSER_CHANNEL", "chromium")
 WEB_DEFAULT_VIEWPORT: tuple[int, int] = (
     int(os.environ.get("WEB_VIEWPORT_W", 1280)), int(os.environ.get("WEB_VIEWPORT_H", 800)))
 
+# A Playwright context with no `device_scale_factor` defaults to 1 — every screenshot comes
+# back at native CSS-pixel resolution, the same as a non-Retina display. Text and fine UI
+# edges are soft at that density even before anything downstream re-scales them for a
+# thumbnail. 2 matches a standard Retina/high-DPI capture (a 1280x800 viewport screenshots
+# at 2560x1600) and is what the flow-graph board and the detail modal both show. Coordinates
+# are unaffected: Playwright's click/bounds/viewport APIs stay in CSS pixels regardless of
+# this value, so taps and element rects do not need any matching downscale the way iOS's
+# WDA screenshots do (see ios_device.screenshot_b64).
+WEB_SCREENSHOT_SCALE: float = float(os.environ.get("WEB_SCREENSHOT_SCALE", 2))
+
 # Breakpoints `check_responsive` sweeps when the agent doesn't name its own. Named after common
 # device classes rather than exact devices — nothing here claims to be a specific iPhone or iPad.
 WEB_BREAKPOINTS: dict[str, tuple[int, int]] = {
@@ -155,6 +165,14 @@ EXCLUDE_BOTTOM_PCT: float = 0.08
 SCREENSHOT_FORMAT: str = "jpeg"
 SCREENSHOT_QUALITY: int = 90
 
+# --- Blackcode issue tracker (optional) -------------------------------------------------
+# `bk` is the Blackcode CLI (https://issues.blackcode.ch) — the only supported interface to
+# the platform; there is no public HTTP API to call directly (see blackcode.py's module
+# docstring). Auth is `bk`'s own concern (`bk login`, stored under ~/.config/bk/) — this app
+# never sees or stores a Blackcode token itself.
+BLACKCODE_CLI: str = os.environ.get("BLACKCODE_CLI", "bk")
+BLACKCODE_CLI_TIMEOUT_SECONDS: float = float(os.environ.get("BLACKCODE_CLI_TIMEOUT_SECONDS", 30))
+
 # --- LLM-assisted exploration (optional) ---------------------------------------------------------
 # Off by default — enable with --llm-explore or USE_LLM_EXPLORATION=true. Requires the `anthropic`
 # package and an ANTHROPIC_API_KEY (or `ant auth login` profile); any API failure falls back to the
@@ -203,8 +221,10 @@ AGENT_PLANNER_FALLBACK: str = os.environ.get("AGENT_PLANNER_FALLBACK", "")
 AGENT_EXCLUDE_TOP_PCT: float = float(os.environ.get("AGENT_EXCLUDE_TOP_PCT", 0.0))
 AGENT_EXCLUDE_BOTTOM_PCT: float = float(os.environ.get("AGENT_EXCLUDE_BOTTOM_PCT", 0.02))
 
-# Hard ceiling on agent turns per instruction, so a confused loop can't run forever.
-AGENT_MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", 300))
+# Ceiling on agent turns per instruction. Unset (None) by default, meaning no cap — the SDK
+# only passes --max-turns to the CLI when this is truthy. Set AGENT_MAX_TURNS to re-enable one.
+_agent_max_turns_raw = os.environ.get("AGENT_MAX_TURNS", "")
+AGENT_MAX_TURNS: int | None = int(_agent_max_turns_raw) if _agent_max_turns_raw else None
 # How long a single device tool call may block before it's reported as failed.
 AGENT_TOOL_TIMEOUT_SECONDS: float = float(os.environ.get("AGENT_TOOL_TIMEOUT_SECONDS", 90))
 

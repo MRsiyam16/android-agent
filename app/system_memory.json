@@ -43,6 +43,27 @@
       "last_seen_run": 0,
       "text": "The project blob carries the whole board (screens, notes, layout) and is several MB. Snapshot it to disk before doing anything that opens a second dashboard tab or rewrites notes."
     },
+    "blackcode-cli-outdated-v2.3.0": {
+      "evidence": "mcp__device__file_issue succeeded earlier in this same session (filed F008 as Blackcode issue #432), then failed on a later call for F005 with the v2.3.0-unsupported error above — same session, same tool, no argument changes that would explain the difference except time passing / a server-side deprecation cutover mid-session.",
+      "first_seen_run": 109,
+      "hits": 1,
+      "last_seen_run": 109,
+      "text": "The bk CLI (Blackcode issue tracker integration) installed in this harness is v2.3.0 and is rejected server-side as no longer supported. Any file_issue call fails with: \"This bk (v2.3.0) is no longer supported. Update and refresh your agent skill: npm install -g @blackcode_sa/bc-issues@latest ; bk skill install ; bk guide\". This is an environment/tooling problem, not a query or finding-id problem — do not retry file_issue with different arguments hoping it's something on the agent side. The fix requires shell access this testing agent does not have (npm install + bk skill install), so it must be done by the user/harness maintainer outside this session. Earlier successful file_issue calls in the same session (before this error started appearing) may still have worked — check_issue_status can confirm whether a previously-filed issue is still reachable even while file_issue itself is broken."
+    },
+    "blackcode-cli-utf8-decode": {
+      "evidence": "search_issues failed on every query (cancel, login, clinic, signup, bug, error, session, empty) with AttributeError: 'NoneType' object has no attribute 'strip' until encoding=\"utf-8\" was added to the subprocess.run call.",
+      "first_seen_run": 104,
+      "hits": 1,
+      "last_seen_run": 104,
+      "text": "blackcode.py's subprocess.run(bk ..., text=True) without an explicit encoding decodes bk's stdout using locale.getpreferredencoding(), which on Windows is the system codepage (cp1252), not UTF-8. bk emits UTF-8 (issue titles/descriptions are full of em dashes and smart quotes), so a cp1252 decode hit an undefined byte on almost any non-trivial payload -- a subprocess reader-thread crash that left result.stdout as None rather than raising cleanly, so every search_issues/issue_status call failed with an unhelpful AttributeError regardless of query content. Fixed by passing encoding=\"utf-8\" explicitly to subprocess.run in blackcode._run(). If a future subprocess wrapper for another external CLI is added on Windows, give it the same explicit encoding -- text=True alone is not safe for any tool whose output isn't guaranteed ASCII."
+    },
+    "blackcode-search-issues-broken": {
+      "evidence": "In the metaesthetics-staging.web.app project's main/manager module, four consecutive search_issues calls with different query strings ('metaesthetics-staging clinic onboarding', 'Cancel Registration account not removed', 'bug', 'login') all raised internal errors instead of returning results.",
+      "first_seen_run": 103,
+      "hits": 1,
+      "last_seen_run": 103,
+      "text": "mcp__device__search_issues (Blackcode issue search, read-only) fails on every call in this environment with an internal server-side error, not a query-specific problem — seen as both \\\"'NoneType' object is not subscriptable\\\" and \\\"'NoneType' object has no attribute 'strip'\\\" across four different queries (including a single common word like \\\"bug\\\" or \\\"login\\\"). Do not keep retrying with different phrasing hoping it's a bad query; treat this as a backend bug worth reporting to the user directly, and fall back to summarizing findings from list_modules/read_module/project_report in chat instead."
+    },
     "board-owner-is-the-run-target-not-the-screen": {
       "evidence": "youtube/flow-graph.json held 39 Metaesthetics screens; chrome held deskclock's; keep held the Play Store's; vending and gms existed as projects at all",
       "first_seen_run": 0,
@@ -56,6 +77,13 @@
       "hits": 1,
       "last_seen_run": 0,
       "text": "`.chat-input-row button` (0,1,1) beats a bare `.chat-attach-btn` (0,1,0) however far down the file the class sits, so a new button added to an existing styled row silently inherits the row's primary-button look. Scope new rules to the container."
+    },
+    "credential-value-is-note-not-login": {
+      "evidence": "tap email field -> use_credential('test-clinic-account') -> field shows \"Signup & Login already made a new clinic\"; tap password field -> use_credential('test-clinic-account') again -> same literal string typed there too. Not a valid email or password in either case.",
+      "first_seen_run": 99,
+      "hits": 1,
+      "last_seen_run": 99,
+      "text": "Before trusting a stored credential's use_credential output, sanity-check what actually lands in the field (read_screen after use) — a credential entry can be stored with a plain-text note (e.g. a status comment about the account) in place of a real email/password, and use_credential will type that same literal string into whichever field is focused with no error. On metaesthetics-staging.web.app, 'test-clinic-account' typed the literal text \"Signup & Login already made a new clinic\" into both the email and password fields."
     },
     "dashboard-hidden-tab-freezes-overlay": {
       "evidence": "notes and selection state were correct on the server while the hidden tab showed none",
@@ -189,249 +217,284 @@
       "hits": 65,
       "last_seen_run": 68,
       "text": "The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app."
+    },
+    "web-browser-crash-self-heals": {
+      "evidence": "launch() failed 3/3 times with 'Target page, context or browser has been closed' on the metaesthetics-staging.web.app project; required a manual server restart before web_device.py added _run_boxed's relaunch-and-retry-once logic.",
+      "first_seen_run": 98,
+      "hits": 1,
+      "last_seen_run": 98,
+      "text": "A web session's Chromium process can die out from under it (OS kill, crash) mid-run, and every subsequent call used to fail forever with a 'has been closed' / 'Target closed' error until the whole server was restarted by hand. web_device.py now detects that error message and self-heals: it relaunches a fresh browser and retries the failed call once automatically. If you ever see 'Target page, context or browser has been closed' surface all the way up to a tool result instead of being silently recovered, that means the retry itself also hit a closed-browser error (the relaunch failed too) -- that is a real environment problem (e.g. Chromium missing/corrupt), not a transient blip, and is worth investigating directly rather than just asking for another restart."
+    },
+    "web-form-ids-shift-on-rerender": {
+      "evidence": "On the Mira Create-New-Clinic signup form, tapping the password field by an id captured before the email field's \"Email is required\" error cleared, then typing, produced no visible change — the password field still showed its placeholder and \"Password is required\" on the next read. Re-reading, retapping the fresh id, and retyping fixed it, and this happened three separate times across email/password/confirm-password.",
+      "first_seen_run": 95,
+      "hits": 1,
+      "last_seen_run": 95,
+      "text": "On this app's reactive React forms, an element's id from read_screen is not stable across renders — when a field's validation message appears or clears, everything below it in the DOM shifts and gets a new id. Re-read the screen immediately before every tap/type on a field if anything above it may have just changed, and after type_text, read_screen again to confirm the text actually landed — typing into a stale id after a re-render silently types nothing rather than erroring."
+    },
+    "web-launch-browser-closed-recurs": {
+      "evidence": "In the metaesthetics-staging.web.app project's main/manager module, launch() failed 3 consecutive times with 'Target page, context or browser has been closed' with no change between calls; earlier in the same project this exact error also appeared and was resolved only after the user restarted the browser session and said 'retry'.",
+      "first_seen_run": 98,
+      "hits": 1,
+      "last_seen_run": 98,
+      "text": "On this harness, `launch()` for a web project can fail repeatedly with \"Target page, context or browser has been closed\" across multiple consecutive retries within the same manager session, not just as a one-off transient blip seen once before. If retrying 3+ times in a row all produce the identical error, stop retrying blindly and tell the user directly — it likely needs the browser/device session restarted on their end, the same fix that worked last time this happened in this project."
+    },
+    "web-package-missing-scheme": {
+      "evidence": "metaesthetics-staging.web.app project stored without https://; Chromium rejected page.goto() with an invalid URL error on every launch attempt until web_device.py was patched to prepend https:// when no scheme is present.",
+      "first_seen_run": 95,
+      "hits": 1,
+      "last_seen_run": 95,
+      "text": "A web project's package/serial can be stored as a bare domain with no scheme (e.g. 'example.com' instead of 'https://example.com') if it was typed that way when the project was created. web_device.py normalizes this automatically now (_ensure_scheme), so launch/goto no longer fails outright — but if a bare-domain package ever reaches Playwright unnormalized again, it raises an invalid-URL error immediately on launch. Treat that error as a missing-scheme symptom, not a dead browser."
+    },
+    "web-reset-app-data-firebase-persistence-survives": {
+      "evidence": "Reset app data + cold launch showed an empty login form (email/password blank, no session banner). Tapping 'Create New Clinic Group' and even just typing an unrelated email into the login field both redirected to the same 'No clinic is linked to this account' error screen (same reference id E4Wsioj4uwUeRlISUV0NbJryfUl1) as the still-logged-in orphaned session from before the reset. Repeated a second time with the same reset+launch sequence and got the identical result both times.",
+      "first_seen_run": 99,
+      "hits": 1,
+      "last_seen_run": 99,
+      "text": "On this project (metaesthetics-staging.web.app, and likely any Firebase-Auth web app), reset_app_data followed by launch() does NOT guarantee a truly logged-out session. The app renders the public login page fine (looks logged out), but Firebase Auth's own persistence (typically IndexedDB) can survive whatever reset_app_data clears (likely just cookies/localStorage), so a background auth-state listener in the app still finds the old session and redirects away from login/signup routes within a second or two of any interaction. If a test needs a genuinely clean, unauthenticated browser state after a broken/cancelled account, reset_app_data + launch() is not sufficient to prove it — read_screen immediately after may show a clean login form that then gets hijacked by a delayed redirect. There is currently no tool available to this harness to clear IndexedDB directly or force a new incognito browser context, so once a broken session like this is created there is no in-session way to recover to a clean state."
     }
   },
-  "run_count": 82,
+  "run_count": 124,
   "runs": [
     {
-      "at": "2026-08-07T04:22:04+00:00",
+      "at": "2026-08-12T10:46:14+00:00",
       "ok": true,
-      "seconds": 14.5,
-      "taps": 87,
-      "tool": "agent:personalization-aesthetic-profile-wishes-surveys",
+      "seconds": 99.8,
+      "taps": 4,
+      "tool": "agent:main",
+      "turns": 15
+    },
+    {
+      "at": "2026-08-12T11:04:38+00:00",
+      "ok": true,
+      "seconds": 50.2,
+      "taps": 0,
+      "tool": "agent:signup-login",
+      "turns": 4
+    },
+    {
+      "at": "2026-08-12T11:07:08+00:00",
+      "ok": true,
+      "seconds": 27.7,
+      "taps": 0,
+      "tool": "agent:signup-login",
+      "turns": 6
+    },
+    {
+      "at": "2026-08-12T11:12:27+00:00",
+      "ok": false,
+      "seconds": 67.1,
+      "taps": 0,
+      "tool": "agent:signup-login",
+      "turns": 5
+    },
+    {
+      "at": "2026-08-12T11:26:46+00:00",
+      "ok": true,
+      "seconds": 14.3,
+      "taps": 0,
+      "tool": "agent:clinic-onboarding",
       "turns": 1
     },
     {
-      "at": "2026-08-07T04:28:20+00:00",
+      "at": "2026-08-12T11:54:03+00:00",
       "ok": true,
-      "seconds": 340.4,
-      "taps": 96,
-      "tool": "agent:personalization-aesthetic-profile-wishes-surveys",
-      "turns": 54
+      "seconds": 1552.2,
+      "taps": 59,
+      "tool": "agent:clinic-onboarding",
+      "turns": 318
     },
     {
-      "at": "2026-08-07T04:30:34+00:00",
-      "ok": false,
-      "seconds": 8.6,
-      "taps": 0,
-      "tool": "agent:auth-onboarding-session",
-      "turns": 2
-    },
-    {
-      "at": "2026-08-07T04:44:46+00:00",
-      "ok": false,
-      "seconds": 838.7,
-      "taps": 5,
-      "tool": "agent:auth-onboarding-session",
-      "turns": 27
-    },
-    {
-      "at": "2026-08-07T04:47:14+00:00",
+      "at": "2026-08-12T11:57:26+00:00",
       "ok": true,
-      "seconds": 135.6,
-      "taps": 6,
-      "tool": "agent:auth-onboarding-session",
-      "turns": 11
+      "seconds": 20.4,
+      "taps": 59,
+      "tool": "agent:clinic-onboarding",
+      "turns": 1
     },
     {
-      "at": "2026-08-07T05:22:31+00:00",
+      "at": "2026-08-12T12:33:04+00:00",
       "ok": true,
       "seconds": 27.0,
       "taps": 0,
+      "tool": "agent:clinic-onboarding",
+      "turns": 4
+    },
+    {
+      "at": "2026-08-12T12:36:19+00:00",
+      "ok": true,
+      "seconds": 16.8,
+      "taps": 0,
       "tool": "agent:main",
       "turns": 1
     },
     {
-      "at": "2026-08-07T05:23:36+00:00",
+      "at": "2026-08-12T12:41:54+00:00",
       "ok": true,
-      "seconds": 43.5,
+      "seconds": 60.1,
       "taps": 0,
       "tool": "agent:main",
-      "turns": 3
+      "turns": 8
     },
     {
-      "at": "2026-08-07T05:42:48+00:00",
-      "ok": false,
-      "seconds": 3065.4,
-      "taps": 72,
-      "tool": "agent:navigation-dashboard-search-discovery",
-      "turns": 301
-    },
-    {
-      "at": "2026-08-07T06:22:11+00:00",
+      "at": "2026-08-12T12:50:14+00:00",
       "ok": true,
-      "seconds": 693.3,
-      "taps": 102,
-      "tool": "agent:navigation-dashboard-search-discovery",
-      "turns": 104
-    },
-    {
-      "at": "2026-08-07T06:52:34+00:00",
-      "ok": true,
-      "seconds": 59.9,
+      "seconds": 14.0,
       "taps": 0,
-      "tool": "agent:main",
+      "tool": "agent:clinic-onboarding",
       "turns": 2
     },
     {
-      "at": "2026-08-07T12:14:48+00:00",
-      "ok": false,
-      "seconds": 767.0,
-      "taps": 13,
-      "tool": "agent:booking-flow",
-      "turns": 102
-    },
-    {
-      "at": "2026-08-07T12:33:25+00:00",
+      "at": "2026-08-12T13:06:10+00:00",
       "ok": true,
-      "seconds": 645.2,
-      "taps": 29,
-      "tool": "agent:booking-flow",
-      "turns": 112
-    },
-    {
-      "at": "2026-08-07T13:36:25+00:00",
-      "ok": false,
-      "seconds": 1186.2,
-      "taps": 43,
-      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
-      "turns": 146
-    },
-    {
-      "at": "2026-08-07T13:38:02+00:00",
-      "ok": false,
-      "seconds": 3.0,
-      "taps": 43,
-      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
-      "turns": 2
-    },
-    {
-      "at": "2026-08-07T14:10:23+00:00",
-      "ok": true,
-      "seconds": 1930.8,
-      "taps": 121,
-      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
-      "turns": 293
-    },
-    {
-      "at": "2026-08-07T14:16:47+00:00",
-      "ok": true,
-      "seconds": 230.9,
-      "taps": 128,
-      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
-      "turns": 26
-    },
-    {
-      "at": "2026-08-07T14:35:56+00:00",
-      "ok": true,
-      "seconds": 1059.6,
-      "taps": 167,
-      "tool": "agent:my-visits-calendar-pre-aftercare-documents",
-      "turns": 125
-    },
-    {
-      "at": "2026-08-07T15:02:46+00:00",
-      "ok": true,
-      "seconds": 1029.0,
-      "taps": 37,
-      "tool": "agent:treatments-concerns-explorer",
-      "turns": 208
-    },
-    {
-      "at": "2026-08-07T15:11:58+00:00",
-      "ok": true,
-      "seconds": 32.5,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 3
-    },
-    {
-      "at": "2026-08-08T06:53:43+00:00",
-      "ok": false,
-      "seconds": 1985.5,
-      "taps": 75,
-      "tool": "agent:aesthetic-quiz-body-focus-personalization",
-      "turns": 301
-    },
-    {
-      "at": "2026-08-08T07:23:54+00:00",
-      "ok": true,
-      "seconds": 362.3,
-      "taps": 76,
-      "tool": "agent:aesthetic-quiz-body-focus-personalization",
+      "seconds": 193.8,
+      "taps": 7,
+      "tool": "agent:clinic-onboarding",
       "turns": 34
     },
     {
-      "at": "2026-08-08T12:27:19+00:00",
-      "ok": false,
-      "seconds": 2333.5,
-      "taps": 58,
-      "tool": "agent:profile-medical-profile-legal-language",
-      "turns": 301
-    },
-    {
-      "at": "2026-08-08T13:31:31+00:00",
-      "ok": false,
-      "seconds": 3611.0,
-      "taps": 131,
-      "tool": "agent:profile-medical-profile-legal-language",
-      "turns": 301
-    },
-    {
-      "at": "2026-08-08T13:31:42+00:00",
-      "ok": false,
-      "seconds": 5.0,
-      "taps": 131,
-      "tool": "agent:profile-medical-profile-legal-language",
-      "turns": 2
-    },
-    {
-      "at": "2026-08-08T14:19:08+00:00",
+      "at": "2026-08-12T13:56:09+00:00",
       "ok": true,
-      "seconds": 2839.2,
-      "taps": 191,
-      "tool": "agent:profile-medical-profile-legal-language",
-      "turns": 257
+      "seconds": 599.1,
+      "taps": 6,
+      "tool": "agent:doctor-clinic-side",
+      "turns": 57
     },
     {
-      "at": "2026-08-08T14:25:53+00:00",
+      "at": "2026-08-13T10:27:53+00:00",
       "ok": true,
-      "seconds": 29.8,
+      "seconds": 21.9,
       "taps": 0,
-      "tool": "agent:permissions-notifications",
+      "tool": "agent:clinic-onboarding",
       "turns": 1
     },
     {
-      "at": "2026-08-08T14:54:00+00:00",
+      "at": "2026-08-13T10:33:28+00:00",
+      "ok": true,
+      "seconds": 285.4,
+      "taps": 21,
+      "tool": "agent:clinic-onboarding",
+      "turns": 68
+    },
+    {
+      "at": "2026-08-13T10:35:19+00:00",
+      "ok": true,
+      "seconds": 38.8,
+      "taps": 21,
+      "tool": "agent:clinic-onboarding",
+      "turns": 4
+    },
+    {
+      "at": "2026-08-13T10:44:45+00:00",
+      "ok": true,
+      "seconds": 17.5,
+      "taps": 21,
+      "tool": "agent:clinic-onboarding",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-13T11:50:53+00:00",
+      "ok": true,
+      "seconds": 180.9,
+      "taps": 9,
+      "tool": "agent:clinic-onboarding",
+      "turns": 37
+    },
+    {
+      "at": "2026-08-13T11:53:09+00:00",
+      "ok": true,
+      "seconds": 21.6,
+      "taps": 9,
+      "tool": "agent:clinic-onboarding",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-13T11:57:19+00:00",
+      "ok": true,
+      "seconds": 174.2,
+      "taps": 15,
+      "tool": "agent:clinic-onboarding",
+      "turns": 31
+    },
+    {
+      "at": "2026-08-13T12:01:53+00:00",
+      "ok": true,
+      "seconds": 29.3,
+      "taps": 15,
+      "tool": "agent:clinic-onboarding",
+      "turns": 4
+    },
+    {
+      "at": "2026-08-13T14:28:26+00:00",
+      "ok": true,
+      "seconds": 476.9,
+      "taps": 9,
+      "tool": "agent:main",
+      "turns": 42
+    },
+    {
+      "at": "2026-08-13T14:31:24+00:00",
+      "ok": true,
+      "seconds": 28.5,
+      "taps": 9,
+      "tool": "agent:main",
+      "turns": 4
+    },
+    {
+      "at": "2026-08-13T14:31:54+00:00",
+      "ok": true,
+      "seconds": 3.8,
+      "taps": 9,
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-13T14:54:21+00:00",
       "ok": false,
-      "seconds": 1479.8,
-      "taps": 67,
-      "tool": "agent:permissions-notifications",
+      "seconds": 1330.8,
+      "taps": 69,
+      "tool": "agent:practitioners-create-test-doctor",
       "turns": 301
     },
     {
-      "at": "2026-08-08T15:09:26+00:00",
+      "at": "2026-08-13T15:46:51+00:00",
       "ok": true,
-      "seconds": 823.6,
-      "taps": 96,
-      "tool": "agent:permissions-notifications",
-      "turns": 133
+      "seconds": 265.7,
+      "taps": 76,
+      "tool": "agent:practitioners-create-test-doctor",
+      "turns": 41
     },
     {
-      "at": "2026-08-08T15:36:11+00:00",
+      "at": "2026-08-13T15:54:05+00:00",
       "ok": true,
-      "seconds": 245.5,
+      "seconds": 306.1,
+      "taps": 23,
+      "tool": "agent:main",
+      "turns": 39
+    },
+    {
+      "at": "2026-08-13T17:07:21+00:00",
+      "ok": false,
+      "seconds": 1423.4,
+      "taps": 56,
+      "tool": "agent:dashboard-quick-actions",
+      "turns": 301
+    },
+    {
+      "at": "2026-08-14T03:12:19+00:00",
+      "ok": true,
+      "seconds": 28.7,
       "taps": 0,
-      "tool": "agent:main",
-      "turns": 7
+      "tool": "agent:practitioners-create-test-doctor",
+      "turns": 1
     },
     {
-      "at": "2026-08-08T15:51:54+00:00",
+      "at": "2026-08-14T03:39:37+00:00",
       "ok": true,
-      "seconds": 529.8,
-      "taps": 15,
-      "tool": "agent:main",
-      "turns": 64
+      "seconds": 227.5,
+      "taps": 8,
+      "tool": "agent:dashboard-quick-actions",
+      "turns": 35
     }
   ],
   "schema": 1,
@@ -525,7 +588,42 @@
         1.2
       ],
       "unit": "s"
+    },
+    "launch_settle.web": {
+      "samples": [
+        0.02,
+        0.02,
+        0.03,
+        0.02,
+        0.02,
+        4.04,
+        4.05,
+        4.27,
+        4.05,
+        3.62,
+        4.44,
+        3.11,
+        3.04,
+        3.02,
+        3.04,
+        0.01,
+        0.02,
+        0.04,
+        0.0,
+        0.01,
+        0.03,
+        0.01,
+        0.01,
+        0.02,
+        3.1,
+        4.61,
+        3.19,
+        2.1,
+        3.12,
+        4.05
+      ],
+      "unit": "s"
     }
   },
-  "updated_at": "2026-08-08T15:51:54+00:00"
+  "updated_at": "2026-08-14T03:39:37+00:00"
 }

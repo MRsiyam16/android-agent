@@ -331,6 +331,23 @@ def _render_screen(session: DeviceSession, xml: str, w: int, h: int,
     return "\n".join(lines)
 
 
+def _issue_description(session: DeviceSession, finding: dict[str, Any]) -> str:
+    """Markdown body for a Blackcode issue filed from a finding — see `file_issue`."""
+    lines: list[str] = []
+    if finding.get("expected"):
+        lines += ["## Expected", finding["expected"], ""]
+    if finding.get("actual"):
+        lines += ["## Actual", finding["actual"], ""]
+    steps = finding.get("steps") or []
+    if steps:
+        lines.append("## Steps")
+        lines += [f"{i}. {s}" for i, s in enumerate(steps, 1)]
+        lines.append("")
+    lines.append(f"---\nFiled automatically by QA Tester AI — module `{session.slug}`, "
+                 f"finding `{finding['id']}`.")
+    return "\n".join(lines)
+
+
 def build_device_server(session: DeviceSession, *, can_file_findings: bool = True):
     """Build an MCP server whose tools are bound to this one session.
 
@@ -951,6 +968,205 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
             + (f"  -> {f['node']}" if f.get("node") else "  (no screen linked)")
             for f in findings))
 
+    @tool("file_issue",
+          "Push an already-recorded finding out to Blackcode as a real, tracked issue — with "
+          "the finding's evidence screenshot embedded inline. Only for bug/warning/suggestion "
+          "findings; a pass is not an issue. This is a visible action outside this dashboard "
+          "(a real ticket a team will see), so call it when the user asks you to file, raise, "
+          "track or log a finding in Blackcode — not on your own initiative just because a "
+          "finding exists. The first filing for this project needs `project` (a Blackcode "
+          "project id, or its exact name like 'ClinicApp'); once given, it is remembered and "
+          "later calls can omit it. Saves the resulting issue link on the finding itself, so "
+          "it shows up on the outcomes board too.",
+          {"type": "object",
+           "properties": {
+               "id": {"type": "string", "description": "Finding id, e.g. F007"},
+               "project": {"type": "string",
+                          "description": "Blackcode project id or exact name. Required only "
+                                          "the first time this project files an issue."},
+           },
+           "required": ["id"], "additionalProperties": False})
+    async def file_issue(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+        if not blackcode.is_available():
+            return _err(
+                f"The Blackcode CLI (`{config.BLACKCODE_CLI}`) is not installed or not on "
+                f"PATH. Install it with `npm install -g @blackcode_sa/bc-issues`.")
+
+        finding_id = str(args["id"]).strip()
+        findings = store.list_findings(session.package, session.slug)
+        finding = next((f for f in findings if f.get("id") == finding_id), None)
+        if finding is None:
+            known = ", ".join(f["id"] for f in findings) or "(none filed yet)"
+            return _err(f"No finding {finding_id!r} in this module. Known ids: {known}")
+        if finding.get("kind") == "pass":
+            return _err(f"{finding_id} is a pass, not an issue — nothing to file.")
+        if finding.get("issue_url"):
+            return _err(f"{finding_id} is already filed: {finding['issue_url']}")
+
+        try:
+            project_arg = args.get("project")
+            if project_arg:
+                project_id = await asyncio.to_thread(blackcode.resolve_project, project_arg)
+                await asyncio.to_thread(blackcode.remember_project_id, session.package, project_id)
+            else:
+                project_id = await asyncio.to_thread(blackcode.stored_project_id, session.package)
+                if project_id is None:
+                    projects = await asyncio.to_thread(blackcode.list_projects)
+                    names = ", ".join(f"{p['name']!r} (id {p['id']})" for p in projects)
+                    return _err(
+                        f"No Blackcode project is set for this project yet. Call file_issue "
+                        f"again with `project` set to one of: {names}")
+        except blackcode.BlackcodeError as exc:
+            return _err(str(exc))
+
+        description = _issue_description(session, finding)
+        try:
+            result = await asyncio.to_thread(
+                blackcode.create_issue, project_id, finding["title"], description,
+                finding.get("severity", "medium"), finding.get("evidence"))
+        except blackcode.BlackcodeError as exc:
+            return _err(f"Could not file the issue: {exc}")
+
+        try:
+            await asyncio.to_thread(
+                store.set_finding_tracking, session.package, session.slug, finding_id,
+                issue_id=result["number"], issue_url=result["url"])
+        except StoreWriteError as exc:
+            return _err(f"Filed as Blackcode issue #{result['number']} ({result['url']}), but "
+                       f"could NOT save that link on the finding: {exc}")
+        return _ok(f"Filed {finding_id} as Blackcode issue #{result['number']}: {result['url']}")
+
+    @tool("search_issues",
+          "Search or browse existing Blackcode issues — for checking whether something is "
+          "already tracked before filing a duplicate, or answering 'what's open on X'. "
+          "Read-only; does not touch this module's findings. `query` matches title/description "
+          "(or a bare issue number). Omit `project` to search the whole workspace.",
+          {"type": "object",
+           "properties": {
+               "query": {"type": "string", "description": "Text to search for, or an issue #number"},
+               "project": {"type": "string", "description": "Blackcode project id or exact name"},
+               "status": {"type": "string",
+                         "description": "backlog/todo/in_progress/done/cancelled"},
+           },
+           "additionalProperties": False})
+    async def search_issues(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+        if not blackcode.is_available():
+            return _err(
+                f"The Blackcode CLI (`{config.BLACKCODE_CLI}`) is not installed or not on "
+                f"PATH. Install it with `npm install -g @blackcode_sa/bc-issues`.")
+        try:
+            project_id = None
+            if args.get("project"):
+                project_id = await asyncio.to_thread(blackcode.resolve_project, args["project"])
+            results = await asyncio.to_thread(
+                blackcode.search_issues, args.get("query") or "", project_id, args.get("status"))
+        except blackcode.BlackcodeError as exc:
+            return _err(str(exc))
+        if not results:
+            return _ok("No matching issues.")
+        return _ok("\n".join(
+            f"#{r['number']} [{r['status']}] {r['title']} ({r['project_name']}) — {r['url']}"
+            for r in results))
+
+    @tool("check_issue_status",
+          "Check the live status of finding(s) already filed to Blackcode via file_issue — "
+          "'is this fixed yet'. Pass `id` for one finding, or omit it to check every finding "
+          "in this module that has been filed. Updates the finding's resolved flag here to "
+          "match Blackcode's status (done/cancelled = resolved) and reports what changed.",
+          {"type": "object",
+           "properties": {"id": {"type": "string", "description": "Finding id, e.g. F007 — "
+                                                                    "omit to check all filed findings"}},
+           "additionalProperties": False})
+    async def check_issue_status(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+        if not blackcode.is_available():
+            return _err(
+                f"The Blackcode CLI (`{config.BLACKCODE_CLI}`) is not installed or not on "
+                f"PATH. Install it with `npm install -g @blackcode_sa/bc-issues`.")
+
+        findings = store.list_findings(session.package, session.slug)
+        target_id = args.get("id")
+        if target_id:
+            finding = next((f for f in findings if f.get("id") == str(target_id).strip()), None)
+            if finding is None:
+                known = ", ".join(f["id"] for f in findings) or "(none filed yet)"
+                return _err(f"No finding {target_id!r} in this module. Known ids: {known}")
+            candidates = [finding]
+        else:
+            candidates = [f for f in findings if f.get("issue_id")]
+            if not candidates:
+                return _ok("No findings in this module have been filed to Blackcode yet.")
+
+        lines = []
+        for finding in candidates:
+            number = finding.get("issue_id")
+            if not number:
+                lines.append(f"{finding['id']}: not filed to Blackcode yet.")
+                continue
+            try:
+                live = await asyncio.to_thread(blackcode.issue_status, number)
+            except blackcode.BlackcodeError as exc:
+                lines.append(f"{finding['id']} (#{number}): could not check — {exc}")
+                continue
+            was_resolved = bool(finding.get("resolved"))
+            if live["resolved"] != was_resolved:
+                try:
+                    await asyncio.to_thread(
+                        store.set_finding_tracking, session.package, session.slug,
+                        finding["id"], resolved=live["resolved"])
+                except StoreWriteError as exc:
+                    lines.append(f"{finding['id']} (#{number}): now {live['status']}, but "
+                                 f"could NOT save that here — {exc}")
+                    continue
+                change = "now resolved" if live["resolved"] else "reopened"
+                lines.append(f"{finding['id']} (#{number}): {live['status']} — {change}")
+            else:
+                lines.append(f"{finding['id']} (#{number}): {live['status']} (unchanged)")
+        return _ok("\n".join(lines))
+
+    @tool("learn_lesson",
+          "Record an operating lesson about *driving this harness* — never about the app "
+          "under test; that belongs in record_finding or your memory file. Call this whenever "
+          "something that is not your mistake cost you a stuck turn: a harness bug, a "
+          "confusing device/browser quirk, a wrong default, a selector heuristic that "
+          "misfired, a timing assumption that was too aggressive. Every future session, on "
+          "any project, reads this back before it starts, under 'Operating notes learned from "
+          "previous runs' — so call it yourself the moment you work out what went wrong. Do "
+          "not just describe the obstacle in your reply and wait for someone to relay it; "
+          "that is the difference between this harness getting smarter on its own and staying "
+          "exactly as broken as it was for you. Reusing an id raises that lesson's confidence "
+          "instead of duplicating it, so reuse one if you are confirming a lesson you already "
+          "recorded.",
+          {"type": "object",
+           "properties": {
+               "id": {"type": "string",
+                     "description": "Short, stable, kebab-case id, e.g. "
+                                     "'web-package-missing-scheme'."},
+               "lesson": {"type": "string",
+                         "description": "The rule itself, stated as an instruction for a "
+                                        "future session — e.g. 'A web project's package can "
+                                        "be a bare domain with no scheme; treat launch as "
+                                        "https:// by default.'"},
+               "evidence": {"type": "string",
+                           "description": "What actually happened that taught you this."},
+           },
+           "required": ["id", "lesson"], "additionalProperties": False})
+    async def learn_lesson(args: dict[str, Any]) -> dict[str, Any]:
+        lesson_id = str(args["id"]).strip()
+        text = str(args["lesson"]).strip()
+        if not lesson_id or not text:
+            return _err("Both id and lesson are required.")
+        try:
+            import system_memory as sysmem
+            await asyncio.to_thread(sysmem.learn, lesson_id, text, str(args.get("evidence") or ""))
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"Could not record the lesson: {exc}")
+        return _ok(f"Recorded `{lesson_id}`. Every session after this one, on any project, "
+                   f"will see it in its system prompt under 'Operating notes learned from "
+                   f"previous runs'.")
+
     # ---------------------------------------------------------------- humans & modules
     @tool("ask_user",
           "Pause and ask the user something only they can answer — a missing credential, a "
@@ -1071,7 +1287,8 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
              launch, tap_element, tap_text, tap_xy, type_text, use_credential,
              list_credentials, press, scroll, reset_app_data,
              journey_step, record_finding, add_note, link_finding, list_steps,
-             list_findings, ask_user, propose_subprojects, check_responsive]
+             list_findings, file_issue, search_issues, check_issue_status, learn_lesson,
+             ask_user, propose_subprojects, check_responsive]
     if not can_file_findings:
         tools = [t for t in tools if t.name not in VERDICT_TOOLS]
     if session.resolved_platform != "web":
@@ -1093,7 +1310,16 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
 #: definitions — so the model would see a tool its prompt says it does not have, reach for it
 #: at the moment it most wanted to, and spend the turn discovering the refusal. This harness
 #: has already paid for that lesson once with the cheap-tier tools (see prompts._cost_section).
-VERDICT_TOOLS = ("record_finding",)
+#:
+#: `file_issue` and `check_issue_status` don't write a verdict themselves — they publish one
+#: that already exists out to Blackcode, or sync its status back — but both operate on
+#: `session.package`/`session.slug`'s own findings, and the manager never has any (it has no
+#: `record_finding`). Withheld for the same reason as the cheap-tier tools above: a tool that
+#: would only ever answer "no finding to file/check" is not a capability, it's a dead end the
+#: model has to discover the hard way. `search_issues` is left off this list on purpose — it
+#: only reads Blackcode's own issues, never this module's findings, so the manager can use it
+#: too (e.g. to check whether something it noticed during recon is already tracked).
+VERDICT_TOOLS = ("record_finding", "file_issue", "check_issue_status")
 
 
 def _device_tool_names(*, can_file_findings: bool = True, web: bool = False) -> list[str]:
@@ -1109,7 +1335,8 @@ def _device_tool_names(*, can_file_findings: bool = True, web: bool = False) -> 
              "launch", "tap_element", "tap_text", "tap_xy", "type_text", "use_credential",
              "list_credentials", "press", "scroll", "reset_app_data",
              "journey_step", "record_finding", "add_note", "link_finding", "list_steps",
-             "list_findings", "ask_user", "propose_subprojects"]
+             "list_findings", "file_issue", "search_issues", "check_issue_status",
+             "learn_lesson", "ask_user", "propose_subprojects"]
     if web:
         short = short + ["check_responsive"]
     return [f"mcp__device__{name}" for name in short

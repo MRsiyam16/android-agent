@@ -321,6 +321,35 @@ def _origin_of(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else (url or "about:blank")
 
 
+def _ensure_scheme(url: str) -> str:
+    """Prepend `https://` to a bare host/domain — Playwright's `goto` rejects a URL with no
+    scheme outright, but a project's `package` field (this session's `serial`, and whatever
+    `launch` passes in) is only ever guaranteed to be a URL's *identity*, not a fully-formed
+    one; entering a project as a bare domain (e.g. typing "example.com" instead of
+    "https://example.com" when creating it) is an easy, common slip to make.
+    """
+    if not url or url == "about:blank" or "://" in url:
+        return url
+    return f"https://{url}"
+
+
+# Playwright raises a bare Error (no distinct subclass) whose *message* says the browser,
+# context or page is gone — an OS-level crash, an out-of-memory kill, or the process getting
+# reaped out from under this session. `_booted` has no way to know that happened short of
+# trying an actual call, so it stays True forever and every call after the first failure
+# raises the same "closed" error — until now, that meant the whole server had to be
+# restarted by hand to get a fresh browser. Whatever the dead tab had loaded is gone with it
+# either way, so relaunching once and retrying the call is strictly better than staying stuck.
+_CLOSED_ERROR_MARKERS = (
+    "has been closed", "target closed", "browser has disconnected", "connection closed",
+)
+
+
+def _looks_closed(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _CLOSED_ERROR_MARKERS)
+
+
 class WebDevice:
     """Adapter around one Playwright-driven browser tab for one website under test.
 
@@ -333,7 +362,7 @@ class WebDevice:
         # `serial` doubles as the start URL, then tracks whatever page is actually loaded —
         # legitimate for the same reason `package` doubles as bundle id on iOS: the two are the
         # same concept here (what does this session point at), just live rather than fixed.
-        self.serial = serial or "about:blank"
+        self.serial = _ensure_scheme(serial) if serial else "about:blank"
         self._exec = ThreadPoolExecutor(max_workers=1)
         self._pw = None
         self._browser = None
@@ -354,7 +383,33 @@ class WebDevice:
 
     def _run_boxed(self, fn, *args: Any, **kwargs: Any) -> Any:
         self._ensure_booted()
-        return fn(*args, **kwargs)
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - only a dead browser gets a relaunch + retry
+            if not _looks_closed(exc):
+                raise
+            logger.warning(
+                "browser session for %r looks closed (%s); relaunching and retrying once",
+                self.serial, exc)
+            self._discard_dead_session()
+            self._ensure_booted()
+            return fn(*args, **kwargs)
+
+    def _discard_dead_session(self) -> None:
+        """Drop every handle to a browser that is no longer there.
+
+        Only ever called from the worker thread, same as `_ensure_booted` — there is no
+        `close()`-style hop through `_exec.submit` here because we are already on it. Best
+        effort throughout: a `.stop()` on a connection that is already gone is expected to
+        fail too, and is not itself the problem being reported.
+        """
+        try:
+            if self._pw is not None:
+                self._pw.stop()
+        except Exception:  # noqa: BLE001 - already gone; nothing left to clean up
+            pass
+        self._pw = self._browser = self._context = self._page = None
+        self._booted = False
 
     def _ensure_booted(self) -> None:
         """Launch Chromium and open one page. Only ever called from the worker thread."""
@@ -370,9 +425,22 @@ class WebDevice:
             self._pw = sync_playwright().start()
             channel = config.WEB_BROWSER_CHANNEL
             browser_type = getattr(self._pw, channel, self._pw.chromium)
-            self._browser = browser_type.launch(headless=config.WEB_HEADLESS)
             width, height = config.WEB_DEFAULT_VIEWPORT
-            self._context = self._browser.new_context(viewport={"width": width, "height": height})
+            launch_args: list[str] = []
+            if not config.WEB_HEADLESS and browser_type is self._pw.chromium:
+                # Headed Chromium opens its OS window at its own default size, then
+                # `new_context(viewport=...)` below applies a *different* size a beat later
+                # over CDP (`Emulation.setDeviceMetricsOverride`) — two sizes racing to paint
+                # is exactly what "the page flickers the moment it spawns" looks like from
+                # outside. `--window-size` makes the window open already the right size (plus
+                # headroom for Chromium's own window chrome), so there is nothing left to
+                # visibly snap to once the viewport emulation lands. Chromium-only: Firefox
+                # and WebKit take different launch flags entirely.
+                launch_args = [f"--window-size={width},{height + 90}", "--window-position=0,0"]
+            self._browser = browser_type.launch(headless=config.WEB_HEADLESS, args=launch_args)
+            self._context = self._browser.new_context(
+                viewport={"width": width, "height": height},
+                device_scale_factor=config.WEB_SCREENSHOT_SCALE)
             self._page = self._context.new_page()
             self._page.on("console", self._on_console)
             self._page.on("pageerror", self._on_pageerror)
@@ -635,8 +703,9 @@ class WebDevice:
 
     def start_app(self, package: str) -> None:
         """Navigate to `package` (a URL) — the web analogue of launching an app."""
+        url = _ensure_scheme(package)
         try:
-            self._call(lambda: self._page.goto(package, wait_until="domcontentloaded"))
+            self._call(lambda: self._page.goto(url, wait_until="domcontentloaded"))
             self.serial = self._call(lambda: self._page.url)
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(f"start_app({package!r}) failed: {exc}") from exc

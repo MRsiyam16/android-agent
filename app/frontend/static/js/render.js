@@ -7,7 +7,7 @@ import { renderTextNotes } from './notes.js';
 import { flowLevel, renderSectionNotes } from './sectionnotes.js';
 import { CARD_H, CARD_W, nodeHeaderLabel, resetCardAspect, sectionLayout, setCardAspect } from './sections.js';
 import { PLACEHOLDER_IMG, cardElements, edgeMeta, nodeMeta, nodeStatus, nodesData, sections, ui } from './state.js';
-import { CARD_MAX_W, requestScaled, shotAspect, truncate } from './util.js';
+import { cardTargetWidth, requestScaled, shotAspect, truncate } from './util.js';
 
 // The node box vis lays out and hit-tests by. Read the note in layout.js: a node is an
 // invisible transparent image, and vis sizes it to that image's native pixels, so this
@@ -183,21 +183,32 @@ function renderNodeCards() {
 
     const meta = nodeMeta.get(n.id);
     const img = card.querySelector('img');
-    // Scaled, never the full-resolution original — see requestScaled. Until the scaled
-    // copy exists the card shows the placeholder, which is what it showed anyway while a
-    // multi-megabyte data URI was decoding.
     const hash = n.id;
-    const wantSrc = (meta && meta.screenshot)
-      ? (requestScaled(hash, meta.screenshot, CARD_MAX_W, (url, decodedHash) => {
-          adoptShotAspect(decodedHash);
-          const live = cardElements.get(hash)?.querySelector('img');
-          if (live && live.dataset.src !== url) { live.src = url; live.dataset.src = url; }
-        }) || PLACEHOLDER_IMG)
-      : PLACEHOLDER_IMG;
-    if (img.dataset.src !== wantSrc) { img.src = wantSrc; img.dataset.src = wantSrc; }
-    // The loading tile is a plain dark rectangle drawn at the old 1:2 shape; letterboxing
-    // it inside the card would show bars where there is nothing to show.
-    img.classList.toggle('is-placeholder', wantSrc === PLACEHOLDER_IMG);
+    if (meta && meta.screenshot) {
+      // Sized for how big the card actually is right now, not a fixed guess — see
+      // cardTargetWidth. Zooming in to read a screen re-requests a sharper bucket instead
+      // of the browser stretching the same small JPEG and blurring it.
+      const targetW = cardTargetWidth(rect.width * (window.devicePixelRatio || 1));
+      const scaled = requestScaled(hash, meta.screenshot, targetW, (url, decodedHash) => {
+        adoptShotAspect(decodedHash);
+        const live = cardElements.get(hash)?.querySelector('img');
+        if (live && live.dataset.src !== url) {
+          live.src = url; live.dataset.src = url; live.classList.remove('is-placeholder');
+        }
+      });
+      // No cache hit yet at this bucket — keep whatever is already on screen (even a
+      // smaller, softer copy) rather than flashing back to the placeholder tile; the
+      // callback above swaps in the sharper copy the moment it decodes.
+      if (scaled && img.dataset.src !== scaled) {
+        img.src = scaled; img.dataset.src = scaled; img.classList.remove('is-placeholder');
+      } else if (!img.dataset.src) {
+        img.src = PLACEHOLDER_IMG; img.dataset.src = PLACEHOLDER_IMG;
+        img.classList.add('is-placeholder');
+      }
+    } else if (img.dataset.src !== PLACEHOLDER_IMG) {
+      img.src = PLACEHOLDER_IMG; img.dataset.src = PLACEHOLDER_IMG;
+      img.classList.add('is-placeholder');
+    }
   });
 
   cardElements.forEach((card, hash) => {

@@ -30,6 +30,23 @@ function screenshotSrc(b64) {
 const CARD_MAX_W = 360;          // node cards: ~2x their on-screen width at normal zoom
 const DECODE_CONCURRENCY = 2;
 
+// The board canvas is zoomable, and a card's on-screen size at normal zoom is not its
+// on-screen size once the user zooms in to actually read a screen — that is the whole
+// point of zooming. A thumbnail sized for 1x stays 360px wide no matter how far the card
+// is stretched, so the browser upscales it and it blurs exactly when someone leans in to
+// look closely. These are the sizes the canvas card is allowed to ask for instead, picked
+// coarse enough that panning/zooming continuously does not thrash the decoder — the same
+// bucket keeps returning a cache hit until the card crosses into the next one.
+const CARD_ZOOM_BUCKETS = [360, 640, 960, 1400, 2000];
+
+/** The smallest bucket that comfortably covers a card rendered `displayPx` wide. */
+function cardTargetWidth(displayPx) {
+  for (const bucket of CARD_ZOOM_BUCKETS) {
+    if (displayPx <= bucket) return bucket;
+  }
+  return CARD_ZOOM_BUCKETS[CARD_ZOOM_BUCKETS.length - 1];
+}
+
 const scaledCache = new Map();   // `${hash}@${maxW}` -> small data URL
 // state_hash -> naturalWidth / naturalHeight of the *stored* screenshot. The downscale
 // below preserves the ratio, so this is equally the ratio of the scaled copy — but it is
@@ -54,7 +71,7 @@ function decodeScaled(b64, maxW) {
         canvas.height = Math.max(1, Math.round((img.naturalHeight || maxW) * scale));
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
         resolve({
-          url: canvas.toDataURL('image/jpeg', 0.82),
+          url: canvas.toDataURL('image/jpeg', 0.92),
           aspect: (img.naturalWidth && img.naturalHeight)
             ? img.naturalWidth / img.naturalHeight
             : null,
@@ -100,4 +117,4 @@ function requestScaled(hash, b64, maxW, apply) {
 }
 
 
-export { CARD_MAX_W, DECODE_CONCURRENCY, decodeScaled, pumpScaleQueue, requestScaled, scaleQueue, scaleWorkers, scaledCache, screenshotSrc, shotAspect, truncate };
+export { CARD_MAX_W, CARD_ZOOM_BUCKETS, DECODE_CONCURRENCY, cardTargetWidth, decodeScaled, pumpScaleQueue, requestScaled, scaleQueue, scaleWorkers, scaledCache, screenshotSrc, shotAspect, truncate };
