@@ -17,9 +17,6 @@
 }
 .eco-headline { font-size: 12px; color: var(--ink-muted); }
 
-.link-pill { text-decoration: none; color: var(--ink-muted); }
-.link-pill:hover { color: var(--ink); border-color: var(--accent-blue); }
-
 .rail-toggle {
   background: transparent; border: 1px solid var(--hairline); color: var(--ink-muted);
   width: 30px; height: 30px; border-radius: var(--radius-sm); cursor: pointer;
@@ -46,6 +43,13 @@
   color: var(--ink-muted); font-family: var(--font-body); font-size: 13px;
   padding: 8px 10px; cursor: pointer; text-align: left;
 }
+/* An app row is three stacked lines rather than one, because the bar is the point: the rail
+   is where you decide what to work on next, and "which app is least covered" is that
+   decision. */
+.nav-app { flex-direction: column; align-items: stretch; gap: 5px; }
+.nav-app-top { display: flex; align-items: center; gap: 8px; }
+.nav-sub { font-size: 10.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.nav-item.active .nav-sub { color: var(--ink-muted); }
 .nav-item:hover { background: var(--surface-2); color: var(--ink); }
 .nav-item.active { background: var(--surface-3); color: var(--ink); }
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -86,6 +90,48 @@
 }
 .section-note { font-size: 12px; color: var(--ink-faint); }
 
+/* ---------------- COVERAGE ----------------
+   Three states, not two. Done and waiting are measured; unknown is not, and it is hatched
+   rather than shaded so it never reads as a third quantity on the same scale as the other
+   two. An app nobody has surveyed gets the hatch across the whole bar and no percentage —
+   there is no denominator for one to be a fraction of. */
+.bar {
+  display: flex; height: 6px; width: 100%; border-radius: var(--radius-pill);
+  overflow: hidden; background: var(--surface-3);
+}
+.bar-done { background: var(--success); }
+.bar-todo { background: var(--surface-3); }
+.bar-unknown {
+  background: repeating-linear-gradient(
+    -45deg, var(--ink-faint) 0 3px, transparent 3px 6px);
+  opacity: 0.55;
+}
+
+.coverage-panel {
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg); padding: 16px 18px; margin-bottom: 18px;
+}
+.coverage-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+.coverage-title {
+  font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--ink-faint); font-weight: 600;
+}
+.coverage-figure {
+  font-family: var(--font-display); font-weight: 700; font-size: 26px;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+}
+.coverage-legend { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.legend { font-size: 11px; color: var(--ink-muted); display: inline-flex; align-items: center; gap: 6px; }
+.legend::before { content: ''; width: 8px; height: 8px; border-radius: 2px; background: var(--surface-3); }
+.legend-done::before { background: var(--success); }
+.legend-unknown::before {
+  background: repeating-linear-gradient(-45deg, var(--ink-faint) 0 2px, transparent 2px 4px);
+}
+.coverage-note {
+  font-size: 12px; line-height: 1.55; color: var(--ink-faint); margin-top: 10px;
+  max-width: 80ch;
+}
+
 /* ---------------- APP CARDS ---------------- */
 .app-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px;
@@ -104,7 +150,7 @@
   color: var(--ink-faint); border: 1px solid var(--hairline);
   border-radius: var(--radius-pill); padding: 2px 7px;
 }
-.app-pkg { font-size: 11px; color: var(--ink-faint); overflow-wrap: anywhere; }
+.app-card > .bar { margin-top: 6px; }
 .app-stat { font-size: 13px; color: var(--ink-muted); margin-top: 2px; }
 .app-stat b { font-family: var(--font-display); font-size: 22px; color: var(--ink); }
 .app-modules { font-size: 12px; color: var(--ink-muted); }
@@ -115,12 +161,30 @@
   background: rgba(255, 122, 61, 0.1); border-radius: var(--radius-pill); padding: 2px 8px;
 }
 
-/* ---------------- CLUSTERS ---------------- */
-.cluster {
+/* ---------------- DISCLOSURE ----------------
+   A claim on one line; the evidence a click away. Six clusters printing every member inline
+   was sixty lines of overview that nobody could scan. */
+.disc {
   background: var(--surface-1); border: 1px solid var(--hairline);
-  border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 10px;
+  border-radius: var(--radius-md); margin-bottom: 8px; overflow: hidden;
 }
-.cluster-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.disc.open { border-color: var(--ink-faint); }
+.disc-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  background: transparent; border: none; color: var(--ink);
+  font-family: var(--font-body); padding: 11px 14px; cursor: pointer; text-align: left;
+}
+.disc-head:hover { background: var(--surface-2); }
+.disc-label {
+  margin-left: auto; font-size: 11px; color: var(--ink-faint); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.disc-caret { font-size: 10px; color: var(--ink-faint); flex-shrink: 0; }
+.disc-body { padding: 2px 14px 12px; border-top: 1px solid var(--hairline); }
+
+/* ---------------- CLUSTERS ---------------- */
+.cluster-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.cluster-roles { display: flex; gap: 4px; flex-wrap: wrap; }
 .cluster-size {
   font-family: var(--font-display); font-weight: 700; font-size: 13px;
   font-variant-numeric: tabular-nums;
@@ -169,15 +233,26 @@
 .st-tested { color: var(--success); border-color: rgba(34, 197, 94, 0.3); }
 .st-approved { color: var(--accent-blue); border-color: rgba(0, 153, 255, 0.35); }
 
-.finding-app { color: var(--ink-faint); min-width: 92px; }
-.finding-ref { color: var(--ink-faint); }
+.finding-ref { color: var(--ink-faint); min-width: 200px; }
 .finding-title { flex: 1; min-width: 220px; }
 .finding-sev { font-size: 10px; color: var(--ink-faint); }
 .sev-high, .sev-critical { color: var(--danger); }
 
-.module-title { font-weight: 500; min-width: 160px; }
-.module-slug { color: var(--ink-faint); font-size: 11px; flex: 1; }
+.module-title { font-weight: 500; flex: 1; min-width: 160px; }
 .tally { display: flex; gap: 5px; flex-wrap: wrap; }
+
+/* ---------------- FILTERS & GROUPS ---------------- */
+.filters { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 12px; }
+.filter-btn {
+  background: var(--surface-1); border: 1px solid var(--hairline); color: var(--ink-muted);
+  font-family: var(--font-body); font-size: 11.5px; padding: 5px 11px;
+  border-radius: var(--radius-pill); cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.filter-btn:hover { color: var(--ink); }
+.filter-btn.active { background: var(--surface-3); color: var(--ink); border-color: var(--ink-faint); }
+
+.group-head { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.group-role { font-family: var(--font-display); font-weight: 600; font-size: 13px; }
 
 /* ---------------- RIGHT RAIL ---------------- */
 .rail-right {

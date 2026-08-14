@@ -41,6 +41,11 @@ logger = logging.getLogger("ecosystem")
 #: Worst-first, matching `store.FINDING_KINDS` — a reader wants the defects before the passes.
 DEFECT_KINDS = ("bug", "warning", "suggestion")
 
+#: The module that explores a new app and proposes the breakdown. Like the manager module it
+#: is not an area of the app, so it is neither testable nor a gap — but unlike the manager it
+#: is evidence that somebody has actually looked at the app, which is what `surveyed` reads.
+RECON_SLUG = "recon"
+
 #: The role a supervisor project holds. It is a role like any other so that one key answers
 #: "what is this project" for every project, rather than a second flag only some carry — but
 #: it is the one role with no app behind it, which is what `supervises` exists to detect.
@@ -227,6 +232,40 @@ def module_index(name: str) -> list[dict[str, Any]]:
     return out
 
 
+def _is_survey_module(slug: str) -> bool:
+    """Modules that are about the app rather than part of it — the manager and recon."""
+    return store.is_main_slug(slug) or slug == RECON_SLUG
+
+
+def coverage(mods: list[dict[str, Any]]) -> dict[str, Any]:
+    """How much of one app has been tested, and whether that fraction means anything.
+
+    `tested / testable` is easy. The hard half is `surveyed`, and it is the reason this
+    function exists rather than a division at the call site.
+
+    A percentage needs a denominator somebody established. If nothing has ever explored the
+    app, its module list is whatever happens to have been created — and "1 of 1 tested" reads
+    as finished when it means one module exists. That is not hypothetical: doctor-ipad's only
+    module tested a calculator app by mistake, and every naive formula scores it 100%.
+
+    So the denominator counts as known only when a survey module (the project's manager, or
+    recon) has actually *run*. Existing is not enough: a manager module that was created and
+    never opened has proposed nothing.
+    """
+    testable = [m for m in mods if not _is_survey_module(str(m.get("slug") or ""))]
+    tested = [m for m in testable if m.get("status") == "tested"]
+    surveyed = any(m.get("last_run_at") and _is_survey_module(str(m.get("slug") or ""))
+                   for m in mods)
+    return {
+        "testable": len(testable),
+        "tested": len(tested),
+        "surveyed": surveyed,
+        # Deliberately None rather than 0 or 100 when the denominator is unknown. A caller
+        # that forgets to check `surveyed` then draws nothing instead of drawing a lie.
+        "percent": round(100 * len(tested) / len(testable)) if surveyed and testable else None,
+    }
+
+
 def app_index(name: str) -> list[dict[str, Any]]:
     """Every app with its module counts and outcome tally — one row per app.
 
@@ -258,6 +297,7 @@ def app_index(name: str) -> list[dict[str, Any]]:
                          if m["status"] != "tested" and not store.is_main_slug(m["slug"])],
             "never_run": [m["slug"] for m in mods
                           if not m.get("last_run_at") and not store.is_main_slug(m["slug"])],
+            "coverage": coverage(mods),
             "counts": tally,
             "defects": sum(tally[k] for k in DEFECT_KINDS),
         })
@@ -276,6 +316,16 @@ def summary(name: str) -> dict[str, Any]:
                 totals[kind] = totals.get(kind, 0) + n
     modules = sum(a["modules"] for a in apps)
     tested = sum(a["modules_tested"] for a in apps)
+
+    # Rolled up over the apps whose denominator somebody established, and *not* over the rest.
+    # Folding an unsurveyed app in either direction is a lie in one of two ways: counted as
+    # complete it inflates the total, counted as empty it invents modules nobody has named.
+    # It is reported as its own number instead, so the bar can show a third state.
+    surveyed = [a["coverage"] for a in apps if a["coverage"]["surveyed"]]
+    unsurveyed = [a for a in apps if not a["coverage"]["surveyed"]]
+    known_testable = sum(c["testable"] for c in surveyed)
+    known_tested = sum(c["tested"] for c in surveyed)
+
     return {
         "ecosystem": name,
         "apps": len(apps),
@@ -284,6 +334,12 @@ def summary(name: str) -> dict[str, Any]:
         "modules_untested": modules - tested,
         "counts": totals,
         "defects": sum(totals.get(k, 0) for k in DEFECT_KINDS),
+        "coverage": {
+            "tested": known_tested,
+            "testable": known_testable,
+            "percent": round(100 * known_tested / known_testable) if known_testable else None,
+            "unsurveyed": [a["role"] for a in unsurveyed],
+        },
     }
 
 

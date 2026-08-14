@@ -91,6 +91,10 @@ body {
   font-size: 12px; color: var(--ink-muted); background: var(--surface-2);
   border: 1px solid var(--hairline); padding: 6px 12px; border-radius: var(--radius-pill);
 }
+/* A stat pill that is a link to the other dashboard. Here rather than in either page's own
+   sheet because both pages have one pointing at the other. */
+.link-pill { text-decoration: none; white-space: nowrap; }
+.link-pill:hover { color: var(--ink); border-color: var(--accent-blue); }
 
 .conn-indicator { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-muted); }
 .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }

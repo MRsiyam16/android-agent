@@ -138,6 +138,72 @@ def test_summary_still_agrees_with_app_index_after_the_refactor(eco):
     assert "suggestion" not in summary["counts"]
 
 
+# -- coverage ---------------------------------------------------------------------------
+def test_an_app_nobody_surveyed_reports_no_percentage(eco):
+    """The case this exists for. doctor-ipad has one module, it is marked tested, and it
+    tested a calculator app by mistake — every naive `tested / total` scores that 100%."""
+    ipad = "com.metaesthetics.doctor"
+    backend_projects.write_meta(ipad, platform="ios")
+    ecosystem.tag(ipad, NAME, "doctor-ipad")
+    store.create_subproject(ipad, "Calculator test", status="tested")
+    store.update_subproject(ipad, "calculator-test", last_run_at="2026-08-01T00:00:00Z")
+    store.create_subproject(ipad, "Main", status="approved")   # created, never opened
+
+    app = next(a for a in ecosystem.app_index(NAME) if a["package"] == ipad)
+    assert app["coverage"]["tested"] == 1
+    assert app["coverage"]["testable"] == 1
+    assert app["coverage"]["surveyed"] is False
+    # None, not 100 and not 0 — a caller that forgets to check `surveyed` draws nothing
+    # rather than drawing a lie.
+    assert app["coverage"]["percent"] is None
+
+
+def test_a_survey_module_that_actually_ran_makes_the_denominator_real(eco):
+    store.update_subproject(ANDROID, "search", status="tested",
+                            last_run_at="2026-08-01T00:00:00Z")
+    store.create_subproject(ANDROID, "Main")
+    store.update_subproject(ANDROID, "main", last_run_at="2026-08-01T00:00:00Z")
+
+    app = next(a for a in ecosystem.app_index(NAME) if a["package"] == ANDROID)
+    assert app["coverage"]["surveyed"] is True
+    # The manager module is not one of the areas being counted.
+    assert app["coverage"]["testable"] == 1
+    assert app["coverage"]["percent"] == 100
+
+
+def test_recon_counts_as_a_survey_and_not_as_an_area(eco):
+    store.create_subproject(ANDROID, "Recon")
+    store.update_subproject(ANDROID, "recon", status="tested",
+                            last_run_at="2026-08-01T00:00:00Z")
+    app = next(a for a in ecosystem.app_index(NAME) if a["package"] == ANDROID)
+    assert app["coverage"]["surveyed"] is True
+    assert app["coverage"]["testable"] == 1        # `search` only; recon is not an area
+    assert app["coverage"]["tested"] == 0          # and it is not a tested area either
+
+
+def test_the_ecosystem_total_leaves_unsurveyed_apps_out_of_the_fraction(eco):
+    """Folding an unsurveyed app in either direction is wrong in one of two ways: as complete
+    it inflates the total, as empty it invents modules nobody has named."""
+    store.create_subproject(ANDROID, "Main")
+    store.update_subproject(ANDROID, "main", last_run_at="2026-08-01T00:00:00Z")
+    store.update_subproject(ANDROID, "search", status="tested")
+
+    cov = ecosystem.summary(NAME)["coverage"]
+    assert cov["tested"] == 1
+    assert cov["testable"] == 1                    # clinic-web's module is not counted
+    assert cov["percent"] == 100
+    assert cov["unsurveyed"] == ["clinic-web"]     # ...and it is named instead
+
+
+def test_coverage_reaches_the_board(client):
+    body = client.get(f"/ecosystems/{NAME}/board").json()
+    assert "coverage" in body["totals"]
+    assert all("coverage" in app for app in body["apps"])
+    # Nothing here has been surveyed, so there is no fraction to report at all.
+    assert body["totals"]["coverage"]["percent"] is None
+    assert sorted(body["totals"]["coverage"]["unsurveyed"]) == ["clinic-web", "patient-android"]
+
+
 # -- event stamping ---------------------------------------------------------------------
 def test_every_event_carries_the_project_that_emitted_it(eco):
     """Filtering on slug alone is not enough: `main` is every project's manager module, and

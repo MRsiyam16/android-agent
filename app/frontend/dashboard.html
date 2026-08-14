@@ -9,7 +9,7 @@
 <!-- Six files rather than one 60 KB sheet, so a styling change means opening the ~200 lines
      that own the thing you are changing. Separate <link>s, not @import: imports load
      serially, links load in parallel. -->
-<link rel="stylesheet" href="/static/css/base.css?v=21">
+<link rel="stylesheet" href="/static/css/base.css?v=22">
 <link rel="stylesheet" href="/static/css/layout.css?v=21">
 <link rel="stylesheet" href="/static/css/graph.css?v=21">
 <link rel="stylesheet" href="/static/css/notes.css?v=21">
@@ -85,6 +85,11 @@
     </div>
 
     <div class="topbar-right">
+      <!-- The other dashboard. In the same corner as this page's link back, so the pair reads
+           as one switch rather than two unrelated controls. Always here, even for an untagged
+           project: it is how you find the manager, not a fact about the open project — that
+           is the cross-app pill on the left, which does hide. -->
+      <a class="stat-pill link-pill" href="/manager" title="The whole product — every app, and the defects that belong to more than one">Manager ↗</a>
       <div class="stat-pill" id="statNodes">0 states</div>
       <div class="stat-pill" id="statEdges">0 transitions</div>
       <!-- Moved off the meter box under the phone: auth is the difference between spending
