@@ -3,6 +3,7 @@
 import { ui } from './state.js';
 import { agent, agentEl, agentFetch, appendChat, scrollChatToEnd, setAgentBusy, setAgentModel, setAgentState, startWorking, syncComposerEnabled } from './chat.js';
 import { refreshFrame, sendToAgent } from './compose.js';
+import { refreshEcosystem } from './ecosystem.js';
 import { loadModules, renderModuleHighlight } from './modules.js';
 import { refreshOutcomes, refreshSectionNotes } from './outcomes.js';
 import { chatLog } from './phone.js';
@@ -218,6 +219,10 @@ function handleAgentEvent(msg) {
       appendFinding(msg.finding);
       loadModules();
       refreshOutcomes();
+      // The cross-app count is derived from this project's findings, so it goes stale the
+      // moment one is filed — and it is a claim about the product, which is exactly the kind
+      // of number nobody thinks to re-check by hand.
+      refreshEcosystem();
       break;
     case 'agent_blocked': showBlocked(msg); break;
     case 'agent_unblocked': hideBlocked(); break;

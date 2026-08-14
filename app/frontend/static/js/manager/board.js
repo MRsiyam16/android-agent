@@ -175,9 +175,15 @@ function defectLegend(status, incomplete) {
   return legend;
 }
 
+// Which disclosures are open, by key. Survives a redraw: the board refreshes itself whenever
+// any module in the product files a finding, and a cluster you had expanded snapping shut
+// under you — mid-read, because something unrelated happened in another app — is the thing
+// that makes a live-updating page worse than a static one.
+const openRows = new Set();
+
 /** A collapsed row that reveals its detail on click. Built once, filled once, then toggled —
  *  so opening the same cluster twice does not re-render it. */
-function disclosure(head, buildBody, openLabel) {
+function disclosure(head, buildBody, openLabel, key) {
   const box = el('div', 'disc');
   const toggle = el('button', 'disc-head');
   toggle.append(head);
@@ -187,12 +193,19 @@ function disclosure(head, buildBody, openLabel) {
   const body = el('div', 'disc-body');
   body.hidden = true;
   let built = false;
-  toggle.addEventListener('click', () => {
-    if (!built) { buildBody(body); built = true; }
-    body.hidden = !body.hidden;
-    box.classList.toggle('open', !body.hidden);
-    caret.textContent = body.hidden ? '▸' : '▾';
-  });
+
+  const setOpen = (open) => {
+    if (open && !built) { buildBody(body); built = true; }
+    body.hidden = !open;
+    box.classList.toggle('open', open);
+    caret.textContent = open ? '▾' : '▸';
+    if (!key) return;
+    if (open) openRows.add(key);
+    else openRows.delete(key);
+  };
+
+  toggle.addEventListener('click', () => setOpen(body.hidden));
+  if (key && openRows.has(key)) setOpen(true);
   box.append(toggle, body);
   return box;
 }
@@ -247,7 +260,7 @@ function clusterCard(cluster) {
                           `${o.package} · ${o.module} · ${o.finding} — no longer on disk`));
     });
   }, `${cluster.size} report${cluster.size === 1 ? '' : 's'}`
-     + (orphanCount ? ` · ${orphanCount} orphaned` : ''));
+     + (orphanCount ? ` · ${orphanCount} orphaned` : ''), 'cluster:' + cluster.id);
 }
 
 function findingRow(f) {
@@ -537,7 +550,7 @@ async function renderUnclustered() {
     head.append(el('span', 'group-role', role), tally(countsOf(rows), DEFECT_KINDS));
     canvas.appendChild(disclosure(head, (body) => {
       rows.forEach((f) => body.appendChild(findingRow(f)));
-    }, `${rows.length}`));
+    }, `${rows.length}`, 'role:' + role));
   });
 }
 
@@ -625,12 +638,42 @@ function renderRail() {
   markActive();
 }
 
-/** Re-read everything and redraw whatever is on screen. */
+/** Re-read everything and redraw whatever is on screen.
+ *
+ *  Called on the button and, more often, by itself: a module filing a finding in any app in
+ *  this product refreshes the board. That makes scroll position and open rows part of the
+ *  contract rather than a nicety — a page that jumps to the top every time some other agent
+ *  files a bug is one you cannot read while anything is running.
+ */
 async function refresh() {
+  const scroll = canvas.scrollTop;
   Object.keys(cache).forEach((k) => delete cache[k]);
   await loadBoard();
   renderRail();
   await show(view.name, view.arg);   // same view, so any filter you set survives the refresh
+  canvas.scrollTop = scroll;
+}
+
+/** Coalesce a burst of events into one redraw.
+ *
+ *  A run files findings in clusters of several seconds. One refresh per finding would be a
+ *  full board re-read per bug, and the board is five projects' findings files.
+ */
+let refreshTimer = null;
+
+function scheduleRefresh(delay = 1500) {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    refresh().catch(() => { /* a failed auto-refresh must not break the page */ });
+  }, delay);
+}
+
+/** Whether an event from this project should redraw the board — i.e. it is one of ours. */
+function isOurs(package_) {
+  if (!package_ || !eco.board) return false;
+  if (package_ === eco.board.supervisor) return true;
+  return eco.board.apps.some((app) => app.package === package_);
 }
 
 function initBoard() {
@@ -641,4 +684,4 @@ function initBoard() {
   document.getElementById('refreshBtn').addEventListener('click', refresh);
 }
 
-export { initBoard, refresh, renderRail, show };
+export { initBoard, isOurs, refresh, renderRail, scheduleRefresh, show };

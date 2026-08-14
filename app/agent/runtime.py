@@ -37,6 +37,7 @@ from claude_agent_sdk import (
 )
 
 import config
+import device_locks
 import ecosystem
 import system_memory as sysmem
 from agent import device_tools, prompts, store
@@ -355,6 +356,9 @@ class AgentSession:
                 "subscription": self.subscription, "session_id": self.session_id}
 
     async def close(self) -> None:
+        # Before the disconnect, so a client that hangs on the way out cannot leave this
+        # module holding a phone nothing is driving any more.
+        device_locks.release_all(self.package, self.slug)
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -448,6 +452,30 @@ class AgentSession:
                                         "want to redirect it."})
             return
 
+        # One driver per target, checked before the message is even recorded. A turn that is
+        # going to be refused should not leave a user line in the transcript implying it ran.
+        #
+        # Only for sessions that drive something: the ecosystem manager has no device, and
+        # locking it out because a phone is busy would be a rule about hardware applied to a
+        # tier that cannot touch any.
+        lock_key = None
+        if not ecosystem.supervises(self.package):
+            lock_key = device_locks.key_for(
+                self.device.resolved_platform, self.device.serial, self.package)
+            try:
+                await asyncio.to_thread(device_locks.acquire, lock_key, self.package, self.slug)
+            except device_locks.DeviceBusy as exc:
+                await self.emit({"slug": self.slug, "type": "agent_error", "message": str(exc)})
+                return
+
+        try:
+            await self._send_locked(text)
+        finally:
+            if lock_key is not None:
+                device_locks.release(lock_key, self.package, self.slug)
+
+    async def _send_locked(self, text: str) -> None:
+        """The turn itself, with this session's target already taken."""
         await asyncio.to_thread(store.append_chat, self.package, self.slug,
                                 {"role": "user", "text": text})
         async with self._lock:

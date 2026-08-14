@@ -5,8 +5,24 @@
 // one is a line, so ordinary imports work and this file is short.
 
 import { eco, loadBoard } from './api.js';
-import { initBoard, refresh, renderRail, show } from './board.js';
+import { initBoard, isOurs, renderRail, scheduleRefresh, show } from './board.js';
 import { append, attachConv, handleAgentEvent, initConv } from './conv.js';
+
+// Events that change what this board shows. A tester driving a phone in another project emits
+// dozens of `agent_tap` and `agent_screenshot` events a minute and none of them alter a single
+// number here; these four do.
+//
+// This is why the socket handler and not `conv.js` decides: the conversation is the
+// supervisor's alone and filters everything else out, but the *board* is about the whole
+// product, so a finding filed by any of its apps has to reach it. The manager used only to
+// learn about its own turns, which meant a run in the cockpit could fill an app with defects
+// while this page sat showing the numbers from before it started.
+const BOARD_EVENTS = new Set([
+  'agent_finding',                 // a defect was filed — counts, bars and clusters all move
+  'agent_subprojects_proposed',    // recon proposed modules — coverage denominators move
+  'agent_subproject_updated',      // a module was approved or marked tested
+  'agent_done',                    // end of a run: last chance to catch anything missed
+]);
 
 const conn = document.getElementById('conn');
 const connLabel = document.getElementById('connLabel');
@@ -27,7 +43,9 @@ function connectWs() {
   ws.onmessage = (evt) => {
     let msg;
     try { msg = JSON.parse(evt.data); } catch { return; }
-    if (msg.type && msg.type.startsWith('agent_')) handleAgentEvent(msg);
+    if (!msg.type || !msg.type.startsWith('agent_')) return;
+    handleAgentEvent(msg);                       // the conversation: supervisor only
+    if (BOARD_EVENTS.has(msg.type) && isOurs(msg.package)) scheduleRefresh();
   };
 }
 
@@ -44,10 +62,10 @@ document.addEventListener('keydown', (e) => {
 // Boot
 // ---------------------------------------------------------------------------
 initBoard();
-// The board's refresh is what the conversation calls when the manager changes the shape of the
-// product — creating a module in an app, or saving a cluster — so the left rail is not still
-// showing the counts from before the turn.
-initConv(() => { refresh().catch(() => { /* the chat is usable with a stale board */ }); });
+// The conversation asks for a redraw when the manager changes the product — a module
+// commissioned in an app, a cluster saved. Through the same debounce as the socket path, so
+// the two do not each trigger their own read of five projects' findings.
+initConv(() => scheduleRefresh());
 connectWs();
 
 loadBoard()

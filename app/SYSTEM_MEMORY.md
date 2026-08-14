@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **134** · last updated: 2026-08-14T14:11:19+00:00
+Runs recorded: **137** · last updated: 2026-08-14T15:23:27+00:00
 
 ## Environment
 
@@ -62,11 +62,11 @@ the wrong screen, which downstream becomes a false defect.
 
 28/30 of the last runs completed without raising.
 
-- `2026-08-14T14:11:19+00:00` agent:main — 32.8s, ok (turns=3 taps=0)
+- `2026-08-14T15:23:27+00:00` agent:calendar — 14.4s, ok (turns=1 taps=0)
+- `2026-08-14T15:23:05+00:00` agent:main — 9.3s, ok (taps=0 turns=2)
+- `2026-08-14T15:23:02+00:00` agent:main — 6.2s, ok (taps=0 turns=2)
+- `2026-08-14T14:11:19+00:00` agent:main — 32.8s, ok (taps=0 turns=3)
 - `2026-08-14T14:10:21+00:00` agent:main — 20.7s, ok (taps=0 turns=3)
 - `2026-08-14T14:04:15+00:00` agent:main — 8.4s, ok (taps=0 turns=2)
 - `2026-08-14T14:03:50+00:00` agent:main — 13.5s, ok (taps=0 turns=4)
 - `2026-08-14T13:42:17+00:00` agent:main — 4.6s, ok (taps=0 turns=2)
-- `2026-08-14T11:56:32+00:00` agent:main — 15.5s, ok (taps=0 turns=4)
-- `2026-08-14T08:07:41+00:00` agent:main — 5.5s, ok (taps=0 turns=2)
-- `2026-08-14T08:06:15+00:00` agent:main — 189.2s, ok (taps=0 turns=39)

@@ -268,32 +268,8 @@
       "text": "On this project (metaesthetics-staging.web.app, and likely any Firebase-Auth web app), reset_app_data followed by launch() does NOT guarantee a truly logged-out session. The app renders the public login page fine (looks logged out), but Firebase Auth's own persistence (typically IndexedDB) can survive whatever reset_app_data clears (likely just cookies/localStorage), so a background auth-state listener in the app still finds the old session and redirects away from login/signup routes within a second or two of any interaction. If a test needs a genuinely clean, unauthenticated browser state after a broken/cancelled account, reset_app_data + launch() is not sufficient to prove it — read_screen immediately after may show a clean login form that then gets hijacked by a delayed redirect. There is currently no tool available to this harness to clear IndexedDB directly or force a new incognito browser context, so once a broken session like this is created there is no in-session way to recover to a clean state."
     }
   },
-  "run_count": 134,
+  "run_count": 137,
   "runs": [
-    {
-      "at": "2026-08-12T12:50:14+00:00",
-      "ok": true,
-      "seconds": 14.0,
-      "taps": 0,
-      "tool": "agent:clinic-onboarding",
-      "turns": 2
-    },
-    {
-      "at": "2026-08-12T13:06:10+00:00",
-      "ok": true,
-      "seconds": 193.8,
-      "taps": 7,
-      "tool": "agent:clinic-onboarding",
-      "turns": 34
-    },
-    {
-      "at": "2026-08-12T13:56:09+00:00",
-      "ok": true,
-      "seconds": 599.1,
-      "taps": 6,
-      "tool": "agent:doctor-clinic-side",
-      "turns": 57
-    },
     {
       "at": "2026-08-13T10:27:53+00:00",
       "ok": true,
@@ -509,6 +485,30 @@
       "taps": 0,
       "tool": "agent:main",
       "turns": 3
+    },
+    {
+      "at": "2026-08-14T15:23:02+00:00",
+      "ok": true,
+      "seconds": 6.2,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 2
+    },
+    {
+      "at": "2026-08-14T15:23:05+00:00",
+      "ok": true,
+      "seconds": 9.3,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 2
+    },
+    {
+      "at": "2026-08-14T15:23:27+00:00",
+      "ok": true,
+      "seconds": 14.4,
+      "taps": 0,
+      "tool": "agent:calendar",
+      "turns": 1
     }
   ],
   "schema": 1,
@@ -640,5 +640,5 @@
       "unit": "s"
     }
   },
-  "updated_at": "2026-08-14T14:11:19+00:00"
+  "updated_at": "2026-08-14T15:23:27+00:00"
 }
