@@ -223,7 +223,10 @@ function outcomeItem(f, kind) {
   return item;
 }
 
-document.querySelectorAll('.outcome-pill').forEach((pill) => {
+// `[data-kind]`, not every `.outcome-pill`: the ecosystem pill shares the class because it
+// is the same kind of control, but it opens its own sheet and has no outcome kind. Without
+// the attribute filter it landed here too and threw on `OUTCOME_KINDS[undefined].label`.
+document.querySelectorAll('.outcome-pill[data-kind]').forEach((pill) => {
   pill.addEventListener('click', async () => {
     await refreshOutcomes();
     openOutcomes(pill.dataset.kind);
