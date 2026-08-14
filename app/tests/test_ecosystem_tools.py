@@ -325,3 +325,52 @@ def test_a_finding_without_a_severity_does_not_break_the_prompt(eco):
     prompt = prompts.build_system_prompt("com.patient.android", "search", "Search", "")
     assert "no severity on this one" in prompt
     assert "[?]" in prompt
+
+
+class TestToolSearchIsReachable:
+    """The CLI may hand an MCP server's tools over *deferred* — names advertised, schemas not
+    loaded — and `ToolSearch` is the only way to load them.
+
+    This is not a hypothetical. On the ecosystem manager's first real run every
+    `mcp__ecosystem__*` tool was unreachable: the gate denied `ToolSearch`, the agent could
+    not fetch a single schema, and it fell back to reading the projects' JSON off disk. It
+    said so in its reply, which is the only reason it was noticed rather than looking like a
+    model that simply preferred `Read`.
+
+    Allowing it withholds nothing: `ToolSearch` only fetches schemas, and the gate still
+    decides what may actually be called.
+    """
+
+    def test_tool_search_is_allowed_for_every_tier(self, eco):
+        from agent.runtime import AgentSession
+
+        async def noop(_e):
+            pass
+
+        for package, slug in ((NAME, "main"),                      # ecosystem manager
+                              ("com.patient.android", "main"),     # project manager
+                              ("com.patient.android", "search")):  # tester
+            allowed = AgentSession(package, slug, noop)._options().allowed_tools
+            assert "ToolSearch" in allowed, f"{package}/{slug} cannot load a deferred schema"
+
+    def test_tool_search_is_not_in_the_blocked_list(self):
+        from agent import runtime
+
+        assert "ToolSearch" not in runtime.BLOCKED_TOOLS
+
+    def test_the_refusal_does_not_send_a_device_less_tier_looking_for_a_phone(self, eco):
+        """The tester's refusal names the device tools. Said to the ecosystem manager it is an
+        instruction it cannot follow, about tools it does not have."""
+        import asyncio as _asyncio
+
+        from agent.runtime import AgentSession
+
+        async def noop(_e):
+            pass
+
+        options = AgentSession(NAME, "main", noop)._options()
+        hook = options.hooks["PreToolUse"][0].hooks[0]
+        decision = _asyncio.run(hook({"tool_name": "Bash"}, None, None))
+        reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "ecosystem manager" in reason
+        assert "phone" not in reason.lower()
