@@ -239,6 +239,15 @@ AGENT_TOOL_TIMEOUT_SECONDS: float = float(os.environ.get("AGENT_TOOL_TIMEOUT_SEC
 AGENT_OPEN_MODULE_TABS: bool = os.environ.get(
     "AGENT_OPEN_MODULE_TABS", "true").lower() in ("1", "true", "yes")
 
+# Which browser those tabs open in: "chrome", "edge", "firefox", a full path to an
+# executable, or "default" for whatever Windows has registered.
+#
+# "default" is not the default, because on this machine it was wrong in a way that is easy to
+# miss: the registered handler is Edge, so every watch tab opened in a browser the user was
+# not looking at while they worked in Chrome. A tab you have to go and find is barely better
+# than no tab. Name the browser you actually use.
+AGENT_BROWSER: str = os.environ.get("AGENT_BROWSER", "default").strip()
+
 # --- Persistent per-app memory (optional) ---------------------------------------------------------
 # Off by default — enable with --memory or USE_MEMORY=true. Purely local (memory/<package>.json);
 # lets a run resume where a previous one left off and avoids re-flagging/re-reviewing screens

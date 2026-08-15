@@ -334,6 +334,31 @@ class TestWatchTab:
         assert "project=https%3A%2F%2Fmetaesthetics.net%2Fen" in url
         assert url.endswith("&module=booking")
 
+    def test_a_named_browser_beats_the_windows_default(self, monkeypatch, tmp_path):
+        """Found by running the thing: Windows registered Edge, the user works in Chrome, and
+        every watch tab opened in a browser nobody was looking at. A tab you have to go and
+        find is barely better than no tab."""
+        import config
+
+        exe = tmp_path / "chrome.exe"
+        exe.write_text("")
+        monkeypatch.setattr(config, "AGENT_BROWSER", str(exe))
+        assert agent_bridge.browser_exe() == str(exe)
+
+    def test_an_unfindable_browser_falls_back_rather_than_opening_nothing(self, monkeypatch):
+        """A tab in the wrong browser is a nuisance; no tab at all is the failure this feature
+        exists to prevent. So a bad setting degrades, it does not throw."""
+        import config
+
+        monkeypatch.setattr(config, "AGENT_BROWSER", "netscape")
+        assert agent_bridge.browser_exe() is None
+
+    def test_the_default_setting_leaves_the_choice_to_windows(self, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "AGENT_BROWSER", "default")
+        assert agent_bridge.browser_exe() is None
+
     def test_the_manager_opens_a_tab_when_it_starts_a_run(self, eco, ready_stacks, monkeypatch):
         opened = []
         monkeypatch.setattr(agent_bridge, "open_watch_tab",

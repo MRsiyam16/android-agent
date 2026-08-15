@@ -125,25 +125,76 @@ def watch_url(package: str, slug: str) -> str:
             f"&module={quote(slug, safe='')}")
 
 
+#: Where each named browser actually lives on Windows. `webbrowser.get("chrome")` is not
+#: enough on its own: the module's registration table is empty on Windows (`webbrowser._browsers`
+#: is `[]`) and Chrome is not on PATH, so the lookup fails and the call silently falls back to
+#: the registered default — which is the exact wrong answer this setting exists to correct.
+_BROWSER_PATHS: dict[str, tuple[str, ...]] = {
+    "chrome": (r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+               r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+               r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    "edge": (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+    "firefox": (r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe"),
+}
+
+
+def browser_exe() -> Optional[str]:
+    """The configured browser's executable, or None to use whatever Windows registers.
+
+    Returns None rather than raising when the named browser cannot be found: a tab in the
+    wrong browser is a nuisance, and no tab at all is the thing this whole feature exists to
+    prevent. The miss is logged so the setting can be corrected.
+    """
+    import os
+    import shutil
+
+    wanted = (config.AGENT_BROWSER or "default").strip()
+    if not wanted or wanted.lower() == "default":
+        return None
+
+    direct = os.path.expandvars(wanted)
+    if os.path.sep in direct or direct.lower().endswith(".exe"):
+        return direct if os.path.isfile(direct) else None
+
+    for candidate in _BROWSER_PATHS.get(wanted.lower(), ()):
+        expanded = os.path.expandvars(candidate)
+        if os.path.isfile(expanded):
+            return expanded
+    found = shutil.which(wanted) or shutil.which(f"{wanted}.exe")
+    if found:
+        return found
+    logger.warning("AGENT_BROWSER=%r but no such browser was found — watch tabs will open in "
+                   "the Windows default instead.", wanted)
+    return None
+
+
 def open_watch_tab(package: str, slug: str) -> None:
     """Open that module in a browser tab, for a run the user did not start by hand.
 
-    On a background thread because `webbrowser.open` shells out to the default browser, and
-    this is called from the event loop — a cold browser launch is seconds, and blocking the
-    loop there would stall the WebSocket feeding every other page at the exact moment a run
-    is starting.
+    On a background thread because launching a browser shells out, and this is called from
+    the event loop — a cold browser launch is seconds, and blocking the loop there would
+    stall the WebSocket feeding every other page at the exact moment a run is starting.
 
     Best-effort by design. A headless machine has no browser and that is not a reason to
     refuse to start a test, so a failure is logged and nothing else.
     """
+    import subprocess
     import threading
     import webbrowser
 
     url = watch_url(package, slug)
+    exe = browser_exe()
 
     def _open() -> None:
         try:
-            webbrowser.open_new_tab(url)
+            if exe:
+                # Not `webbrowser.get(exe)`: its Windows backend ignores the named browser
+                # whenever the registration table is empty, which it always is here.
+                subprocess.Popen([exe, url], close_fds=True)
+            else:
+                webbrowser.open_new_tab(url)
         except Exception as exc:  # noqa: BLE001 - never let a missing browser fail a run
             logger.info("could not open a watch tab for %s/%s: %s", package, slug, exc)
 

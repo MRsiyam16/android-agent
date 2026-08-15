@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **140** · last updated: 2026-08-15T05:03:27+00:00
+Runs recorded: **142** · last updated: 2026-08-15T05:55:52+00:00
 
 ## Environment
 
@@ -27,7 +27,7 @@ the wrong screen, which downstream becomes a false defect.
 |---|---|---|---|---|
 | `launch_settle.ios-native` | 40 | 0.2s | 2.1s | **0.4s** |
 | `launch_settle.native` | 40 | 1.2s | 1.3s | **1.6s** |
-| `launch_settle.web` | 32 | 3.0s | 4.6s | **5.1s** |
+| `launch_settle.web` | 33 | 3.0s | 4.6s | **5.1s** |
 
 ## Operating lessons
 
@@ -62,11 +62,11 @@ the wrong screen, which downstream becomes a false defect.
 
 28/30 of the last runs completed without raising.
 
-- `2026-08-15T05:03:27+00:00` agent:practitioners-create-test-doctor — 135.3s, ok (turns=18 taps=6)
+- `2026-08-15T05:55:28+00:00` agent:main — 34.8s, ok (taps=0 turns=4)
+- `2026-08-15T05:46:00+00:00` agent:main — 111.3s, ok (taps=0 turns=8)
+- `2026-08-15T05:03:27+00:00` agent:practitioners-create-test-doctor — 135.3s, ok (taps=6 turns=18)
 - `2026-08-15T05:01:23+00:00` agent:main — 79.5s, ok (taps=0 turns=9)
 - `2026-08-14T15:45:41+00:00` agent:main — 9.8s, ok (taps=0 turns=4)
 - `2026-08-14T15:23:27+00:00` agent:calendar — 14.4s, ok (taps=0 turns=1)
 - `2026-08-14T15:23:05+00:00` agent:main — 9.3s, ok (taps=0 turns=2)
 - `2026-08-14T15:23:02+00:00` agent:main — 6.2s, ok (taps=0 turns=2)
-- `2026-08-14T14:11:19+00:00` agent:main — 32.8s, ok (taps=0 turns=3)
-- `2026-08-14T14:10:21+00:00` agent:main — 20.7s, ok (taps=0 turns=3)
