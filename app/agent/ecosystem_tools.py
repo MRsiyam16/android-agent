@@ -885,12 +885,16 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                         + " Nothing was started. Use start_app first.")
 
         try:
-            started = agent_bridge.start_run(member["package"], slug, instruction)
+            started = agent_bridge.start_run(member["package"], slug, instruction, watch=True)
         except agent_bridge.RunRefused as exc:
             return _err(str(exc))
         return _ok(f"Started {member['role']}/{slug} on {started['target']}. It runs in that "
-                   f"project's own session — watch it there, or ask me again later and I will "
-                   f"read what it filed.")
+                   f"project's own session, and "
+                   + ("a browser tab is opening on it so the user can watch"
+                      if started.get("watching")
+                      else f"the user can watch it at {started['watch_url']}")
+                   + ". You will not see its screen from here — ask me again later and I will "
+                     "read what it filed.")
 
     @tool("queue_retest",
           "Ask for a finding to be re-tested, pending the user's approval. Use this for work "

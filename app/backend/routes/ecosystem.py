@@ -201,10 +201,15 @@ async def approve_retest(name: str, entry_id: str):
         f"Run the case again and record what you actually observe now: a pass if it is fixed, "
         f"or a fresh finding if it is not. Do not assume the fix landed in this build.")
     try:
-        agent_bridge.start_run(entry["package"], entry["module"], instruction)
+        # `watch`: approving happens on the manager board, and the run itself happens in a
+        # different project's session — so without a tab the only sign it is under way is a
+        # counter changing. Approving is exactly the moment someone wants to watch.
+        started = agent_bridge.start_run(entry["package"], entry["module"], instruction,
+                                         watch=True)
     except agent_bridge.RunRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return retests_mod.decide(name, entry_id, "approved")
+    return {**retests_mod.decide(name, entry_id, "approved"),
+            "watch_url": started["watch_url"]}
 
 
 @router.post("/ecosystems/{name}/retests/{entry_id:path}/dismiss")

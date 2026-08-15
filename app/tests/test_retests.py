@@ -72,6 +72,22 @@ def eco(tmp_path, monkeypatch):
     return tmp_path
 
 
+def fake_start(record: list | None = None):
+    """A stand-in for `start_run` that returns what the real one returns.
+
+    In one place rather than four: a double that answers a smaller dict than the real
+    function passes every test right up until a caller reads a key it left out, and then
+    fails in the caller rather than in the double.
+    """
+    def go(package: str, slug: str, text: str, **kwargs):
+        if record is not None:
+            record.append((package, slug, text))
+        return {"package": package, "slug": slug, "target": package, "started": True,
+                "watching": bool(kwargs.get("watch")),
+                "watch_url": f"http://localhost:8000/?project={package}&module={slug}"}
+    return go
+
+
 def call(name: str, args: dict) -> str:
     import mcp.types as mcp_types
 
@@ -91,9 +107,7 @@ class TestRunModule:
         """A second way to start a run is a second set of rules about which device it lands
         on. There is one `start_run`, and the tool and the route both call it."""
         started = []
-        monkeypatch.setattr(agent_bridge, "start_run",
-                            lambda p, s, t, **kw: started.append((p, s, t))
-                            or {"package": p, "slug": s, "target": "x", "started": True})
+        monkeypatch.setattr(agent_bridge, "start_run", fake_start(started))
 
         out = call("run_module", {"app": "patient-android", "module": "search",
                                   "instruction": "check surname search again"})
@@ -128,12 +142,10 @@ class TestRunModule:
         """The point of all of it: an app on a device and a website do not queue behind each
         other."""
         started = []
-        monkeypatch.setattr(agent_bridge, "start_run",
-                            lambda p, s, t, **kw: started.append(p)
-                            or {"package": p, "slug": s, "target": p, "started": True})
+        monkeypatch.setattr(agent_bridge, "start_run", fake_start(started))
         call("run_module", {"app": "patient-android", "module": "search", "instruction": "a"})
         call("run_module", {"app": "clinic-web", "module": "search", "instruction": "b"})
-        assert started == [ANDROID, WEB]
+        assert [row[0] for row in started] == [ANDROID, WEB]
 
 
 # -- the queue ------------------------------------------------------------------------------
@@ -182,8 +194,7 @@ class TestApproval:
 
     def test_approving_starts_the_run_and_records_the_decision(self, queued, monkeypatch):
         started = []
-        monkeypatch.setattr(agent_bridge, "start_run",
-                            lambda p, s, t, **kw: started.append((p, s, t)) or {"started": True})
+        monkeypatch.setattr(agent_bridge, "start_run", fake_start(started))
         body = TestClient(create_app()).post(
             f"/ecosystems/{NAME}/retests/{queued}/approve").json()
         assert body["status"] == "approved"
@@ -195,7 +206,7 @@ class TestApproval:
         where an agent is most likely to record a pass it did not verify."""
         sent = []
         monkeypatch.setattr(agent_bridge, "start_run",
-                            lambda p, s, t, **kw: sent.append(t) or {"started": True})
+                            lambda p, s, t, **kw: sent.append(t) or fake_start()(p, s, t, **kw))
         TestClient(create_app()).post(f"/ecosystems/{NAME}/retests/{queued}/approve")
         assert "Do not assume the fix landed" in sent[0]
         assert "F001" in sent[0]
@@ -210,7 +221,7 @@ class TestApproval:
         assert retests.get(NAME, queued)["status"] == "pending"
 
     def test_approving_twice_is_refused(self, queued, monkeypatch):
-        monkeypatch.setattr(agent_bridge, "start_run", lambda *a, **k: {"started": True})
+        monkeypatch.setattr(agent_bridge, "start_run", fake_start())
         client = TestClient(create_app())
         client.post(f"/ecosystems/{NAME}/retests/{queued}/approve")
         assert client.post(f"/ecosystems/{NAME}/retests/{queued}/approve").status_code == 409

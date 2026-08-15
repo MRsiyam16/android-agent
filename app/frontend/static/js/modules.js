@@ -5,6 +5,7 @@ import { loadSecretNames } from './compose.js';
 import { warmModule } from './main.js';
 import { refreshOutcomes } from './outcomes.js';
 import { applyPlatformUI } from './phone.js';
+import { ui } from './state.js';
 import { loadTranscript } from './transcript.js';
 
 // package -> "android" | "ios" | "web", refreshed every time the project list loads.
@@ -150,8 +151,14 @@ async function loadModules() {
   });
 
   if (modules.length) {
+    // A deep link wins, once. This is how a tab the master agent opened lands on the module
+    // it started rather than on whatever was first in the list — consumed here so a later
+    // project switch in the same tab behaves normally again.
+    const asked = ui.pendingModule;
+    ui.pendingModule = null;
+    const wanted = asked && modules.some((m) => m.slug === asked) ? asked : null;
     const stillThere = modules.some((m) => m.slug === agent.slug);
-    await selectModule(stillThere ? agent.slug : modules[0].slug);
+    await selectModule(wanted || (stillThere ? agent.slug : modules[0].slug));
   } else {
     agent.slug = null;
   }

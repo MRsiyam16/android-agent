@@ -75,6 +75,15 @@ const ui = {
   // number invalidate each other's replies, which is the same stale-response bug the tokens
   // exist to prevent, only harder to see.
   noteRequest: 0,            // newest in-flight board-notes load (outcomes.js)
+
+  // The module a deep link asked for, honoured once by the next loadModules().
+  //
+  // It cannot simply be `agent.slug`: openProject -> pointAgentAt dispatches a `change` on
+  // the project select, and that handler clears `agent.slug` before loading the modules —
+  // correctly, since switching project by hand must not leave the old project's module
+  // selected. A tab opened by the master agent is the one case where the module *is* known
+  // in advance, so it is carried separately and consumed rather than fought over.
+  pendingModule: null,
 };
 
 const PLACEHOLDER_IMG =

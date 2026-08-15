@@ -228,6 +228,17 @@ AGENT_MAX_TURNS: int | None = int(_agent_max_turns_raw) if _agent_max_turns_raw 
 # How long a single device tool call may block before it's reported as failed.
 AGENT_TOOL_TIMEOUT_SECONDS: float = float(os.environ.get("AGENT_TOOL_TIMEOUT_SECONDS", 90))
 
+# When the ecosystem manager starts a module — rather than you pressing Send — open that
+# module in a browser tab so the run is visible instead of happening somewhere off-screen.
+# A run you started yourself never opens one: you are already looking at it.
+#
+# On by default because an invisible run is the failure mode this whole tier introduced: the
+# manager can start four suites across four apps, and without this the only evidence is a
+# number changing on a board. Set AGENT_OPEN_MODULE_TABS=false if the tabs get in the way —
+# nothing else depends on it, and /manager still lists what is running.
+AGENT_OPEN_MODULE_TABS: bool = os.environ.get(
+    "AGENT_OPEN_MODULE_TABS", "true").lower() in ("1", "true", "yes")
+
 # --- Persistent per-app memory (optional) ---------------------------------------------------------
 # Off by default — enable with --memory or USE_MEMORY=true. Purely local (memory/<package>.json);
 # lets a run resume where a previous one left off and avoids re-flagging/re-reviewing screens

@@ -323,6 +323,77 @@ class TestFileTools:
         assert not doomed.exists()
 
 
+# -- watching a run somebody else started ----------------------------------------------------
+class TestWatchTab:
+    """A run the manager starts happens in a project nobody has open. Without a tab, the only
+    evidence is a counter moving on a board — which is the failure this tier introduced."""
+
+    def test_the_url_deep_links_to_the_module_and_escapes_the_package(self):
+        """Packages here are URLs and app labels with spaces in them, not identifiers."""
+        url = agent_bridge.watch_url("https://metaesthetics.net/en", "booking")
+        assert "project=https%3A%2F%2Fmetaesthetics.net%2Fen" in url
+        assert url.endswith("&module=booking")
+
+    def test_the_manager_opens_a_tab_when_it_starts_a_run(self, eco, ready_stacks, monkeypatch):
+        opened = []
+        monkeypatch.setattr(agent_bridge, "open_watch_tab",
+                            lambda p, s: opened.append((p, s)))
+        monkeypatch.setattr(agent_bridge.sessions, "get",
+                            lambda *a, **k: _IdleSession())
+        out = call("run_module", {"app": "clinic-web", "module": "search",
+                                  "instruction": "check the booking flow"})
+        assert opened == [(WEB, "search")]
+        assert "watch" in out.lower()
+
+    def test_the_send_button_does_not_open_a_tab_onto_itself(self, eco, monkeypatch):
+        """`watch` defaults off. The dashboard's own Send is pressed by someone already
+        looking at the module; opening a second tab on it is pure noise."""
+        monkeypatch.setattr(agent_bridge, "open_watch_tab",
+                            lambda p, s: pytest.fail("Send must not open a tab"))
+        monkeypatch.setattr(agent_bridge.sessions, "get", lambda *a, **k: _IdleSession())
+        assert _start(WEB, "search", "hello")["watching"] is False
+
+    def test_the_toggle_is_honoured(self, eco, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "AGENT_OPEN_MODULE_TABS", False)
+        monkeypatch.setattr(agent_bridge, "open_watch_tab",
+                            lambda p, s: pytest.fail("the toggle is off"))
+        monkeypatch.setattr(agent_bridge.sessions, "get", lambda *a, **k: _IdleSession())
+        out = _start(WEB, "search", "hello", watch=True)
+        assert out["watching"] is False
+        # ...and the URL is still reported, so the agent can tell the user where to look.
+        assert "module=search" in out["watch_url"]
+
+
+def _start(*args, **kwargs) -> dict:
+    """`start_run` inside a loop, with the turn it queues allowed to run to completion.
+
+    It hands the turn to `asyncio.create_task`, so calling it from a sync test raises before
+    it reaches anything worth asserting on.
+    """
+    async def go():
+        out = agent_bridge.start_run(*args, **kwargs)
+        await asyncio.sleep(0)
+        return out
+
+    return asyncio.run(go())
+
+
+class _IdleSession:
+    """Enough of an AgentSession for start_run: a free target and a no-op turn."""
+
+    class _Device:
+        resolved_platform = "web"
+        serial = None
+
+    busy = False
+    device = _Device()
+
+    async def send(self, text):  # noqa: D102 - never awaited; the task is cancelled at teardown
+        return None
+
+
 # -- the prompt ----------------------------------------------------------------------------------
 def test_the_prompt_names_every_tool_and_the_rules_the_tools_enforce(eco):
     """A tool the prompt does not name is one the agent will not reach for; a rule stated only
@@ -333,6 +404,26 @@ def test_the_prompt_names_every_tool_and_the_rules_the_tools_enforce(eco):
     assert "two iOS devices cannot" in prompt
     assert "_trash" in prompt
     assert "{" not in prompt.replace("{ecosystem}", "")
+
+
+def test_the_deep_link_is_applied_before_the_project_list_loads():
+    """A source-order assertion, because the bug it guards was pure ordering and invisible.
+
+    `loadAgentProjects` keeps `agent.package` when it names a real project and otherwise takes
+    `projects[0]` — and it resolves a fetch, so it lands *after* anything the boot block wrote
+    synchronously. Wired up the natural way (deep link last, next to the `last_opened`
+    fallback it replaces) the link was honoured and then silently overwritten a moment later:
+    the tab opened on the wrong project, with no error anywhere.
+
+    There is no browser in this suite, so what can be checked is that the two statements are
+    still in the order that makes it work.
+    """
+    source = (Path(__file__).resolve().parents[1]
+              / "frontend" / "static" / "js" / "main.js").read_text(encoding="utf-8")
+    assert "URLSearchParams(location.search)" in source
+    assert source.index("agent.package = linkedProject") < source.index("initAgent();"), (
+        "the deep link must be applied before initAgent(), or loadAgentProjects overwrites it")
+    assert source.index("ui.pendingModule = linkedModule") < source.index("initAgent();")
 
 
 def test_the_launcher_finds_the_product_and_its_manager_module(eco):

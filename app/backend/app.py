@@ -28,9 +28,33 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("server")
 
 
+class RevalidatingStatic(StaticFiles):
+    """Static files the browser must re-check before reusing.
+
+    The frontend is 25 ES modules importing each other by relative path. A `?v=` on the one
+    `<script>` tag busts that file and nothing it imports, so an edit to `modules.js` or
+    `state.js` was invisible until someone happened to hard-refresh — and this has already
+    cost real debugging time: a cached `ecosystem.js` threw during boot, left the project list
+    empty, and printed nothing to the console.
+
+    `no-cache` does not mean "do not cache". It means "revalidate first": the browser keeps
+    the file and sends a conditional request, and StaticFiles answers 304 from the ETag it
+    already computes. Over loopback that is a fraction of a millisecond per file, paid only on
+    a page load — against a class of bug whose symptom is code that provably cannot run.
+
+    It also makes the tabs the server opens for a run trustworthy. Those arrive without anyone
+    pressing refresh, so "stale until hard-refreshed" would mean "stale forever".
+    """
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Android App Testing Agent — Telemetry Server")
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.mount("/static", RevalidatingStatic(directory=str(STATIC_DIR)), name="static")
 
     @app.exception_handler(RequestValidationError)
     async def log_validation_errors(request: Request, exc: RequestValidationError):

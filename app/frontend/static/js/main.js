@@ -212,21 +212,48 @@ connectWs();
 wireRailResize('leftResize', leftSidebar, 'left', 210, 460);
 wireRailResize('rightResize', rightSidebar, 'right', 300, 620);
 
+// `?project=<package>&module=<slug>` — how a tab lands on one module.
+//
+// The master agent starts runs in projects nobody has open, and until this existed the only
+// way to watch one was to find the project in the list, find the module in the rail, and hope
+// you were looking at the right one by the time it mattered. The server opens this URL itself
+// when it starts a run on your behalf — see backend/agent_bridge.start_run.
+//
+// Read and applied *before* initAgent, not after. `loadAgentProjects` keeps `agent.package` if
+// it names a real project and otherwise takes `projects[0]`, and it resolves a fetch later
+// than anything written here — so a deep link applied afterwards is overwritten a moment after
+// it lands, which is exactly what happened the first time this was wired up.
+//
+// The module is stashed rather than assigned: opening a project dispatches a `change` on the
+// project select, whose handler clears the selected module. See `ui.pendingModule`.
+const deepLink = new URLSearchParams(location.search);
+const linkedProject = deepLink.get('project');
+const linkedModule = deepLink.get('module');
+if (linkedProject) {
+  agent.package = linkedProject;
+  ui.pendingModule = linkedModule || null;
+}
+
 restoreRailPrefs();
 setProjectPill(ui.currentPackage);
 updateStats();
 fetchProjects();
 initAgent();
 
-// The board is per-package and the agent remembers the module you had open, so reopening
-// the last project is what makes a reload continue rather than restart.
-fetch('/agent/status')
-  .then((r) => r.json())
-  .then((s) => {
-    if (s.last_opened && s.last_opened.package && !ui.currentPackage) {
-      openProject(s.last_opened.package);
-    }
-  })
-  .catch(() => { /* the dashboard is fully usable without the agent */ });
+if (linkedProject) {
+  // The board, too — the graph should be showing the app the run is driving.
+  openProject(linkedProject);
+} else {
+  // The board is per-package and the agent remembers the module you had open, so reopening
+  // the last project is what makes a reload continue rather than restart.
+  fetch('/agent/status')
+    .then((r) => r.json())
+    .then((s) => {
+      if (s.last_opened && s.last_opened.package && !ui.currentPackage) {
+        openProject(s.last_opened.package);
+      }
+    })
+    .catch(() => { /* the dashboard is fully usable without the agent */ });
+}
 
 export { lightbox, startProjectMain, warmModule };

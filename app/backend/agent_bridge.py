@@ -18,6 +18,7 @@ import logging
 import time
 from typing import Any, Optional
 
+import config
 from agent import runtime as agent_runtime
 from agent import store as agent_store
 
@@ -116,7 +117,41 @@ def session_for(package: str, slug: str, serial: Optional[str] = None):
     return sessions.get(package, slug, serial=serial or pinned, platform=platform)
 
 
-def start_run(package: str, slug: str, text: str, *, serial: Optional[str] = None) -> dict:
+def watch_url(package: str, slug: str) -> str:
+    """The cockpit, deep-linked to one module. See main.js's `?project=&module=` handling."""
+    from urllib.parse import quote
+
+    return (f"{config.SERVER_URL}/?project={quote(package, safe='')}"
+            f"&module={quote(slug, safe='')}")
+
+
+def open_watch_tab(package: str, slug: str) -> None:
+    """Open that module in a browser tab, for a run the user did not start by hand.
+
+    On a background thread because `webbrowser.open` shells out to the default browser, and
+    this is called from the event loop — a cold browser launch is seconds, and blocking the
+    loop there would stall the WebSocket feeding every other page at the exact moment a run
+    is starting.
+
+    Best-effort by design. A headless machine has no browser and that is not a reason to
+    refuse to start a test, so a failure is logged and nothing else.
+    """
+    import threading
+    import webbrowser
+
+    url = watch_url(package, slug)
+
+    def _open() -> None:
+        try:
+            webbrowser.open_new_tab(url)
+        except Exception as exc:  # noqa: BLE001 - never let a missing browser fail a run
+            logger.info("could not open a watch tab for %s/%s: %s", package, slug, exc)
+
+    threading.Thread(target=_open, name="watch-tab", daemon=True).start()
+
+
+def start_run(package: str, slug: str, text: str, *, serial: Optional[str] = None,
+              watch: bool = False) -> dict:
     """Start a turn in the background, or raise `RunRefused` saying why not.
 
     The checks are here rather than in the route because the route is no longer the only
@@ -128,6 +163,10 @@ def start_run(package: str, slug: str, text: str, *, serial: Optional[str] = Non
       *inside* the background task — which reaches a browser as an error in the transcript
       and reaches a tool as nothing at all, because by then the call has already returned
       "ok". Checked up front so a refusal is the return value.
+
+    `watch` opens the module in a browser tab. Passed by the callers that start a run the
+    user is not already looking at — a manager's `run_module`, an approved re-test — and never
+    by the dashboard's own Send button, which would open a tab onto the page it was pressed on.
 
     Returns what actually happened, so a caller can report it rather than assume it.
     """
@@ -147,5 +186,12 @@ def start_run(package: str, slug: str, text: str, *, serial: Optional[str] = Non
     if session.busy:
         raise RunRefused(f"{package} / {slug} is already running.")
 
+    # Opened before the turn is queued, so the page is loading while the CLI spawns rather
+    # than arriving after the first few tool calls have already scrolled past.
+    watching = bool(watch and config.AGENT_OPEN_MODULE_TABS)
+    if watching:
+        open_watch_tab(package, slug)
+
     asyncio.create_task(session.send(text))
-    return {"package": package, "slug": slug, "target": key, "started": True}
+    return {"package": package, "slug": slug, "target": key, "started": True,
+            "watching": watching, "watch_url": watch_url(package, slug)}
