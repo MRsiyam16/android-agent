@@ -40,6 +40,21 @@ def clean_locks():
     device_locks.reset()
 
 
+@pytest.fixture(autouse=True)
+def stack_is_up(monkeypatch):
+    """`run_module` refuses when the platform's stack is down (see test_master.py).
+
+    Stubbed here so these tests keep asking their own question — which runs start, and which
+    are refused for being *busy* — rather than becoming a test of whether the machine running
+    them happens to have a phone plugged in.
+    """
+    import stacks
+
+    monkeypatch.setattr(stacks, "status", lambda platform: {
+        "platform": platform, "ready": True, "detail": "stubbed", "fix": "",
+        "devices": [], "starting": False})
+
+
 @pytest.fixture
 def eco(tmp_path, monkeypatch):
     monkeypatch.setattr(project_paths, "DEFAULT_PROJECTS_DIR", tmp_path)

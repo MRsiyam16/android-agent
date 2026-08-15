@@ -23,6 +23,16 @@ safe rather than reckless. It does not drive the device; it hands an instruction
 that owns it, and `device_locks` refuses if something else is already there. Starting a run and
 driving one are different powers, and this tier has only the first.
 
+It can also bring the *hardware* up — `start_app`, `pin_device`, `list_devices` — which is the
+same distinction one level lower. Launching WebDriverAgent for the iPad is not touching the
+iPad; it is making it possible for the module that owns the iPad to touch it. Everything about
+which device a suite lands on is decided here, because it is the only tier that can see both
+the iPad and the iPhone at once and notice they are not the same device.
+
+And it can move files around — `list_dir`, `move_path`, `copy_path`, `make_dir`, `trash_path`
+over the closed set of roots in `manager_fs`. Not a shell: a shell's refusals do not explain
+themselves, and nothing here deletes.
+
 It also cannot file a finding. A finding is one named test case with a screenshot behind it,
 filed by the agent that watched it happen; this tier has watched nothing. What it produces
 instead is a *cluster* — the claim that several already-filed findings are one defect — which
@@ -851,6 +861,7 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
            },
            "required": ["app", "module", "instruction"], "additionalProperties": False})
     async def run_module(args: dict[str, Any]) -> dict[str, Any]:
+        import stacks
         from backend import agent_bridge
 
         member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
@@ -860,6 +871,18 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         instruction = str(args.get("instruction") or "").strip()
         if not instruction:
             return _err("A run needs an instruction — say what it should establish.")
+
+        # Checked here and not inside `start_run`, because this is the only caller starting a
+        # run blind. A browser's Send button is pressed by someone looking at the device; a
+        # tool call is not, and a run started against a stack that was never brought up does
+        # not fail — it times out one device tool at a time while the module reasons about a
+        # broken app that is in fact simply unreachable.
+        ready = await asyncio.to_thread(stacks.status, str(member.get("platform") or ""))
+        if not ready["ready"]:
+            return _err(f"{member['role']} cannot run yet — its {ready['platform']} stack is "
+                        f"not up: {ready['detail']}"
+                        + (f" Fix: {ready['fix']}" if ready.get("fix") else "")
+                        + " Nothing was started. Use start_app first.")
 
         try:
             started = agent_bridge.start_run(member["package"], slug, instruction)
@@ -929,6 +952,381 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
             + (f"  (#{r['issue_id']})" if r.get("issue_id") else "")
             + f"\n      {r['reason']}" for r in rows))
 
+    # -- the hardware under the runs --------------------------------------------------------
+    #
+    # `run_module` answers "may this run take the target?". These answer the question
+    # underneath: is there a target at all? A missing stack does not refuse a run — the run
+    # starts, the first device tool times out, and the transcript fills with an agent
+    # reasoning about a broken app when WebDriverAgent was simply never launched.
+    def _platform_devices(platform: str) -> list[dict[str, str]]:
+        from backend import agent_bridge
+
+        return [d for d in agent_bridge.attached()
+                if (d.get("platform") or "").lower() == (platform or "").lower()]
+
+    def _wrong_kind(role: str, device: dict[str, str]) -> Optional[str]:
+        """Why this device contradicts what the role says it should be, or None.
+
+        The roles in this product are named by the user — `doctor-ipad`, `patient-ios` — and
+        when one of them names a device kind out loud, that is a fact worth checking against
+        the hardware. It catches the specific accident that only one iOS device being attached
+        makes likely: auto-pinning the iPad to the iPhone's project because it was the only
+        thing there. A role that names no kind (`patient-ios`) is not second-guessed.
+        """
+        model = str(device.get("model") or device.get("label") or "").lower()
+        for kind, other in (("ipad", "iphone"), ("iphone", "ipad")):
+            if kind in role.lower() and other in model and kind not in model:
+                return (f"{device['serial']} is {device.get('label') or device.get('model')}, "
+                        f"and the app is called {role!r}. Nothing was pinned or started — "
+                        f"pin_device will do it anyway if that really is the right device.")
+        return None
+
+    @tool("list_devices",
+          "Every device attached to this machine right now, which app each is pinned to, and "
+          "whether that platform's stack is up. Read it before starting anything: an app whose "
+          "device is not attached cannot run, and an iPad and an iPhone are both `ios` with "
+          "identically-shaped UDIDs, so an unpinned run on one can silently drive the other.",
+          {"type": "object", "properties": {}, "additionalProperties": False})
+    async def list_devices(_args: dict[str, Any]) -> dict[str, Any]:
+        import stacks
+        from backend import agent_bridge
+        from backend import projects as backend_projects
+
+        found = await asyncio.to_thread(agent_bridge.attached)
+        members = await asyncio.to_thread(ecosystem_mod.members, name)
+        pins: dict[str, list[str]] = {}
+        for member in members:
+            serial = (backend_projects.read_meta(member["package"]) or {}).get("device_serial")
+            if serial:
+                pins.setdefault(str(serial), []).append(member["role"])
+
+        out = ["## Attached devices"]
+        if not found:
+            out.append("None. Nothing on a device can run until one is plugged in, unlocked "
+                       "and authorised.")
+        for device in found:
+            owners = pins.get(device["serial"], [])
+            out.append(f"{device['serial']}  [{device.get('platform', '?')}]  "
+                       f"{device.get('label') or device.get('model', '')}"
+                       + (f"  -> pinned to {', '.join(owners)}" if owners
+                          else "  -> not pinned to any app"))
+
+        platforms = sorted({str(m.get("platform") or "").lower() for m in members
+                            if m.get("platform")})
+        out += ["", "## Stacks"]
+        for row in await asyncio.to_thread(stacks.status_all, platforms):
+            out.append(f"{row['platform']}: {'READY' if row['ready'] else 'not ready'} — "
+                       f"{row['detail']}")
+            if not row["ready"] and row["fix"]:
+                out.append(f"      fix: {row['fix']}")
+
+        out += ["", "## Apps and the device each would use"]
+        for member in members:
+            serial = (backend_projects.read_meta(member["package"]) or {}).get("device_serial")
+            if (member.get("platform") or "").lower() == "web":
+                where = "no device — the target is the URL"
+            elif serial:
+                attached_now = any(d["serial"] == serial for d in found)
+                where = f"pinned to {serial}" + ("" if attached_now else "  (NOT attached)")
+            else:
+                same = _platform_devices(str(member.get("platform") or ""))
+                where = (f"unpinned — would take {same[0]['serial']}" if len(same) == 1
+                         else f"unpinned, {len(same)} {member.get('platform')} device(s) "
+                              f"attached" if same else "unpinned and nothing attached")
+            out.append(f"{member['role']}  ({member.get('platform')})  |  {where}")
+        return _ok("\n".join(out))
+
+    @tool("pin_device",
+          "Pin one app to one device, so its runs always land on that hardware. Needed as soon "
+          "as two devices of the same kind are attached: the iPad and the iPhone are both "
+          "`ios`, and without a pin whichever the adapter finds first gets driven. Pass an "
+          "empty serial to unpin.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role or package"},
+               "serial": {"type": "string",
+                          "description": "Device serial/UDID from list_devices, or empty to "
+                                         "unpin"},
+           },
+           "required": ["app"], "additionalProperties": False})
+    async def pin_device(args: dict[str, Any]) -> dict[str, Any]:
+        from backend import agent_bridge
+        from backend import projects as backend_projects
+
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+        if (member.get("platform") or "").lower() == "web":
+            return _err(f"{member['role']} is a website. Its target is its URL, not a device — "
+                        f"there is nothing to pin.")
+
+        serial = str(args.get("serial") or "").strip()
+        if not serial:
+            await asyncio.to_thread(backend_projects.write_meta, member["package"],
+                                    device_serial=None)
+            agent_bridge.forget_attached()
+            return _ok(f"Unpinned {member['role']}. Its runs will take whichever "
+                       f"{member.get('platform')} device is attached.")
+
+        found = await asyncio.to_thread(agent_bridge.attached)
+        match = next((d for d in found if d["serial"] == serial), None)
+        if match is None:
+            known = ", ".join(d["serial"] for d in found) or "none attached"
+            return _err(f"{serial!r} is not attached. Attached: {known}. Pinning to a device "
+                        f"that is not here would leave the app unable to run with no clue why.")
+        if (match.get("platform") or "").lower() != (member.get("platform") or "").lower():
+            return _err(f"{serial} is a {match.get('platform')} device and {member['role']} is "
+                        f"{member.get('platform')}. Nothing was pinned.")
+
+        await asyncio.to_thread(backend_projects.write_meta, member["package"],
+                                device_serial=serial)
+        agent_bridge.forget_attached()
+        return _ok(f"Pinned {member['role']} to {serial} "
+                   f"({match.get('label') or match.get('model', '')}). Every run of that app "
+                   f"now lands on that device.")
+
+    @tool("start_app",
+          "Bring up everything one app needs before it can be tested: its platform's stack, "
+          "and its device. This is what 'start the iPad app' means — on iOS it launches the "
+          "tunnel, the WebDriverAgent runner and the port forward in their own windows (expect "
+          "a UAC prompt, and 30-90 seconds), on Android it makes sure adb's daemon is up, and "
+          "on the web it confirms Playwright and Chromium are installed since a browser is "
+          "launched per run rather than started once. It starts no test: call run_module after "
+          "it reports ready. Several apps can be up at once — that is the point — except that "
+          "two iOS devices cannot, because there is one WebDriverAgent port.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role (e.g. doctor-ipad) or package"},
+           },
+           "required": ["app"], "additionalProperties": False})
+    async def start_app(args: dict[str, Any]) -> dict[str, Any]:
+        import stacks
+        from backend import agent_bridge
+        from backend import projects as backend_projects
+
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+        platform = str(member.get("platform") or "").lower()
+        pinned = (backend_projects.read_meta(member["package"]) or {}).get("device_serial")
+
+        # Pin first, so the stack is started for the device the runs will actually use. Only
+        # when it is unambiguous: with an iPad and an iPhone both attached, guessing which one
+        # "doctor-ipad" meant is exactly the mistake pinning exists to prevent.
+        note = ""
+        if platform not in ("web", "") and not pinned:
+            same = _platform_devices(platform)
+            if len(same) == 1:
+                mismatch = _wrong_kind(member["role"], same[0])
+                if mismatch:
+                    return _err(mismatch)
+                await asyncio.to_thread(backend_projects.write_meta, member["package"],
+                                        device_serial=same[0]["serial"])
+                agent_bridge.forget_attached()
+                pinned = same[0]["serial"]
+                note = (f"\nPinned {member['role']} to the only {platform} device attached, "
+                        f"{pinned} ({same[0].get('label') or ''}).")
+            elif len(same) > 1:
+                listing = "; ".join(f"{d['serial']} ({d.get('label') or d.get('model', '')})"
+                                    for d in same)
+                return _err(
+                    f"{len(same)} {platform} devices are attached and {member['role']} is not "
+                    f"pinned to one: {listing}. Nothing was started — starting a stack for the "
+                    f"wrong one would drive the wrong device and report it as this app. Pin it "
+                    f"with pin_device first.")
+
+        result = await asyncio.to_thread(stacks.start, platform, pinned)
+
+        head = (f"{member['role']} ({platform})"
+                + (f" on {pinned}" if pinned else "")
+                + f": {'READY' if result['ready'] else 'not ready yet'}")
+        lines = [head, result["detail"], result.get("note", "")]
+        if not result["ready"] and result.get("fix"):
+            lines.append(f"Fix: {result['fix']}")
+        if note:
+            lines.append(note.strip())
+        if result["ready"]:
+            mods = await asyncio.to_thread(store.list_subprojects, member["package"])
+            runnable = [str(m.get("slug")) for m in mods
+                        if not store.is_main_slug(str(m.get("slug") or ""))]
+            lines.append("Modules you can run now: "
+                         + (", ".join(runnable) if runnable else
+                            "none yet — create_module first."))
+        elif result.get("starting"):
+            lines.append("Ask me to check again in a minute (list_devices), or watch the "
+                         "runner window. Do not start a run until it reports READY: it would "
+                         "not fail cleanly, it would time out one tool at a time.")
+        return _ok("\n".join(line for line in lines if line))
+
+    @tool("running_now",
+          "What is running this second: which modules have a turn in flight, and which targets "
+          "are locked and by whom. Read it before starting a run and whenever the user asks "
+          "what is happening — runs proceed between your turns, and a target that was free "
+          "when you last looked may not be.",
+          {"type": "object", "properties": {}, "additionalProperties": False})
+    async def running_now(_args: dict[str, Any]) -> dict[str, Any]:
+        import device_locks
+        from backend import agent_bridge
+
+        live = [s for s in agent_bridge.sessions.status() if s.get("busy")]
+        locks = device_locks.held()
+        if not live and not locks:
+            return _ok("Nothing is running. Every target is free.")
+
+        out = []
+        if live:
+            out.append("## Running")
+            for entry in live:
+                role = ecosystem_mod.role_of(str(entry["package"])) or entry["package"]
+                out.append(f"{role}/{entry['slug']}"
+                           + (f"  — {entry['activity']}" if entry.get("activity") else "")
+                           + ("  [waiting on a question from the user]"
+                              if entry.get("blocked") else ""))
+        if locks:
+            out.append("")
+            out.append("## Targets taken")
+            for key, holder in sorted(locks.items()):
+                role = ecosystem_mod.role_of(str(holder["package"])) or holder["package"]
+                out.append(f"{key}  <- {role}/{holder['slug']}  since {holder['since']}")
+        return _ok("\n".join(out))
+
+    @tool("stop_module",
+          "Stop a run. Use it for a run that is going the wrong way or one the user asks you to "
+          "end — you started it, so you can end it. It stops the turn and frees the target; it "
+          "does not undo anything the module already filed, and the transcript stays.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role or package"},
+               "module": {"type": "string", "description": "Module slug"},
+           },
+           "required": ["app", "module"], "additionalProperties": False})
+    async def stop_module(args: dict[str, Any]) -> dict[str, Any]:
+        from backend import agent_bridge
+
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+        slug = str(args.get("module") or "").strip()
+        session = agent_bridge.sessions.peek(member["package"], slug)
+        if session is None or not session.busy:
+            return _ok(f"{member['role']}/{slug} was not running. Nothing to stop.")
+        stopped = await session.interrupt()
+        return _ok(f"{'Stopped' if stopped else 'Asked to stop'} {member['role']}/{slug}. It "
+                   f"finishes the tool it is in and then ends the turn; whatever it already "
+                   f"filed stays filed.")
+
+    # -- the files ---------------------------------------------------------------------------
+    #
+    # Named operations over a closed set of roots rather than a shell — see manager_fs's
+    # header for why. Nothing here deletes: `trash_path` retires into `projects/_trash/`.
+    def _fs(call, *call_args) -> dict[str, Any]:
+        import manager_fs
+
+        try:
+            return {"ok": True, "result": call(*call_args)}
+        except manager_fs.FsRefused as exc:
+            return {"ok": False, "result": str(exc)}
+
+    @tool("list_dir",
+          "List a folder — what is in it, which entries are folders, and when each changed. "
+          "The way to look around before moving anything. Restricted to the harness tree, the "
+          "project roots, and anything named in QA_MANAGER_FS_ROOTS; a path outside them is "
+          "refused and the refusal names the roots.",
+          {"type": "object",
+           "properties": {"path": {"type": "string", "description": "Absolute folder path"}},
+           "required": ["path"], "additionalProperties": False})
+    async def list_dir(args: dict[str, Any]) -> dict[str, Any]:
+        import manager_fs
+
+        outcome = await asyncio.to_thread(_fs, manager_fs.list_dir, str(args.get("path") or ""))
+        if not outcome["ok"]:
+            return _err(str(outcome["result"]))
+        data = outcome["result"]
+        if not data["is_dir"]:
+            return _ok(f"{data['path']} is a file, {data['size']} bytes. Read it with Read.")
+        if not data["entries"]:
+            return _ok(f"{data['path']} is empty.")
+        rows = [f"{'DIR ' if e['is_dir'] else '    '}{e['name']:<48} "
+                f"{'' if e['is_dir'] else str(e['size']):>10}  {e['modified']}"
+                for e in data["entries"]]
+        return _ok(f"{data['path']}  ({len(rows)} entries)\n" + "\n".join(rows))
+
+    @tool("make_dir",
+          "Create a folder, and any parent folders it needs. Idempotent — an existing folder is "
+          "reported as such rather than treated as an error.",
+          {"type": "object",
+           "properties": {"path": {"type": "string", "description": "Absolute folder path"}},
+           "required": ["path"], "additionalProperties": False})
+    async def make_dir(args: dict[str, Any]) -> dict[str, Any]:
+        import manager_fs
+
+        outcome = await asyncio.to_thread(_fs, manager_fs.make_dir, str(args.get("path") or ""))
+        if not outcome["ok"]:
+            return _err(str(outcome["result"]))
+        data = outcome["result"]
+        return _ok(f"{data['path']} — created: {data['created']}")
+
+    @tool("move_path",
+          "Move or rename a file or folder. A destination that is an existing folder means "
+          "'into it'; a destination that already exists as a file is refused rather than "
+          "overwritten, because that is the one outcome nobody can undo from this chat. The "
+          "harness source and any git storage are refused too — moving the code this call is "
+          "running out of takes away the session you are speaking through.",
+          {"type": "object",
+           "properties": {
+               "source": {"type": "string", "description": "Absolute path to move"},
+               "destination": {"type": "string",
+                               "description": "Absolute destination path or folder"},
+           },
+           "required": ["source", "destination"], "additionalProperties": False})
+    async def move_path(args: dict[str, Any]) -> dict[str, Any]:
+        import manager_fs
+
+        outcome = await asyncio.to_thread(_fs, manager_fs.move,
+                                          str(args.get("source") or ""),
+                                          str(args.get("destination") or ""))
+        if not outcome["ok"]:
+            return _err(str(outcome["result"]))
+        return _ok(f"Moved {outcome['result']['from']} -> {outcome['result']['to']}")
+
+    @tool("copy_path",
+          "Copy a file or a whole folder. Same destination rules as move_path, and it never "
+          "overwrites. Use it to hand someone a copy of evidence without taking it out of the "
+          "project it belongs to.",
+          {"type": "object",
+           "properties": {
+               "source": {"type": "string", "description": "Absolute path to copy"},
+               "destination": {"type": "string",
+                               "description": "Absolute destination path or folder"},
+           },
+           "required": ["source", "destination"], "additionalProperties": False})
+    async def copy_path(args: dict[str, Any]) -> dict[str, Any]:
+        import manager_fs
+
+        outcome = await asyncio.to_thread(_fs, manager_fs.copy,
+                                          str(args.get("source") or ""),
+                                          str(args.get("destination") or ""))
+        if not outcome["ok"]:
+            return _err(str(outcome["result"]))
+        return _ok(f"Copied {outcome['result']['from']} -> {outcome['result']['to']}")
+
+    @tool("trash_path",
+          "Retire a file or folder into projects/_trash/<timestamp>/. There is no delete here "
+          "and there will not be: a test history that an agent removed at 2am because a folder "
+          "looked empty must be recoverable by hand. Say 'moved to the trash folder', not "
+          "'deleted', when you report it.",
+          {"type": "object",
+           "properties": {"path": {"type": "string", "description": "Absolute path to retire"}},
+           "required": ["path"], "additionalProperties": False})
+    async def trash_path(args: dict[str, Any]) -> dict[str, Any]:
+        import manager_fs
+
+        outcome = await asyncio.to_thread(_fs, manager_fs.trash, str(args.get("path") or ""))
+        if not outcome["ok"]:
+            return _err(str(outcome["result"]))
+        return _ok(f"Moved {outcome['result']['from']} to the trash folder at "
+                   f"{outcome['result']['to']}. Nothing was deleted — it can be moved back.")
+
     return create_sdk_mcp_server(
         name="ecosystem",
         version="1.0.0",
@@ -936,7 +1334,9 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                list_clusters, read_cluster, save_cluster, delete_cluster,
                ecosystem_report, create_module, update_module,
                search_issues, file_cluster, link_cluster, sync_issue_status,
-               run_module, queue_retest, list_retests],
+               run_module, queue_retest, list_retests,
+               list_devices, pin_device, start_app, running_now, stop_module,
+               list_dir, make_dir, move_path, copy_path, trash_path],
     )
 
 
@@ -963,6 +1363,16 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__run_module",
     "mcp__ecosystem__queue_retest",
     "mcp__ecosystem__list_retests",
+    "mcp__ecosystem__list_devices",
+    "mcp__ecosystem__pin_device",
+    "mcp__ecosystem__start_app",
+    "mcp__ecosystem__running_now",
+    "mcp__ecosystem__stop_module",
+    "mcp__ecosystem__list_dir",
+    "mcp__ecosystem__make_dir",
+    "mcp__ecosystem__move_path",
+    "mcp__ecosystem__copy_path",
+    "mcp__ecosystem__trash_path",
 ]
 
 
