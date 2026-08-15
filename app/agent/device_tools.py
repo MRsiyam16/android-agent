@@ -78,6 +78,22 @@ def _err(text: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "is_error": True}
 
 
+def _same_origin(a: str, b: str) -> bool:
+    """Whether two web targets are the same site, ignoring scheme, `www.` and path.
+
+    A web project's "package" is its home URL, so navigating to any other page of the same
+    site produces a string that differs from it. That is a different *page*, not a different
+    *app*, and the two must not be confused: findings are keyed to the project, and warning
+    about a mismatch here would be warning about normal navigation.
+    """
+    def host(value: str) -> str:
+        text = str(value or "").strip().split("://", 1)[-1]
+        return text.split("/", 1)[0].split("?", 1)[0].removeprefix("www.").lower()
+
+    left, right = host(a), host(b)
+    return bool(left) and left == right
+
+
 class DeviceSession:
     """One agent chat session's view of the device, plus its evidence trail."""
 
@@ -461,15 +477,32 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
 
     # ---------------------------------------------------------------- acting
     @tool("launch",
-          "Force-stop and relaunch the app under test, then wait for its UI to render. On a "
-          "web project, `package` is a URL and this navigates to it instead. "
+          "Force-stop and relaunch the app under test, then wait for its UI to render.\n\n"
+          "ON A WEB PROJECT THIS IS ALSO THE ADDRESS BAR. Pass any URL — including a deep "
+          "path and query string — and it navigates there: "
+          "`launch({\"url\": \"https://site.example/claim?token=abc\"})`. You are not limited "
+          "to the project's home page, and there is no separate goto/navigate tool to look "
+          "for. This is how you follow a link the app showed you but did not make clickable.\n\n"
           "Returns what is on screen once it settles.",
           {"type": "object",
-           "properties": {"package": {"type": "string",
-                                      "description": "Defaults to the app under test"}},
+           "properties": {
+               "url": {"type": "string",
+                       "description": "Web projects: the full URL to navigate to, any path or "
+                                      "query string. Defaults to the project's own URL."},
+               "package": {"type": "string",
+                           "description": "Phone projects: the package/bundle id to launch. "
+                                          "Defaults to the app under test. On web this is "
+                                          "treated the same as `url`."},
+           },
            "additionalProperties": False})
     async def launch(args: dict[str, Any]) -> dict[str, Any]:
-        pkg = args.get("package") or session.package
+        # `url` and `package` are the same argument. The tool description has said since it was
+        # written that a web project's `package` is a URL, and an agent still spent a run
+        # concluding the harness could not navigate anywhere: it guessed `launch({url: ...})`,
+        # got InputValidationError, guessed `launch({path: ...})`, got the same, and wrote a
+        # permanent "this harness cannot open a URL" lesson into system memory over a
+        # capability that was one argument name away. Twice-guessed is the name it wants.
+        pkg = args.get("url") or args.get("package") or session.package
         d = await session.device()
         is_web = session.resolved_platform == "web"
         try:
@@ -503,7 +536,12 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
         session.last_texts = screen_texts(xml)
         session.actions_since_read = 0
         header = f"Launched {pkg}; UI became readable after {waited}s.\n"
-        if pkg != session.package:
+        # Same site, different page is not a mislabelled project. Without this, every deep-link
+        # navigation on a web project — the normal way to reach a page the app links to but
+        # does not make clickable — was answered with "anything you record now is filed under
+        # the wrong app", which reads as a warning not to do it.
+        same_site = is_web and _same_origin(pkg, session.package)
+        if pkg != session.package and not same_site:
             # Otherwise the mislabelling is silent: findings and flow-graph steps are keyed to
             # the project, so they would be filed against an app that was never opened.
             header += (f"NOTE: this project is `{session.package}`, so anything you record now "

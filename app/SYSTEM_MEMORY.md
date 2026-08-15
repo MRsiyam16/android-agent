@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **142** · last updated: 2026-08-15T05:55:52+00:00
+Runs recorded: **143** · last updated: 2026-08-15T06:30:45+00:00
 
 ## Environment
 
@@ -27,7 +27,7 @@ the wrong screen, which downstream becomes a false defect.
 |---|---|---|---|---|
 | `launch_settle.ios-native` | 40 | 0.2s | 2.1s | **0.4s** |
 | `launch_settle.native` | 40 | 1.2s | 1.3s | **1.6s** |
-| `launch_settle.web` | 33 | 3.0s | 4.6s | **5.1s** |
+| `launch_settle.web` | 34 | 3.0s | 9.2s | **5.1s** |
 
 ## Operating lessons
 
@@ -51,6 +51,8 @@ the wrong screen, which downstream becomes a false defect.
   - _evidence:_ On the Mira Create-New-Clinic signup form, tapping the password field by an id captured before the email field's "Email is required" error cleared, then typing, produced no visible change — the password field still showed its placeholder and "Password is required" on the next read. Re-reading, retapping the fresh id, and retyping fixed it, and this happened three separate times across email/password/confirm-password.
 - **web-launch-browser-closed-recurs** (seen once) — On this harness, `launch()` for a web project can fail repeatedly with "Target page, context or browser has been closed" across multiple consecutive retries within the same manager session, not just as a one-off transient blip seen once before. If retrying 3+ times in a row all produce the identical error, stop retrying blindly and tell the user directly — it likely needs the browser/device session restarted on their end, the same fix that worked last time this happened in this project.
   - _evidence:_ In the metaesthetics-staging.web.app project's main/manager module, launch() failed 3 consecutive times with 'Target page, context or browser has been closed' with no change between calls; earlier in the same project this exact error also appeared and was resolved only after the user restarted the browser session and said 'retry'.
+- **web-launch-no-url-override** (seen once) — On a web project, `launch()` takes no parameters — it always navigates to the project's registered base URL (e.g. https://metaesthetics-staging.web.app) and rejects any attempt to override the destination (`launch({url: ...})` and `launch({path: ...})` both fail with "Additional properties are not allowed"). There is no address-bar equivalent, no generic goto/navigate tool, and `press()` only supports {back, home, enter, recent, delete} — no Ctrl+L/Ctrl+T style shortcuts to open a URL another way. If the app under test emails or displays a deep link (a password-reset link, a claim/invite link, an email-verification link) that lives on a different path of the same origin, this harness cannot open it directly. The only way to reach such a link is if the app itself renders it as a clickable in-page element (an actual `<a href>` you can tap_xy on) — a "Copy Link"-style button that only writes to a clipboard is a dead end, since there is no paste-into-address-bar capability either.
+  - _evidence:_ Tried to complete a practitioner's account-claim flow on metaesthetics-staging.web.app by opening the claim URL from the "Staff Member Created!" dialog (https://metaesthetics-staging.web.app/claim?practitionerId=...&token=...). launch() with no args only reloads the login page; launch({url:...}) and launch({path:...}) both throw InputValidationError. The dialog's claim link text was not a tappable/touchable element per read_screen (only a "Copy Link" button was interactive), and no keyboard shortcut via press() could substitute for an address bar. Ended up unable to test the claim flow itself in this session.
 - **web-modal-dialog-missing-from-dump** (seen once) — On this web harness, a JS-rendered modal/dialog (e.g. a date-picker 'Go to Date' popup) can be fully visible in a screenshot — with its own title, dropdowns and buttons — while read_screen's dump entirely omits its text and controls, showing only the page underneath. This is unlike the iframe-ownership warning (which does fire correctly for genuinely cross-origin content) — here there is no ownership warning at all, the dump is just silently incomplete. If a screenshot shows an overlay/modal that read_screen's text and touchable-elements list don't mention, don't conclude the modal is absent; screenshot first and drive it via tap_xy with coordinates read off the image (remember the screenshot's pixel size is 2x the logical viewport reported by read_screen, so divide screenshot-image coordinates by 2 before calling tap_xy/type_text).
   - _evidence:_ Calendar module: tapping 'Jump to date' opened a 'Go to Date' modal clearly visible in screenshots (title, month/year dropdowns, day grid, Cancel/Apply buttons), but read_screen's text and touchable-element list right after the tap were identical to the underlying Month-view calendar page with zero mention of the modal — had to locate and click Apply/day-cells purely from screenshot pixel coordinates via tap_xy.
 - **web-package-missing-scheme** (seen once) — A web project's package/serial can be stored as a bare domain with no scheme (e.g. 'example.com' instead of 'https://example.com') if it was typed that way when the project was created. web_device.py normalizes this automatically now (_ensure_scheme), so launch/goto no longer fails outright — but if a bare-domain package ever reaches Playwright unnormalized again, it raises an invalid-URL error immediately on launch. Treat that error as a missing-scheme symptom, not a dead browser.
@@ -62,6 +64,7 @@ the wrong screen, which downstream becomes a false defect.
 
 28/30 of the last runs completed without raising.
 
+- `2026-08-15T06:30:45+00:00` agent:practitioners-create-test-doctor — 2128.8s, ok (turns=243 taps=68)
 - `2026-08-15T05:55:28+00:00` agent:main — 34.8s, ok (taps=0 turns=4)
 - `2026-08-15T05:46:00+00:00` agent:main — 111.3s, ok (taps=0 turns=8)
 - `2026-08-15T05:03:27+00:00` agent:practitioners-create-test-doctor — 135.3s, ok (taps=6 turns=18)
@@ -69,4 +72,3 @@ the wrong screen, which downstream becomes a false defect.
 - `2026-08-14T15:45:41+00:00` agent:main — 9.8s, ok (taps=0 turns=4)
 - `2026-08-14T15:23:27+00:00` agent:calendar — 14.4s, ok (taps=0 turns=1)
 - `2026-08-14T15:23:05+00:00` agent:main — 9.3s, ok (taps=0 turns=2)
-- `2026-08-14T15:23:02+00:00` agent:main — 6.2s, ok (taps=0 turns=2)

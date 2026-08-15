@@ -419,6 +419,48 @@ class _IdleSession:
         return None
 
 
+# -- reaching a page the app linked to but did not make clickable ------------------------------
+class TestWebLaunchTakesAUrl:
+    """A capability that existed, was documented in the tool description, and still could not
+    be found — which makes it, for practical purposes, a capability that did not exist.
+
+    A tester was asked to open an account-claim link the site had shown it as plain text. It
+    tried `launch({url: ...})`, got InputValidationError; tried `launch({path: ...})`, same;
+    concluded the harness could not navigate anywhere; wrote a permanent "this harness cannot
+    open a URL" lesson into system memory; and filed it as a product finding. The argument was
+    called `package`. Twice-guessed is the name it wants, so `url` is now accepted.
+    """
+
+    def test_url_is_accepted_as_the_name_for_the_destination(self):
+        import inspect
+
+        from agent import device_tools
+
+        source = inspect.getsource(device_tools)
+        assert 'args.get("url") or args.get("package")' in source, (
+            "launch must accept `url`; that is the name an agent reaches for")
+
+    def test_the_description_says_it_is_the_address_bar(self):
+        import inspect
+
+        from agent import device_tools
+
+        source = inspect.getsource(device_tools)
+        assert "ADDRESS BAR" in source
+        assert "no separate goto/navigate tool" in source
+
+    def test_another_page_of_the_same_site_is_not_a_different_app(self):
+        """The wrong-project warning fired on every deep link, telling the agent its findings
+        would be filed against the wrong app. That reads as "do not do this"."""
+        from agent.device_tools import _same_origin
+
+        assert _same_origin("https://metaesthetics-staging.web.app/claim?token=abc",
+                            "metaesthetics-staging.web.app")
+        assert _same_origin("http://www.example.com/a/b", "https://example.com")
+        assert not _same_origin("https://evil.example.com/claim", "example.com")
+        assert not _same_origin("", "example.com")
+
+
 # -- the prompt ----------------------------------------------------------------------------------
 def test_the_prompt_names_every_tool_and_the_rules_the_tools_enforce(eco):
     """A tool the prompt does not name is one the agent will not reach for; a rule stated only
