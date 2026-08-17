@@ -1219,15 +1219,59 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                    f"finishes the tool it is in and then ends the turn; whatever it already "
                    f"filed stays filed.")
 
-    # -- testing a whole app --------------------------------------------------------------
+    # -- jobs: a sweep of one app, or a journey across several -----------------------------
+    #
+    # One object underneath (`campaigns`), because a journey is a sweep whose steps stopped
+    # agreeing about which app they are in, and everything hard — ordering, pausing, failure,
+    # what the board shows — is the same for both.
+    def _preflight(packages: list[str]) -> Optional[str]:
+        """Every app this job will touch, checked before step one. None when all are ready.
+
+        Up front rather than per step, because the failure it prevents is the expensive one:
+        finding out at step three that the iPad was never reachable, with the booking already
+        made and not repeatable.
+        """
+        import stacks
+
+        members = {m["package"]: m for m in ecosystem_mod.members(name)}
+        problems = []
+        for package in packages:
+            platform = str((members.get(package) or {}).get("platform") or "")
+            row = stacks.status(platform)
+            if not row["ready"]:
+                role = (members.get(package) or {}).get("role", package)
+                problems.append(f"{role} ({platform}): {row['detail']}"
+                                + (f" Fix: {row['fix']}" if row.get("fix") else ""))
+        if not problems:
+            return None
+        return ("Nothing was started — these have to be ready first, and a device that is "
+                "asleep or locked looks exactly like a broken app once a run is under way:\n"
+                + "\n".join(f"- {p}" for p in problems)
+                + "\n\nBring them up with start_app, and tell the user plainly which device "
+                  "needs plugging in, waking or unlocking.")
+
+    def _resolve_step(raw: dict[str, Any]) -> tuple[Optional[dict[str, Any]], str]:
+        """One journey step, resolved against the store. (step, error)."""
+        member = _resolve_app(str(raw.get("app") or ""))
+        if member is None:
+            return None, f"no app {raw.get('app')!r} — the apps are: {_app_names()}"
+        slug = str(raw.get("module") or "").strip()
+        entry = store.get_subproject(member["package"], slug)
+        if entry is None:
+            known = [str(s.get("slug")) for s in store.list_subprojects(member["package"])]
+            return None, (f"{member['role']} has no module {slug!r} — it has: "
+                          + (", ".join(known) or "none"))
+        return {"package": member["package"], "role": member["role"], "module": slug,
+                "title": str(entry.get("title") or slug),
+                "scope": str(entry.get("scope") or ""),
+                "expect": str(raw.get("expect") or "")}, ""
+
     @tool("test_app",
-          "Test an entire app, module by module, without coming back to the user between "
-          "modules. This is the answer to \"test the clinic web\": it plans the order, starts "
-          "the first module, and something outside this conversation starts the next one when "
-          "each finishes — so it keeps going while you are asleep and while this session is "
-          "idle. You are told what each module filed as it happens, and handed a turn when a "
-          "module fails, when one stops to ask the user something, and when the sweep is done. "
-          "One campaign per app: the app is the target and one target has one driver.",
+          "Sweep one app: every module, in order, without coming back to the user between "
+          "them. This is the answer to \"test the clinic web\". You are handed a turn as each "
+          "module ends — with what it filed and the shared scratchpad — and the next module "
+          "starts when that turn finishes, so you are between every step without having to "
+          "remember to be. For work that spans more than one app, use run_journey instead.",
           {"type": "object",
            "properties": {
                "app": {"type": "string", "description": "Role (e.g. clinic-web) or package"},
@@ -1235,12 +1279,12 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                            "description": "Module slugs, in the order to run them. Omit to "
                                           "take every module the app has, manager excluded."},
                "only_untested": {"type": "boolean",
-                                 "description": "Skip modules already marked tested. Use for "
-                                                "filling coverage gaps rather than re-running "
-                                                "the whole app."},
+                                 "description": "Skip modules already marked tested — for "
+                                                "filling coverage gaps rather than redoing "
+                                                "the app."},
                "goal": {"type": "string",
-                        "description": "What this sweep is for, in a line — quoted back to "
-                                       "every module so each knows what it is part of"},
+                        "description": "What this sweep is for, in a line — quoted to every "
+                                       "module so each knows what it is part of"},
                "instruction": {"type": "string",
                                "description": "Anything every module should be told: an "
                                               "environment, a login, a defect to watch for"},
@@ -1248,19 +1292,15 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
            "required": ["app"], "additionalProperties": False})
     async def test_app(args: dict[str, Any]) -> dict[str, Any]:
         import campaigns as campaigns_mod
-        import stacks
         from backend.campaign_runner import runner
 
         member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
         if member is None:
             return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
 
-        ready = await asyncio.to_thread(stacks.status, str(member.get("platform") or ""))
-        if not ready["ready"]:
-            return _err(f"{member['role']} cannot be swept — its {ready['platform']} stack is "
-                        f"not up: {ready['detail']}"
-                        + (f" Fix: {ready['fix']}" if ready.get("fix") else "")
-                        + " Nothing was started. Use start_app first.")
+        problem = await asyncio.to_thread(_preflight, [member["package"]])
+        if problem:
+            return _err(problem)
 
         entries = await asyncio.to_thread(store.list_subprojects, member["package"])
         by_slug = {str(e.get("slug")): e for e in entries
@@ -1282,43 +1322,116 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                         f"some with create_module, or run recon — or `only_untested` filtered "
                         f"them all out because every module is already marked tested.")
 
-        modules = [{"slug": s, "title": str(by_slug[s].get("title") or s),
-                    "scope": str(by_slug[s].get("scope") or "")} for s in chosen]
+        steps = [{"package": member["package"], "role": member["role"], "module": s,
+                  "title": str(by_slug[s].get("title") or s),
+                  "scope": str(by_slug[s].get("scope") or ""), "expect": ""} for s in chosen]
         try:
             campaign = await asyncio.to_thread(
-                campaigns_mod.create, name, member["package"], modules,
-                role=member["role"], goal=str(args.get("goal") or ""),
+                campaigns_mod.create, name, steps, kind="sweep", role=member["role"],
+                goal=str(args.get("goal") or ""),
                 instruction=str(args.get("instruction") or ""))
         except ValueError as exc:
             return _err(str(exc))
 
-        # Started outside this turn on purpose: the first module's run must not be something
-        # this tool waits on, or the tool call would hold open for the length of a test.
         asyncio.create_task(runner.advance(campaign["id"]))
         return _ok(
-            f"Started a sweep of {member['role']} — {len(modules)} modules, in this order: "
-            f"{', '.join(chosen)}.\n\nIt runs on its own from here. Each module starts when "
-            f"the one before it finishes; you will see a line in this chat as each ends, and "
-            f"you will be given a turn if one fails, if one stops to ask the user something, "
-            f"or when the sweep is done. Do not poll it — there is nothing to do until then. "
-            f"Use campaign_status if the user asks where it is up to.")
+            f"Started a sweep of {member['role']} — {len(steps)} modules, in this order: "
+            f"{', '.join(chosen)}.\n\nStep one is starting now. You will be handed a turn as "
+            f"each module ends; the next one begins when that turn finishes. Do not poll it.")
+
+    @tool("run_journey",
+          "Run a job whose steps are in DIFFERENT apps and only mean anything together — "
+          "\"book on the patient app, then check it reached the iPad, then check the clinic "
+          "web\". This is the thing no single project can do and no single module can verify.\n\n"
+          "Plan it first, in this call: each step names an app, a module, and — the important "
+          "part — what that step must ESTABLISH for the next one. Step one is told to write "
+          "what it created into the shared scratchpad; step two is handed that verbatim, so it "
+          "looks for the actual appointment rather than for any appointment. A journey without "
+          "`expect` on each step is just several unrelated tests in a row.\n\n"
+          "Every app it names is checked for a ready device before anything starts, and every "
+          "one is held for the whole journey so a sweep cannot take one halfway through.",
+          {"type": "object",
+           "properties": {
+               "goal": {"type": "string",
+                        "description": "The one thing this journey proves or disproves"},
+               "steps": {
+                   "type": "array",
+                   "description": "In order. Each is one module in one app.",
+                   "items": {"type": "object",
+                             "properties": {
+                                 "app": {"type": "string", "description": "Role or package"},
+                                 "module": {"type": "string", "description": "Module slug"},
+                                 "expect": {"type": "string",
+                                            "description": "What this step must establish, and "
+                                                           "what it should write down for the "
+                                                           "next one"}},
+                             "required": ["app", "module", "expect"],
+                             "additionalProperties": False}},
+               "instruction": {"type": "string",
+                               "description": "Anything every step should be told"},
+           },
+           "required": ["goal", "steps"], "additionalProperties": False})
+    async def run_journey(args: dict[str, Any]) -> dict[str, Any]:
+        import campaigns as campaigns_mod
+        from backend.campaign_runner import runner
+
+        raw_steps = args.get("steps") or []
+        if len(raw_steps) < 2:
+            return _err("A journey needs at least two steps in different apps — otherwise it "
+                        "is a single module run, which is what run_module is for.")
+
+        steps, errors = [], []
+        for index, raw in enumerate(raw_steps, start=1):
+            step, problem = await asyncio.to_thread(_resolve_step, raw)
+            if problem:
+                errors.append(f"step {index}: {problem}")
+            else:
+                steps.append(step)
+        if errors:
+            return _err("Nothing was started:\n" + "\n".join(f"- {e}" for e in errors))
+
+        packages = list(dict.fromkeys(s["package"] for s in steps))
+        problem = await asyncio.to_thread(_preflight, packages)
+        if problem:
+            return _err(problem)
+
+        try:
+            campaign = await asyncio.to_thread(
+                campaigns_mod.create, name, steps, kind="journey",
+                role=" -> ".join(dict.fromkeys(s["role"] for s in steps)),
+                goal=str(args.get("goal") or ""),
+                instruction=str(args.get("instruction") or ""))
+        except ValueError as exc:
+            return _err(str(exc))
+
+        asyncio.create_task(runner.advance(campaign["id"]))
+        plan = "\n".join(f"  {i}. {s['role']}/{s['module']} — {s['expect']}"
+                         for i, s in enumerate(steps, start=1))
+        return _ok(
+            f"Journey planned and started: {args.get('goal')}\n\n{plan}\n\n"
+            f"Apps held for the whole journey: {', '.join(packages)}. Step one is running. "
+            f"Show the user this plan, then wait — you are handed a turn as each step ends, "
+            f"with what it established and the scratchpad, and the next step starts when that "
+            f"turn finishes.")
 
     @tool("campaign_status",
-          "Where the sweeps are up to: which module is running now, what each one filed, and "
-          "anything a campaign is waiting on. Read it when the user asks how testing is going "
-          "— not on a loop, since you are told when something changes.",
+          "Where the jobs are up to: which step is running, in which app, what each filed, and "
+          "anything a job is waiting on. Read it when the user asks how testing is going — not "
+          "on a loop, since you are handed a turn when something changes.",
           {"type": "object", "properties": {}, "additionalProperties": False})
     async def campaign_status(_args: dict[str, Any]) -> dict[str, Any]:
         import campaigns as campaigns_mod
 
         rows = await asyncio.to_thread(campaigns_mod.list_all, name)
         if not rows:
-            return _ok("No app has been swept yet. `test_app` starts one.")
+            return _ok("No job has run yet. `test_app` sweeps one app; `run_journey` spans "
+                       "several.")
         out = []
         for campaign in rows[:8]:
             counts = campaigns_mod.progress(campaign)
-            out.append(f"# {campaign.get('role') or campaign['package']} — {campaign['status']}"
-                       f"  ({counts['finished']}/{counts['total']} modules, "
+            out.append(f"# {campaign.get('kind', 'sweep')}: "
+                       f"{campaign.get('role') or ', '.join(counts['apps'])} — "
+                       f"{campaign['status']}  ({counts['finished']}/{counts['total']} steps, "
                        f"{counts['findings']} findings)")
             if campaign.get("goal"):
                 out.append(f"  goal: {campaign['goal']}")
@@ -1331,21 +1444,26 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
             for step in campaign["steps"]:
                 mark = {"running": "->", "done": "ok", "failed": "!!",
                         "skipped": "--", "pending": "  "}.get(step["status"], "  ")
-                out.append(f"  {mark} {step['module']}  [{step['status']}]"
+                out.append(f"  {mark} {step.get('role') or step['package']}/{step['module']}  "
+                           f"[{step['status']}]"
                            + (f"  {step['findings']} findings" if step.get("findings") else "")
                            + (f"  ({step['note']})" if step.get("note") else ""))
+                if step.get("reported"):
+                    out.append(f"       said: {step['reported'][:200]}")
         return _ok("\n".join(out))
 
     @tool("control_campaign",
-          "Change a running sweep: 'resume' after it paused, 'stop' to end it, or 'skip' one "
-          "module you have decided is not worth running now. Stopping does not undo anything "
-          "already filed; the modules that ran, ran.",
+          "Change a running job: 'resume' after a pause, 'stop' to end it, 'skip' a step whose "
+          "premise no longer holds, or 'retry' a step that failed for a reason you have since "
+          "fixed. Retry is the one to reach for after bringing a stack back up — a failed step "
+          "is not a dead job.",
           {"type": "object",
            "properties": {
-               "app": {"type": "string", "description": "Role or package"},
-               "action": {"type": "string", "enum": ["resume", "stop", "skip"]},
+               "app": {"type": "string",
+                       "description": "Role or package of any app the job touches"},
+               "action": {"type": "string", "enum": ["resume", "stop", "skip", "retry"]},
                "module": {"type": "string",
-                          "description": "Which module to skip. Only for action=skip."},
+                          "description": "Which step. Required for skip and retry."},
            },
            "required": ["app", "action"], "additionalProperties": False})
     async def control_campaign(args: dict[str, Any]) -> dict[str, Any]:
@@ -1357,25 +1475,133 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
             return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
         campaign = await asyncio.to_thread(campaigns_mod.active_for, member["package"])
         if campaign is None:
-            return _err(f"No sweep is live on {member['role']}. `test_app` starts one.")
+            return _err(f"No job is live on {member['role']}. `test_app` sweeps one app; "
+                        f"`run_journey` spans several.")
 
         action = str(args.get("action") or "")
+        slug = str(args.get("module") or "").strip()
+
         if action == "stop":
             await asyncio.to_thread(campaigns_mod.set_status, campaign["id"], "stopped")
-            return _ok(f"Stopped the sweep of {member['role']}. Whatever the modules already "
-                       f"filed stays filed; nothing further starts. A module mid-run keeps "
-                       f"going to the end of its own turn — use stop_module to cut that short.")
+            return _ok(f"Stopped the {campaign.get('kind', 'job')}. Whatever the steps already "
+                       f"filed stays filed; nothing further starts. A step mid-run finishes "
+                       f"its own turn — use stop_module to cut that short.")
         if action == "skip":
-            slug = str(args.get("module") or "").strip()
             if not slug:
-                return _err("Say which module to skip.")
+                return _err("Say which step to skip.")
             await asyncio.to_thread(campaigns_mod.skip_step, campaign["id"], slug,
                                     "skipped by the manager")
-            return _ok(f"`{slug}` will be skipped. The sweep carries on with the rest.")
+            return _ok(f"`{slug}` will be skipped. The job carries on with the rest.")
+        if action == "retry":
+            if not slug:
+                return _err("Say which step to retry.")
+            # Checked *before* the mutation, not after. `retry_step` moves a failed step back
+            # to pending, so "is it pending now" is also true of a step that was never run —
+            # which reported a successful retry of something that had not happened yet.
+            was = next((s for s in campaign["steps"] if s["module"] == slug), None)
+            if was is None:
+                return _err(f"`{slug}` is not a step of this job. It has: "
+                            + ", ".join(s["module"] for s in campaign["steps"]) + ".")
+            if was["status"] != "failed":
+                return _err(f"`{slug}` is {was['status']}, not failed, so there is nothing to "
+                            f"retry. Only a step that ran and failed can be put back.")
+            await asyncio.to_thread(campaigns_mod.retry_step, campaign["id"], slug)
+            asyncio.create_task(runner.advance(campaign["id"]))
+            return _ok(f"`{slug}` is queued again and the job is moving. If the reason it "
+                       f"failed is still true it will fail the same way — make sure you fixed "
+                       f"it first.")
 
         asyncio.create_task(runner.advance(campaign["id"]))
-        return _ok(f"Resuming the sweep of {member['role']}. The next pending module starts as "
-                   f"soon as its target is free.")
+        return _ok(f"Resuming. The next pending step starts as soon as its target is free.")
+
+    @tool("set_step_brief",
+          "Tell a step that has not run yet what to look for, now that you have read the one "
+          "before it. This is how a journey actually becomes one job rather than several: step "
+          "one reports a booking reference, and you write it into step two's brief before step "
+          "two starts.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role or package the job touches"},
+               "module": {"type": "string", "description": "The step to redirect"},
+               "expect": {"type": "string",
+                          "description": "What that step must now establish, in full"},
+           },
+           "required": ["app", "module", "expect"], "additionalProperties": False})
+    async def set_step_brief(args: dict[str, Any]) -> dict[str, Any]:
+        import campaigns as campaigns_mod
+
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+        campaign = await asyncio.to_thread(campaigns_mod.active_for, member["package"])
+        if campaign is None:
+            return _err(f"No job is live on {member['role']}.")
+        slug = str(args.get("module") or "").strip()
+        updated = await asyncio.to_thread(campaigns_mod.set_step_brief, campaign["id"], slug,
+                                          str(args.get("expect") or ""))
+        if updated is None or not any(
+                s["module"] == slug and s["expect"] == str(args.get("expect") or "")
+                for s in updated["steps"]):
+            return _err(f"`{slug}` is not a step of this job that is still waiting to run. A "
+                        f"step that has already started cannot be re-briefed.")
+        return _ok(f"`{slug}` will be told: {args.get('expect')}")
+
+    # -- the shared scratchpad ---------------------------------------------------------------
+    @tool("note_put",
+          "Write a fact onto the product's shared scratchpad, where every app's agents can read "
+          "it. The one thing that crosses between apps: a module in another project cannot see "
+          "your chat, your findings or your screen, but it can read this. Use it for what is "
+          "true right now — a booking reference, a test account, which environment is under "
+          "test — not for findings, which belong to the module that observed them.",
+          {"type": "object",
+           "properties": {
+               "key": {"type": "string",
+                       "description": "Short kebab-case name, e.g. last-booking-ref"},
+               "value": {"type": "string", "description": "The fact, in a line or two"},
+               "note": {"type": "string", "description": "Why it is here, if not obvious"},
+           },
+           "required": ["key", "value"], "additionalProperties": False})
+    async def note_put(args: dict[str, Any]) -> dict[str, Any]:
+        import scratchpad as scratchpad_mod
+
+        try:
+            entry = await asyncio.to_thread(
+                scratchpad_mod.put, name, str(args.get("key") or ""),
+                str(args.get("value") or ""), author=f"{name}/manager",
+                note=str(args.get("note") or ""))
+        except ValueError as exc:
+            return _err(str(exc))
+        return _ok(f"Noted `{entry['key']}`. Every app's agents can read it now.")
+
+    @tool("note_list",
+          "Everything on the shared scratchpad, newest first — what the apps have written down "
+          "for each other. Read it before starting a journey and before answering a question "
+          "about what state the product is in.",
+          {"type": "object", "properties": {}, "additionalProperties": False})
+    async def note_list(_args: dict[str, Any]) -> dict[str, Any]:
+        import scratchpad as scratchpad_mod
+
+        rows = await asyncio.to_thread(scratchpad_mod.list_all, name)
+        if not rows:
+            return _ok("The shared scratchpad is empty.")
+        return _ok("\n".join(
+            f"{r['key']}: {r['value']}"
+            + (f"   [{r['author']}, {r['updated_at']}]" if r.get("author") else "")
+            + (f"\n      {r['note']}" if r.get("note") else "") for r in rows))
+
+    @tool("note_drop",
+          "Remove a note that has stopped being true. Do this when a job ends — a stale "
+          "booking reference that another agent reads next week is worse than no note at all, "
+          "because it looks like a fact.",
+          {"type": "object",
+           "properties": {"key": {"type": "string", "description": "The note's key"}},
+           "required": ["key"], "additionalProperties": False})
+    async def note_drop(args: dict[str, Any]) -> dict[str, Any]:
+        import scratchpad as scratchpad_mod
+
+        gone = await asyncio.to_thread(scratchpad_mod.drop, name, str(args.get("key") or ""))
+        return _ok(f"Dropped `{args.get('key')}`." if gone
+                   else f"No note called `{args.get('key')}`.")
 
     # -- the files ---------------------------------------------------------------------------
     #
@@ -1498,7 +1724,8 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                search_issues, file_cluster, link_cluster, sync_issue_status,
                run_module, queue_retest, list_retests,
                list_devices, pin_device, start_app, running_now, stop_module,
-               test_app, campaign_status, control_campaign,
+               test_app, run_journey, campaign_status, control_campaign,
+               set_step_brief, note_put, note_list, note_drop,
                list_dir, make_dir, move_path, copy_path, trash_path],
     )
 
@@ -1532,8 +1759,13 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__running_now",
     "mcp__ecosystem__stop_module",
     "mcp__ecosystem__test_app",
+    "mcp__ecosystem__run_journey",
     "mcp__ecosystem__campaign_status",
     "mcp__ecosystem__control_campaign",
+    "mcp__ecosystem__set_step_brief",
+    "mcp__ecosystem__note_put",
+    "mcp__ecosystem__note_list",
+    "mcp__ecosystem__note_drop",
     "mcp__ecosystem__list_dir",
     "mcp__ecosystem__make_dir",
     "mcp__ecosystem__move_path",

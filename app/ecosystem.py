@@ -139,6 +139,17 @@ def role_of(package: str) -> Optional[str]:
     return str(meta["role"]) if meta.get("ecosystem") and meta.get("role") else None
 
 
+def ecosystem_of(package: str) -> Optional[str]:
+    """Which product this project belongs to, or None.
+
+    `supervises` answers "does this project *run* an ecosystem"; this answers "is it *in* one",
+    which is the question a module tester has. A tester needs it to reach the shared scratchpad
+    without knowing anything about the tier above it.
+    """
+    name = _meta(package).get("ecosystem")
+    return str(name) if name else None
+
+
 def supervises(package: str) -> Optional[str]:
     """The ecosystem this project supervises, or None if it is an app like any other.
 

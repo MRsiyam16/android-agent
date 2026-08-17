@@ -23,6 +23,7 @@ import campaigns as campaigns_mod
 import clusters as clusters_mod
 import ecosystem as ecosystem_mod
 import retests as retests_mod
+import scratchpad as scratchpad_mod
 
 logger = logging.getLogger("server.ecosystem")
 router = APIRouter()
@@ -92,14 +93,29 @@ async def get_board(name: str):
         # The running indicator's data. In the board payload rather than its own request so
         # the page cannot show a sweep against totals read a moment apart from it.
         "campaigns": campaigns_mod.summary(name),
+        "scratchpad": len(scratchpad_mod.list_all(name)),
     }
 
 
 @router.get("/ecosystems/{name}/campaigns")
 async def get_campaigns(name: str, live: bool = False):
-    """Sweeps over this product's apps, newest first. `live=true` for the ones still going."""
+    """Jobs over this product's apps, newest first. `live=true` for the ones still going."""
     rows = campaigns_mod.live(name) if live else campaigns_mod.list_all(name)
     return [{**c, **campaigns_mod.progress(c)} for c in rows]
+
+
+@router.get("/ecosystems/{name}/scratchpad")
+async def get_scratchpad(name: str):
+    """What the apps have written down for each other — the only state that crosses between
+    them. Shown on the board so a stale note is visible rather than quietly wrong."""
+    return scratchpad_mod.list_all(name)
+
+
+@router.delete("/ecosystems/{name}/scratchpad/{key:path}")
+async def drop_note(name: str, key: str):
+    if not scratchpad_mod.drop(name, key):
+        raise HTTPException(status_code=404, detail=f"No note called {key!r}")
+    return {"ok": True, "key": key}
 
 
 @router.post("/ecosystems/{name}/campaigns/{campaign_id:path}/stop")

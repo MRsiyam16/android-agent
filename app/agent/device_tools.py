@@ -1164,6 +1164,77 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
                 lines.append(f"{finding['id']} (#{number}): {live['status']} (unchanged)")
         return _ok("\n".join(lines))
 
+    # -- the shared scratchpad ---------------------------------------------------------------
+    #
+    # The only channel out of this module that another app's agent can read. Everything else a
+    # tester produces is partitioned by design — findings, memory and transcript all belong to
+    # the module that wrote them — and that partitioning is exactly what made cross-app work
+    # impossible: an Android module booked "Testina Doe, Tue 14:30, ref #4471" and the iPad
+    # module that had to confirm it arrived could not find out what to look for. It went
+    # looking for *an* appointment, found one, and reported success about something it had
+    # never verified.
+    #
+    # A finding is the wrong shape for this. A finding is a verdict about the app; a booking
+    # reference is a fact about the world that the next step needs.
+    @tool("note_put",
+          "Write a fact onto the product's shared scratchpad, where the agents testing the "
+          "OTHER apps can read it. This is the only thing you produce that crosses out of this "
+          "project — they cannot see your screen, your transcript or your findings. Use it "
+          "whenever you create something a later step will have to find: a booking reference, "
+          "an account you registered, a time slot, an order number. Facts, not verdicts; a "
+          "verdict is a finding.",
+          {"type": "object",
+           "properties": {
+               "key": {"type": "string",
+                       "description": "Short kebab-case name, e.g. last-booking-ref"},
+               "value": {"type": "string", "description": "The fact, in a line or two"},
+           },
+           "required": ["key", "value"], "additionalProperties": False})
+    async def note_put(args: dict[str, Any]) -> dict[str, Any]:
+        import ecosystem as ecosystem_mod
+        import scratchpad
+
+        name = await asyncio.to_thread(ecosystem_mod.ecosystem_of, session.package)
+        if not name:
+            return _err("This project is not part of a product, so there is nobody to leave a "
+                        "note for. Record it as a finding or in your memory file instead.")
+        try:
+            entry = await asyncio.to_thread(
+                scratchpad.put, name, str(args.get("key") or ""), str(args.get("value") or ""),
+                author=f"{ecosystem_mod.role_of(session.package) or session.package}/"
+                       f"{session.slug}")
+        except ValueError as exc:
+            return _err(str(exc))
+        return _ok(f"Noted `{entry['key']}` on the {name} scratchpad. The other apps' agents "
+                   f"can read it now.")
+
+    @tool("note_get",
+          "Read what the other apps' agents have written down. Check it before hunting for "
+          "something another app was supposed to have created — the reference you need is "
+          "usually already here, and looking for 'any appointment' instead of the right one is "
+          "how a cross-app check reports a pass it never made.",
+          {"type": "object",
+           "properties": {"key": {"type": "string",
+                                  "description": "One note's key. Omit for all of them."}},
+           "additionalProperties": False})
+    async def note_get(args: dict[str, Any]) -> dict[str, Any]:
+        import ecosystem as ecosystem_mod
+        import scratchpad
+
+        name = await asyncio.to_thread(ecosystem_mod.ecosystem_of, session.package)
+        if not name:
+            return _err("This project is not part of a product, so there is no shared "
+                        "scratchpad.")
+        if args.get("key"):
+            entry = await asyncio.to_thread(scratchpad.get, name, str(args["key"]))
+            if entry is None:
+                return _err(f"No note called `{args['key']}`. Everything on the pad:\n"
+                            + await asyncio.to_thread(scratchpad.render, name))
+            return _ok(f"{entry['key']}: {entry['value']}\n"
+                       f"   written by {entry.get('author') or 'someone'} at "
+                       f"{entry.get('updated_at')}")
+        return _ok(await asyncio.to_thread(scratchpad.render, name))
+
     @tool("learn_lesson",
           "Record an operating lesson about *driving this harness* — never about the app "
           "under test; that belongs in record_finding or your memory file. Call this whenever "
@@ -1326,7 +1397,7 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
              list_credentials, press, scroll, reset_app_data,
              journey_step, record_finding, add_note, link_finding, list_steps,
              list_findings, file_issue, search_issues, check_issue_status, learn_lesson,
-             ask_user, propose_subprojects, check_responsive]
+             ask_user, propose_subprojects, check_responsive, note_put, note_get]
     if not can_file_findings:
         tools = [t for t in tools if t.name not in VERDICT_TOOLS]
     if session.resolved_platform != "web":
@@ -1374,7 +1445,9 @@ def _device_tool_names(*, can_file_findings: bool = True, web: bool = False) -> 
              "list_credentials", "press", "scroll", "reset_app_data",
              "journey_step", "record_finding", "add_note", "link_finding", "list_steps",
              "list_findings", "file_issue", "search_issues", "check_issue_status",
-             "learn_lesson", "ask_user", "propose_subprojects"]
+             "learn_lesson", "ask_user", "propose_subprojects",
+             # The one channel out of this module another app's agent can read.
+             "note_put", "note_get"]
     if web:
         short = short + ["check_responsive"]
     return [f"mcp__device__{name}" for name in short

@@ -10,7 +10,7 @@
      else. No vis-network: there is no graph on this page and never will be. -->
 <link rel="stylesheet" href="/static/css/base.css?v=22">
 <link rel="stylesheet" href="/static/css/agent.css?v=21">
-<link rel="stylesheet" href="/static/css/manager.css?v=7">
+<link rel="stylesheet" href="/static/css/manager.css?v=8">
 </head>
 <body>
 
@@ -91,8 +91,12 @@
 
       <div class="rail-title">Work</div>
       <button class="nav-item" data-view="campaigns">
-        <span class="nav-label">Sweeps</span>
+        <span class="nav-label">Jobs</span>
         <span class="nav-count" id="countCampaigns">—</span>
+      </button>
+      <button class="nav-item" data-view="scratchpad">
+        <span class="nav-label">Scratchpad</span>
+        <span class="nav-count" id="countNotes">—</span>
       </button>
       <button class="nav-item" data-view="retests">
         <span class="nav-label">Re-tests</span>
@@ -163,6 +167,6 @@
   </div>
 </div>
 
-<script type="module" src="/static/js/manager/main.js?v=7"></script>
+<script type="module" src="/static/js/manager/main.js?v=8"></script>
 </body>
 </html>

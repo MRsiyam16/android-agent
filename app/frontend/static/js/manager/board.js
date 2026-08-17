@@ -589,25 +589,74 @@ const STEP_LABEL = {
 };
 
 async function renderCampaigns() {
-  canvasTitle.textContent = 'Sweeps';
-  canvasSub.textContent = 'A whole app tested module by module. Each module starts when the '
-    + 'one before it finishes — nobody has to say "next". The manager is handed a turn only '
-    + 'when a module fails, when one stops to ask you something, or when the sweep is done.';
+  canvasTitle.textContent = 'Jobs';
+  canvasSub.textContent = 'The task list. A sweep runs every module of one app; a journey runs '
+    + 'steps across several apps that only mean anything together. Each step starts when the '
+    + 'manager has finished reading the one before it, so nobody has to say "next".';
 
   const rows = await api(ecoUrl('/campaigns'));
   if (!rows.length) {
-    canvas.appendChild(empty('No app has been swept yet. Ask the manager to "test the clinic '
-                             + 'web" and it will run every module in order.'));
+    canvas.appendChild(empty('Nothing has run yet. Ask the manager to "test the clinic web" '
+                             + 'for a sweep, or "book on the patient app and check it reached '
+                             + 'the iPad" for a journey across apps.'));
     return;
   }
   rows.forEach((campaign) => canvas.appendChild(campaignCard(campaign)));
+}
+
+// -- the shared scratchpad -------------------------------------------------------------
+//
+// Shown because it is the only state that crosses between apps, and because a note that has
+// stopped being true is worse than no note — it reads as a fact. Visible, it gets cleaned up.
+
+async function renderScratchpad() {
+  canvasTitle.textContent = 'Scratchpad';
+  canvasSub.textContent = 'What the apps have written down for each other — the one thing that '
+    + 'crosses between them. A module testing the iPad cannot see the Android module’s '
+    + 'screen or findings, but it can read this. Facts, not verdicts.';
+
+  const rows = await api(ecoUrl('/scratchpad'));
+  if (!rows.length) {
+    canvas.appendChild(empty('Nothing written down. Agents add notes here when they create '
+                             + 'something a later step has to find — a booking reference, a '
+                             + 'test account, an order number.'));
+    return;
+  }
+  rows.forEach((note) => canvas.appendChild(noteRow(note)));
+}
+
+function noteRow(note) {
+  const box = el('div', 'note');
+  const head = el('div', 'note-head');
+  head.append(el('span', 'note-key', note.key),
+              el('span', 'note-author', note.author || 'unknown'),
+              el('span', 'note-when', note.updated_at || ''));
+
+  const drop = el('button', 'chip-btn note-drop', '× Drop');
+  drop.title = 'Remove this note. Do it when the job it belonged to is over.';
+  drop.addEventListener('click', async () => {
+    drop.disabled = true;
+    try {
+      await api(ecoUrl(`/scratchpad/${encodeURIComponent(note.key)}`), { method: 'DELETE' });
+      await refresh();
+    } catch (err) {
+      drop.disabled = false;
+      drop.title = err.message;
+    }
+  });
+  head.appendChild(drop);
+  box.appendChild(head);
+  box.appendChild(el('div', 'note-value', note.value));
+  if (note.note) box.appendChild(el('div', 'note-why', note.note));
+  return box;
 }
 
 function campaignCard(campaign) {
   const box = el('div', 'campaign' + (campaign.status === 'running' ? ' live' : ''));
 
   const head = el('div', 'campaign-head');
-  head.append(chip(campaign.role || campaign.package, 'member-role'),
+  head.append(chip(campaign.kind || 'sweep', 'campaign-kind'),
+              chip(campaign.role || (campaign.apps || []).join(' → '), 'member-role'),
               chip(campaign.status, 'campaign-status k-' + campaign.status),
               el('span', 'campaign-count',
                  `${campaign.finished}/${campaign.total} modules · ${campaign.findings} findings`));
@@ -630,13 +679,22 @@ function campaignCard(campaign) {
   const list = el('div', 'campaign-steps');
   (campaign.steps || []).forEach((step) => {
     const row = el('div', 'campaign-step s-' + step.status);
-    row.append(el('span', 'campaign-step-name', step.module),
+    // The app is on every step, not just the card: a journey's steps are in different apps,
+    // and a step list that only names modules reads as one app doing three unrelated things.
+    row.append(el('span', 'campaign-step-app', step.role || step.package || ''),
+               el('span', 'campaign-step-name', step.module),
                el('span', 'campaign-step-state', STEP_LABEL[step.status] || step.status));
+    if (step.expect) row.title = 'Must establish: ' + step.expect;
     if (step.findings) {
       row.appendChild(el('span', 'campaign-step-findings', `${step.findings} findings`));
     }
     if (step.note) row.appendChild(el('span', 'campaign-step-note', step.note));
     list.appendChild(row);
+    if (step.reported) {
+      const said = el('div', 'campaign-step-said', step.reported);
+      said.title = 'Handed to the next step verbatim';
+      list.appendChild(said);
+    }
   });
   box.appendChild(list);
 
@@ -785,6 +843,7 @@ async function show(name, arg) {
     else if (name === 'unclustered') await renderUnclustered();
     else if (name === 'retests') await renderRetests();
     else if (name === 'campaigns') await renderCampaigns();
+    else if (name === 'scratchpad') await renderScratchpad();
     else renderOverview();
   } catch (err) {
     canvas.appendChild(el('div', 'canvas-warn', 'Could not load this view: ' + err.message));
@@ -848,6 +907,12 @@ function renderRail() {
     ? `${sweeps} app(s) being tested module by module right now`
     : 'No sweep running';
   renderCampaignStrip(board.campaigns);
+
+  const notePill = document.getElementById('countNotes');
+  notePill.textContent = board.scratchpad || 0;
+  notePill.title = board.scratchpad
+    ? `${board.scratchpad} note(s) the apps have left for each other`
+    : 'Nothing written down';
 
   const retestPill = document.getElementById('countRetests');
   const pending = (board.retests || {}).pending || 0;

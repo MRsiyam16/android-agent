@@ -248,6 +248,16 @@ AGENT_OPEN_MODULE_TABS: bool = os.environ.get(
 # than no tab. Name the browser you actually use.
 AGENT_BROWSER: str = os.environ.get("AGENT_BROWSER", "default").strip()
 
+# A Windows notification when a job stops and needs a person — a locked iPad, a credential
+# nobody gave it, a question only the user can answer.
+#
+# The dashboard shows all of this already, which is enough while the page is open and worth
+# nothing at 2am with the tab closed. Deliberately only for "a human is required": one for
+# every module that finished is one you turn off within a day, and then the one that mattered
+# is off too.
+AGENT_DESKTOP_NOTIFICATIONS: bool = os.environ.get(
+    "AGENT_DESKTOP_NOTIFICATIONS", "true").lower() in ("1", "true", "yes")
+
 # --- Persistent per-app memory (optional) ---------------------------------------------------------
 # Off by default — enable with --memory or USE_MEMORY=true. Purely local (memory/<package>.json);
 # lets a run resume where a previous one left off and avoids re-flagging/re-reviewing screens
