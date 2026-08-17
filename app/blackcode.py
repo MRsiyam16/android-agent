@@ -200,20 +200,26 @@ def remember_project_id(package: str, project_id: int) -> None:
 
 # -- issues -------------------------------------------------------------------------------
 def create_issue(project_id: int, title: str, description: str, severity: str = "medium",
-                 evidence_path: Optional[str] = None) -> dict[str, Any]:
+                 evidence_path: Optional[str] = None,
+                 evidence_paths: Optional[list[str]] = None) -> dict[str, Any]:
     """File one issue in Blackcode. Returns {"number": int, "url": str}.
 
     `description` goes through `--description-file` rather than `--description`: the guide is
     explicit that a literal string is not a safe way to send multi-line content ("the only way
     to be sure you send real newlines"), and a finding's expected/actual/steps text is exactly
-    that. The evidence screenshot, when there is one, is passed as `--file` so it embeds
-    inline in the issue body — Blackcode previews images there rather than just attaching them.
+    that. Screenshots are passed as `--file` so they embed inline in the issue body — Blackcode
+    previews images there rather than just attaching them.
+
+    `--file` is repeatable, and for a cross-app cluster it has to be: one image proves one
+    app's symptom, and the claim being made is that four apps show the same fault. Sending only
+    the first member's screenshot published the evidence for a fifth of the argument. Both
+    parameters exist because `evidence_path` is the older single-image call site.
     """
     priority = _PRIORITY_BY_SEVERITY.get((severity or "medium").lower(), 3)
     args = ["issues", "issue", "create",
             "--project", str(project_id), "--title", title, "--priority", str(priority)]
-    if evidence_path and Path(evidence_path).is_file():
-        args += ["--file", str(evidence_path)]
+    for path in _usable_files([evidence_path, *(evidence_paths or [])]):
+        args += ["--file", path]
 
     fh = tempfile.NamedTemporaryFile(
         "w", suffix=".md", delete=False, encoding="utf-8", newline="\n")
@@ -231,6 +237,53 @@ def create_issue(project_id: int, title: str, description: str, severity: str = 
     number = created.get("id")
     if number is None:
         raise BlackcodeError(f"bk did not return an issue number: {created!r}")
+    return {"number": int(number), "url": _issue_url(number)}
+
+
+def _usable_files(paths: list[Optional[str]]) -> list[str]:
+    """The ones that exist, deduplicated, in the order given.
+
+    Deduplicated because several findings in a cluster can legitimately point at the same
+    screenshot — one capture that shows two symptoms — and uploading it four times makes the
+    issue look like four pieces of evidence when it is one.
+    """
+    out: list[str] = []
+    for path in paths:
+        if not path:
+            continue
+        text = str(path)
+        if text in out or not Path(text).is_file():
+            continue
+        out.append(text)
+    return out
+
+
+def comment_issue(number: int, body: str,
+                  file_paths: Optional[list[str]] = None) -> dict[str, Any]:
+    """Add a comment to an existing issue, with any number of images embedded in it.
+
+    The way evidence reaches an issue that has already been filed — and the reason this exists
+    rather than `issue attach`: `attach` puts a file in the attachments list, where nobody
+    looks and nothing says which device it came from. A comment previews the images inline and
+    can caption each one, which is what makes a set of screenshots an argument rather than a
+    pile of files.
+    """
+    args = ["issues", "issue", "comment", str(int(number))]
+    for path in _usable_files(list(file_paths or [])):
+        args += ["--file", path]
+
+    fh = tempfile.NamedTemporaryFile(
+        "w", suffix=".md", delete=False, encoding="utf-8", newline="\n")
+    try:
+        fh.write(body)
+        fh.close()
+        args += ["--body-file", fh.name]
+        _run(args)
+    finally:
+        try:
+            Path(fh.name).unlink(missing_ok=True)
+        except OSError:
+            pass
     return {"number": int(number), "url": _issue_url(number)}
 
 

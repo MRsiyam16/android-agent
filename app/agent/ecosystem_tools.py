@@ -49,6 +49,7 @@ across the whole product) and read-only `search_issues`.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Optional
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -680,14 +681,16 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         if project_id is None:
             return _err(how)
 
-        # The first member's screenshot goes inline. One image, not all of them: the ticket
-        # names every report, and whoever opens it can follow each back here.
-        evidence = next((f.get("evidence") for _, f in full if f.get("evidence")), None)
+        # Every member's screenshot, not just the first. The claim a cluster makes is that
+        # several apps show one fault — and publishing one image proved a fifth of that
+        # argument while the body asserted all of it. `--file` is repeatable; there was never
+        # a reason to send one.
+        evidence = [str(f.get("evidence")) for _, f in full if f.get("evidence")]
         try:
             result = await asyncio.to_thread(
                 blackcode.create_issue, project_id, cluster.get("title") or cluster_id,
                 _cluster_description(name, cluster, full),
-                _worst_severity([f for _, f in full]), evidence)
+                _worst_severity([f for _, f in full]), None, evidence)
         except blackcode.BlackcodeError as exc:
             return _err(f"Could not file the issue: {exc}")
 
@@ -710,6 +713,90 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
             out += (f"\n!! The issue WAS created, but these findings could not be marked as "
                     f"tracked and will still look unfiled: {'; '.join(failed)}")
         return _ok(out)
+
+    @tool("attach_evidence",
+          "Add a cluster's screenshots to a Blackcode issue that already exists, as one "
+          "commented set — each image captioned with the app, platform and module it came "
+          "from. This is how a cross-app claim gets shown rather than asserted: the issue body "
+          "says four apps behave the same way, and four screenshots from four devices are what "
+          "makes that checkable by someone who was not there. Use it after file_cluster or "
+          "link_cluster, and whenever a later run adds a report to an already-filed defect.",
+          {"type": "object",
+           "properties": {
+               "id": {"type": "string", "description": "Cluster id"},
+               "issue": {"type": "integer",
+                         "description": "Issue number. Defaults to the one already stamped on "
+                                        "the cluster's findings."},
+               "note": {"type": "string",
+                        "description": "A line introducing the set, if it needs one"},
+           },
+           "required": ["id"], "additionalProperties": False})
+    async def attach_evidence(args: dict[str, Any]) -> dict[str, Any]:
+        import blackcode
+
+        missing = _blackcode_missing()
+        if missing:
+            return _err(missing)
+
+        cluster_id = str(args.get("id") or "").strip()
+        cluster = await asyncio.to_thread(clusters_mod.get, name, cluster_id)
+        if cluster is None:
+            return _err(f"No cluster {cluster_id!r} in {name!r}. Use list_clusters.")
+
+        full = await asyncio.to_thread(_members_with_findings, cluster)
+        if not full:
+            return _err(f"None of {cluster_id!r}'s findings could be read back — nothing to "
+                        f"attach.")
+
+        number = args.get("issue")
+        if number is None:
+            # Taken from the findings rather than asked for: the cluster was filed or linked
+            # already, so the number is on disk, and making the agent retype it is one more
+            # place for it to reach the wrong issue. From the *finding* — a cluster member
+            # carries `issue_url` but not the number.
+            number = next((f.get("issue_id") for _, f in full if f.get("issue_id")), None)
+        if number is None:
+            return _err(f"{cluster_id!r} is not tracked yet, so there is no issue to attach to. "
+                        f"File it with file_cluster, or link it with link_cluster first.")
+
+        # Which platform each report came from is the whole point of the set — "four apps" is
+        # only meaningful if the reader can see it was four *kinds* of app. Members do not
+        # carry it, so it comes from the ecosystem's own listing.
+        platforms = {m["package"]: m.get("platform", "") for m in ecosystem_mod.members(name)}
+
+        shots, described, missing_shots = [], [], []
+        for member, finding in full:
+            platform = platforms.get(member["package"]) or "unknown platform"
+            label = (f"{member['role']} ({platform}) — "
+                     f"{member.get('module_title') or member['module']} / {member['finding']}")
+            if finding.get("evidence") and Path(str(finding["evidence"])).is_file():
+                shots.append(str(finding["evidence"]))
+                described.append(f"**{label}** — {finding.get('title', '')}")
+            else:
+                missing_shots.append(label)
+
+        if not shots:
+            return _err(f"None of {cluster_id!r}'s findings has a screenshot on disk, so there "
+                        f"is nothing to attach. Those that are missing one: "
+                        + "; ".join(missing_shots))
+
+        body = [str(args.get("note") or
+                    f"Evidence for this defect, one screenshot per app that reproduced it — "
+                    f"the spread is the argument that these are one fault and not several."),
+                ""]
+        body += [f"{i}. {line}" for i, line in enumerate(described, start=1)]
+        if missing_shots:
+            body += ["", "No screenshot on file for: " + "; ".join(missing_shots) + "."]
+
+        try:
+            result = await asyncio.to_thread(
+                blackcode.comment_issue, int(number), "\n".join(body), shots)
+        except blackcode.BlackcodeError as exc:
+            return _err(f"Could not attach the evidence: {exc}")
+        return _ok(f"Attached {len(shots)} screenshot(s) to issue #{number} as one commented "
+                   f"set: {result['url']}"
+                   + (f"\n{len(missing_shots)} member(s) had no screenshot on disk: "
+                      + "; ".join(missing_shots) if missing_shots else ""))
 
     @tool("link_cluster",
           "Attach an existing Blackcode issue to every finding in a cluster — for when the "
@@ -1721,7 +1808,8 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         tools=[list_apps, read_app, read_finding, unclustered_defects,
                list_clusters, read_cluster, save_cluster, delete_cluster,
                ecosystem_report, create_module, update_module,
-               search_issues, file_cluster, link_cluster, sync_issue_status,
+               search_issues, file_cluster, attach_evidence, link_cluster,
+               sync_issue_status,
                run_module, queue_retest, list_retests,
                list_devices, pin_device, start_app, running_now, stop_module,
                test_app, run_journey, campaign_status, control_campaign,
@@ -1748,6 +1836,7 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__update_module",
     "mcp__ecosystem__search_issues",
     "mcp__ecosystem__file_cluster",
+    "mcp__ecosystem__attach_evidence",
     "mcp__ecosystem__link_cluster",
     "mcp__ecosystem__sync_issue_status",
     "mcp__ecosystem__run_module",

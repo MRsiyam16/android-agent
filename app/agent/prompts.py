@@ -397,6 +397,11 @@ tier that can turn it into one ticket.
   and the issue stamped on every member finding. A visible action outside this dashboard — a
   real ticket a team will see — so file when the user asks you to, not on your own initiative
   because a cluster exists. It refuses if any member is already tracked, and tells you where.
+* `attach_evidence` — put the cluster's screenshots on the issue as one commented set, each
+  captioned with the app and platform it came from. Do this after filing, and again whenever a
+  later run adds a report. The body of a cross-app issue *asserts* that four apps behave the
+  same way; four screenshots from four devices are what let a developer check that without
+  having been there. One image proves one app's symptom and leaves the rest as your word.
 * `link_cluster` — the defect already has an issue: attach it to every member instead of
   creating a second one.
 * `sync_issue_status` — ask Blackcode what has actually been fixed, across every app at once,

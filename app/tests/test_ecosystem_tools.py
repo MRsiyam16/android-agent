@@ -337,11 +337,23 @@ class TestBlackcode:
                             lambda package, pid: seen["remembered"].append((package, pid)))
         monkeypatch.setattr(blackcode, "resolve_project", lambda ref: 99)
 
-        def create_issue(project_id, title, description, severity="medium", evidence_path=None):
+        def create_issue(project_id, title, description, severity="medium",
+                         evidence_path=None, evidence_paths=None):
+            # `evidence` is every member's screenshot now, not the first one's: a cross-app
+            # issue asserts that N apps show one fault, and shipping one image published the
+            # evidence for a fraction of that claim.
             seen["created"].append({"project_id": project_id, "title": title,
                                     "description": description, "severity": severity,
-                                    "evidence": evidence_path})
+                                    "evidence": evidence_path,
+                                    "evidence_paths": list(evidence_paths or [])})
             return {"number": 42, "url": "https://issues.blackcode.ch/i/42"}
+
+        def comment_issue(number, body, file_paths=None):
+            seen.setdefault("comments", []).append(
+                {"number": number, "body": body, "files": list(file_paths or [])})
+            return {"number": number, "url": f"https://issues.blackcode.ch/i/{number}"}
+
+        monkeypatch.setattr(blackcode, "comment_issue", comment_issue)
 
         def issue_status(number):
             seen["status_calls"].append(number)
