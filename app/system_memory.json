@@ -78,6 +78,13 @@
       "last_seen_run": 0,
       "text": "`.chat-input-row button` (0,1,1) beats a bare `.chat-attach-btn` (0,1,0) however far down the file the class sits, so a new button added to an existing styled row silently inherits the row's primary-button look. Scope new rules to the container."
     },
+    "credential-name-is-not-the-field-it-goes-in": {
+      "evidence": "In com.metaestetics.mobile_clientapp's auth module, list_credentials returned one entry named 'mrsiyam1604@gmail.com'. Calling use_credential(name='mrsiyam1604@gmail.com') while the Email field was focused typed 'Mr@009988' (clearly a password, not an email) into the Email field, exposing it in the read_screen dump. The same call worked correctly when the Password field was focused instead.",
+      "first_seen_run": 165,
+      "hits": 1,
+      "last_seen_run": 165,
+      "text": "list_credentials/use_credential names a stored credential after the account's email address, but the credential's stored VALUE can be the password, not the email. Don't assume use_credential(name=<the email string>) belongs in the email field — try it in one field, read_screen to see what actually got typed, and if it produced a password-shaped string (or anything unexpected) in the wrong field, that value is now sitting in plaintext in the dump. Type the email manually as plain text (it's not sensitive) and reserve use_credential for the field the revealed value actually matches."
+    },
     "credential-value-is-note-not-login": {
       "evidence": "tap email field -> use_credential('test-clinic-account') -> field shows \"Signup & Login already made a new clinic\"; tap password field -> use_credential('test-clinic-account') again -> same literal string typed there too. Not a valid email or password in either case.",
       "first_seen_run": 99,
@@ -133,6 +140,13 @@
       "hits": 1,
       "last_seen_run": 0,
       "text": "dashboard.js and dashboard.css are served with a cache-busting query and still get served from cache. After editing either, hard-reload (ctrl+shift+R) before concluding a change did not work."
+    },
+    "heads-up-notification-banner-misreported-as-shade-owner": {
+      "evidence": "Three consecutive read_screen calls after launch on com.metaestetics.mobile_clientapp reported systemui ownership with 52 nodes of notification text; pressing back each time exited the app to the launcher home instead of dismissing anything. A screenshot revealed the app's own Login landing screen was fully rendered underneath the whole time — the warning was spurious.",
+      "first_seen_run": 175,
+      "hits": 1,
+      "last_seen_run": 175,
+      "text": "When read_screen reports the screen owned by com.android.systemui with a long list of notification texts (e.g. many app notification banners) right after launch, this can be caused by a small heads-up notification banner overlay rather than an actual full-screen notification shade blocking the app. Before pressing back (which can pop the app's own activity/exit it instead of dismissing the banner), take a screenshot — the app underneath is very likely already fully rendered and interactive; the dump's text listing is just enumerating notification-tray content that coexists with the banner, not a real blocking overlay."
     },
     "interrupt-does-not-cancel-the-tool-in-flight": {
       "evidence": "Stop appeared to do nothing while the agent kept tapping through a settle wait",
@@ -246,6 +260,13 @@
       "last_seen_run": 144,
       "text": "The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app."
     },
+    "wait-for-text-timeout-capped-below-requested": {
+      "evidence": "Backgrounded com.metaestetics.mobile_clientapp at 6:06pm, made 7 consecutive wait_for_text(timeout=3600, unique impossible text) calls interleaved with read_screen clock checks: 6:06->6:18 (12min), 6:18->6:19 (1min), 6:19->6:19 (0min), 6:19->6:23 (4min), 6:23->6:23 (0min), 6:23->6:23 (0min). Total 17 minutes of real elapsed time across calls that requested 3600s each — no correlation between requested timeout and actual elapsed time.",
+      "first_seen_run": 193,
+      "hits": 2,
+      "last_seen_run": 195,
+      "text": "Confirmed with stronger evidence: wait_for_text(timeout=3600) is NOT a usable sleep primitive for long real-world durations at all. Across 7 consecutive calls with unique never-appearing probe text and timeout=3600, real elapsed wall-clock time (tracked via the status-bar clock in read_screen) was wildly inconsistent and mostly near-zero: one call ~12min, one ~4min, five calls 0min each — total only ~17 minutes across 7 calls that should have taken 7 hours if timeout were honored. There is no reliable way in this toolset to force a genuine deterministic wait of tens of minutes to an hour by looping this call; the number of iterations needed is unbounded and unpredictable. For any test case requiring a real long background/inactivity interval (e.g. a 60-minute session timeout spec), do not attempt to satisfy it by looping wait_for_text — flag it via ask_user as a genuine tooling blocker, and if unanswered (autonomous/unattended run), report the sub-case as explicitly untested/blocked (with whatever partial elapsed time was incidentally observed, clearly caveated) rather than looping indefinitely or fabricating a pass/bug verdict."
+    },
     "wait-until-gone-poisons-record-finding-on-timeout": {
       "evidence": "On the Procedures 'New Procedure' form, after the real loading text 'Creating...' had already cleared and the error toast 'Missing or insufficient permissions.' was showing, I mistakenly called wait_until_gone(text='Strategic botulinum toxin injection to elevate and shape the eyebrows, creating a more open and youthful eye area') — a static auto-filled procedure description, not a loading indicator. It timed out (never disappears). Subsequent record_finding calls were refused with 'The last screen you read still showed [that text]... the request had not finished' even immediately after a fresh read_screen showing the settled error state. Only worked after navigating to a different screen (Cancel back to the Procedures list) where that string was no longer present in the dump.",
       "first_seen_run": 147,
@@ -296,247 +317,247 @@
       "text": "On this project (metaesthetics-staging.web.app, and likely any Firebase-Auth web app), reset_app_data followed by launch() does NOT guarantee a truly logged-out session. The app renders the public login page fine (looks logged out), but Firebase Auth's own persistence (typically IndexedDB) can survive whatever reset_app_data clears (likely just cookies/localStorage), so a background auth-state listener in the app still finds the old session and redirects away from login/signup routes within a second or two of any interaction. If a test needs a genuinely clean, unauthenticated browser state after a broken/cancelled account, reset_app_data + launch() is not sufficient to prove it — read_screen immediately after may show a clean login form that then gets hijacked by a delayed redirect. There is currently no tool available to this harness to clear IndexedDB directly or force a new incognito browser context, so once a broken session like this is created there is no in-session way to recover to a clean state."
     }
   },
-  "run_count": 164,
+  "run_count": 197,
   "runs": [
     {
-      "at": "2026-08-14T15:23:02+00:00",
+      "at": "2026-08-17T10:51:08+00:00",
       "ok": true,
-      "seconds": 6.2,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 2
+      "seconds": 127.0,
+      "taps": 4,
+      "tool": "agent:recon",
+      "turns": 16
     },
     {
-      "at": "2026-08-14T15:23:05+00:00",
+      "at": "2026-08-17T10:51:54+00:00",
       "ok": true,
-      "seconds": 9.3,
+      "seconds": 23.4,
       "taps": 0,
       "tool": "agent:main",
-      "turns": 2
+      "turns": 4
     },
     {
-      "at": "2026-08-14T15:23:27+00:00",
+      "at": "2026-08-17T11:03:05+00:00",
       "ok": true,
-      "seconds": 14.4,
+      "seconds": 667.1,
+      "taps": 49,
+      "tool": "agent:auth-login-password-reset",
+      "turns": 185
+    },
+    {
+      "at": "2026-08-17T11:03:43+00:00",
+      "ok": true,
+      "seconds": 15.8,
       "taps": 0,
-      "tool": "agent:calendar",
+      "tool": "agent:main",
       "turns": 1
     },
     {
-      "at": "2026-08-14T15:45:41+00:00",
+      "at": "2026-08-17T11:04:29+00:00",
+      "ok": true,
+      "seconds": 43.8,
+      "taps": 0,
+      "tool": "agent:auth-invitation-claim-profile",
+      "turns": 5
+    },
+    {
+      "at": "2026-08-17T11:04:55+00:00",
+      "ok": true,
+      "seconds": 3.3,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-17T11:05:42+00:00",
+      "ok": true,
+      "seconds": 44.0,
+      "taps": 0,
+      "tool": "agent:guest-mode-auth-gating",
+      "turns": 4
+    },
+    {
+      "at": "2026-08-17T11:06:19+00:00",
+      "ok": true,
+      "seconds": 14.5,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 2
+    },
+    {
+      "at": "2026-08-17T11:14:04+00:00",
+      "ok": true,
+      "seconds": 460.4,
+      "taps": 11,
+      "tool": "agent:aesthetic-profile-quiz-wishes",
+      "turns": 101
+    },
+    {
+      "at": "2026-08-17T11:14:36+00:00",
       "ok": true,
       "seconds": 9.8,
       "taps": 0,
       "tool": "agent:main",
-      "turns": 4
+      "turns": 1
     },
     {
-      "at": "2026-08-15T05:01:23+00:00",
+      "at": "2026-08-17T11:28:52+00:00",
       "ok": true,
-      "seconds": 79.5,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 9
+      "seconds": 853.4,
+      "taps": 17,
+      "tool": "agent:treatment-catalogue-discovery",
+      "turns": 141
     },
     {
-      "at": "2026-08-15T05:03:27+00:00",
+      "at": "2026-08-17T11:29:43+00:00",
       "ok": true,
-      "seconds": 135.3,
-      "taps": 6,
-      "tool": "agent:practitioners-create-test-doctor",
-      "turns": 18
-    },
-    {
-      "at": "2026-08-15T05:46:00+00:00",
-      "ok": true,
-      "seconds": 111.3,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 8
-    },
-    {
-      "at": "2026-08-15T05:55:28+00:00",
-      "ok": true,
-      "seconds": 34.8,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 4
-    },
-    {
-      "at": "2026-08-15T06:30:45+00:00",
-      "ok": true,
-      "seconds": 2128.8,
-      "taps": 68,
-      "tool": "agent:practitioners-create-test-doctor",
-      "turns": 243
-    },
-    {
-      "at": "2026-08-17T05:48:26+00:00",
-      "ok": true,
-      "seconds": 36.6,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 7
-    },
-    {
-      "at": "2026-08-17T06:07:12+00:00",
-      "ok": true,
-      "seconds": 1130.1,
-      "taps": 36,
-      "tool": "agent:home",
-      "turns": 262
-    },
-    {
-      "at": "2026-08-17T07:11:28+00:00",
-      "ok": true,
-      "seconds": 14.8,
+      "seconds": 27.9,
       "taps": 0,
       "tool": "agent:main",
       "turns": 3
     },
     {
-      "at": "2026-08-17T07:15:12+00:00",
+      "at": "2026-08-17T11:37:02+00:00",
       "ok": true,
-      "seconds": 52.3,
+      "seconds": 436.9,
+      "taps": 15,
+      "tool": "agent:appointments-booking",
+      "turns": 83
+    },
+    {
+      "at": "2026-08-17T11:37:33+00:00",
+      "ok": true,
+      "seconds": 8.5,
       "taps": 0,
       "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-17T11:38:49+00:00",
+      "ok": true,
+      "seconds": 72.3,
+      "taps": 0,
+      "tool": "agent:localisation-language-switching",
       "turns": 6
     },
     {
-      "at": "2026-08-17T07:22:33+00:00",
+      "at": "2026-08-17T11:39:37+00:00",
       "ok": true,
-      "seconds": 443.1,
-      "taps": 17,
-      "tool": "agent:procedures-care-catalog",
-      "turns": 105
-    },
-    {
-      "at": "2026-08-17T07:28:20+00:00",
-      "ok": true,
-      "seconds": 939.0,
-      "taps": 42,
-      "tool": "agent:my-visits-passport",
-      "turns": 239
-    },
-    {
-      "at": "2026-08-17T07:29:24+00:00",
-      "ok": true,
-      "seconds": 18.1,
+      "seconds": 25.2,
       "taps": 0,
       "tool": "agent:main",
-      "turns": 4
+      "turns": 1
     },
     {
-      "at": "2026-08-17T08:56:28+00:00",
+      "at": "2026-08-17T11:41:15+00:00",
       "ok": true,
-      "seconds": 80.6,
+      "seconds": 95.4,
+      "taps": 4,
+      "tool": "agent:profile-personal-medical-information",
+      "turns": 15
+    },
+    {
+      "at": "2026-08-17T11:41:43+00:00",
+      "ok": true,
+      "seconds": 5.8,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-17T11:45:23+00:00",
+      "ok": true,
+      "seconds": 216.5,
+      "taps": 2,
+      "tool": "agent:settings-permissions-biometrics-account",
+      "turns": 19
+    },
+    {
+      "at": "2026-08-17T11:45:59+00:00",
+      "ok": true,
+      "seconds": 13.3,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-17T11:49:11+00:00",
+      "ok": true,
+      "seconds": 188.9,
+      "taps": 1,
+      "tool": "agent:home",
+      "turns": 25
+    },
+    {
+      "at": "2026-08-17T11:49:40+00:00",
+      "ok": true,
+      "seconds": 6.1,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-17T11:54:27+00:00",
+      "ok": true,
+      "seconds": 283.9,
+      "taps": 12,
+      "tool": "agent:search-doctors-clinics-filters",
+      "turns": 41
+    },
+    {
+      "at": "2026-08-17T11:54:53+00:00",
+      "ok": true,
+      "seconds": 3.3,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-08-17T12:03:46+00:00",
+      "ok": true,
+      "seconds": 529.8,
+      "taps": 19,
+      "tool": "agent:my-visits-passport",
+      "turns": 95
+    },
+    {
+      "at": "2026-08-17T12:04:32+00:00",
+      "ok": true,
+      "seconds": 23.3,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 3
+    },
+    {
+      "at": "2026-08-17T12:21:06+00:00",
+      "ok": true,
+      "seconds": 40.4,
       "taps": 0,
       "tool": "agent:main",
       "turns": 5
     },
     {
-      "at": "2026-08-17T08:59:07+00:00",
+      "at": "2026-08-17T12:24:03+00:00",
       "ok": true,
-      "seconds": 98.7,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 7
-    },
-    {
-      "at": "2026-08-17T09:03:50+00:00",
-      "ok": true,
-      "seconds": 26.4,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 3
-    },
-    {
-      "at": "2026-08-17T09:08:37+00:00",
-      "ok": true,
-      "seconds": 25.2,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 6
-    },
-    {
-      "at": "2026-08-17T09:14:58+00:00",
-      "ok": true,
-      "seconds": 16.5,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 3
-    },
-    {
-      "at": "2026-08-17T09:24:39+00:00",
-      "ok": true,
-      "seconds": 583.7,
-      "taps": 18,
-      "tool": "agent:practitioners-create-test-doctor",
-      "turns": 78
-    },
-    {
-      "at": "2026-08-17T09:25:30+00:00",
-      "ok": true,
-      "seconds": 48.6,
+      "seconds": 12.4,
       "taps": 0,
       "tool": "agent:main",
       "turns": 2
     },
     {
-      "at": "2026-08-17T09:28:03+00:00",
+      "at": "2026-08-17T12:29:38+00:00",
       "ok": true,
-      "seconds": 150.8,
-      "taps": 5,
-      "tool": "agent:appointments-booking",
-      "turns": 29
+      "seconds": 1503.5,
+      "taps": 16,
+      "tool": "agent:session-lifetime-token-refresh",
+      "turns": 121
     },
     {
-      "at": "2026-08-17T09:28:38+00:00",
+      "at": "2026-08-17T12:30:06+00:00",
       "ok": true,
-      "seconds": 11.1,
+      "seconds": 6.2,
       "taps": 0,
       "tool": "agent:main",
       "turns": 1
-    },
-    {
-      "at": "2026-08-17T09:38:00+00:00",
-      "ok": true,
-      "seconds": 560.5,
-      "taps": 24,
-      "tool": "agent:doctor-login-first-real-test",
-      "turns": 108
-    },
-    {
-      "at": "2026-08-17T09:39:19+00:00",
-      "ok": true,
-      "seconds": 76.5,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 10
-    },
-    {
-      "at": "2026-08-17T09:51:34+00:00",
-      "ok": true,
-      "seconds": 51.1,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 10
-    },
-    {
-      "at": "2026-08-17T09:52:49+00:00",
-      "ok": true,
-      "seconds": 11.9,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 2
-    },
-    {
-      "at": "2026-08-17T10:00:59+00:00",
-      "ok": true,
-      "seconds": 27.7,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 3
     }
   ],
   "schema": 1,
@@ -588,26 +609,6 @@
     },
     "launch_settle.native": {
       "samples": [
-        1.17,
-        1.16,
-        1.27,
-        1.24,
-        1.16,
-        1.21,
-        1.22,
-        1.21,
-        1.16,
-        1.19,
-        1.12,
-        1.21,
-        1.29,
-        1.26,
-        1.2,
-        1.15,
-        1.19,
-        1.16,
-        1.2,
-        1.18,
         1.2,
         1.16,
         1.21,
@@ -627,7 +628,27 @@
         1.19,
         1.16,
         1.16,
-        1.19
+        1.19,
+        1.22,
+        1.19,
+        1.18,
+        1.38,
+        1.29,
+        1.25,
+        1.31,
+        1.29,
+        1.18,
+        1.21,
+        1.24,
+        1.24,
+        1.23,
+        1.21,
+        1.26,
+        1.25,
+        1.18,
+        1.23,
+        1.3,
+        0.11
       ],
       "unit": "s"
     },
@@ -674,5 +695,5 @@
       "unit": "s"
     }
   },
-  "updated_at": "2026-08-17T10:00:59+00:00"
+  "updated_at": "2026-08-17T12:30:06+00:00"
 }

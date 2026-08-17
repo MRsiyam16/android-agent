@@ -359,6 +359,19 @@ def _issue_description(session: DeviceSession, finding: dict[str, Any]) -> str:
         lines.append("## Steps")
         lines += [f"{i}. {s}" for i, s in enumerate(steps, 1)]
         lines.append("")
+
+    # Which account this happened to. Taken from the finding's own stamp rather than read live,
+    # so a ticket filed today for a finding from last week names the account that was signed in
+    # last week. Falls back to the project's current accounts for findings recorded before the
+    # stamp existed.
+    import accounts
+    import ecosystem as ecosystem_mod
+
+    stamped = finding.get("accounts") or accounts.stamp(session.package)
+    if stamped:
+        role = ecosystem_mod.role_of(session.package) or session.package
+        lines.append(accounts.as_markdown({session.package: stamped}, {session.package: role}))
+
     lines.append(f"---\nFiled automatically by QA Tester AI — module `{session.slug}`, "
                  f"finding `{finding['id']}`.")
     return "\n".join(lines)
@@ -1164,6 +1177,42 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
                 lines.append(f"{finding['id']} (#{number}): {live['status']} (unchanged)")
         return _ok("\n".join(lines))
 
+    @tool("set_test_account",
+          "Record which account you are signed in as — the clinic, the doctor, the patient. "
+          "Call it as soon as you log in, and again whenever you switch or create one. Every "
+          "finding you file from then on is stamped with it automatically, and it goes into "
+          "any issue raised from those findings.\n\n"
+          "This matters more than it looks. Permissions and visibility are per account, so "
+          "\"creating a Procedure fails with insufficient permissions\" is not yet a "
+          "reportable defect — the first question a developer asks is which clinic, and "
+          "without an answer the ticket stalls. Do not put it in the finding text instead: it "
+          "gets written differently every time and is unsearchable.",
+          {"type": "object",
+           "properties": {
+               "role": {"type": "string",
+                        "description": "clinic, doctor, patient or admin"},
+               "email": {"type": "string", "description": "The account's login email"},
+               "label": {"type": "string",
+                         "description": "How a human names it — \"QA Mira Test Clinic — Main "
+                                        "Branch\", \"Dr Handoff Doctor\""},
+               "note": {"type": "string",
+                        "description": "Anything about it worth carrying, e.g. plan tier"},
+           },
+           "required": ["role"], "additionalProperties": False})
+    async def set_test_account(args: dict[str, Any]) -> dict[str, Any]:
+        import accounts
+
+        try:
+            entry = await asyncio.to_thread(
+                accounts.set_account, session.package, str(args.get("role") or ""),
+                email=str(args.get("email") or ""), label=str(args.get("label") or ""),
+                note=str(args.get("note") or ""))
+        except ValueError as exc:
+            return _err(str(exc))
+        who = entry.get("email") or entry.get("label")
+        return _ok(f"Recorded: this project is being tested as {entry['role']} {who}. Every "
+                   f"finding you file from now on carries it.")
+
     # -- the shared scratchpad ---------------------------------------------------------------
     #
     # The only channel out of this module that another app's agent can read. Everything else a
@@ -1397,7 +1446,7 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
              list_credentials, press, scroll, reset_app_data,
              journey_step, record_finding, add_note, link_finding, list_steps,
              list_findings, file_issue, search_issues, check_issue_status, learn_lesson,
-             ask_user, propose_subprojects, check_responsive, note_put, note_get]
+             ask_user, propose_subprojects, check_responsive, note_put, note_get, set_test_account]
     if not can_file_findings:
         tools = [t for t in tools if t.name not in VERDICT_TOOLS]
     if session.resolved_platform != "web":
@@ -1447,7 +1496,7 @@ def _device_tool_names(*, can_file_findings: bool = True, web: bool = False) -> 
              "list_findings", "file_issue", "search_issues", "check_issue_status",
              "learn_lesson", "ask_user", "propose_subprojects",
              # The one channel out of this module another app's agent can read.
-             "note_put", "note_get"]
+             "note_put", "note_get", "set_test_account"]
     if web:
         short = short + ["check_responsive"]
     return [f"mcp__device__{name}" for name in short

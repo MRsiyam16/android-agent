@@ -461,11 +461,27 @@ def add_finding(package: str, slug: str, finding: dict[str, Any]) -> dict[str, A
     how `finding_count` ends up claiming a verdict that `findings.json` does not contain —
     the pill in the top bar would show it and the report would not.
     """
+    # Which clinic / doctor / patient was signed in, copied on here rather than left to the
+    # agent to mention. Permissions and visibility are per account, so "creating a Procedure
+    # fails" is not a reportable defect until someone can say *for whom* — and the evidence
+    # that an agent will not reliably say so unprompted is on disk: of the five findings behind
+    # issue #441, one named its account, in prose, and four named nothing.
+    #
+    # A snapshot, not a lookup. A run creates doctors and switches clinics; resolving this
+    # later would re-attribute an old finding to whoever happens to be signed in now.
+    try:
+        import accounts
+
+        stamped = accounts.stamp(package)
+    except Exception:  # noqa: BLE001 - context is worth having, never worth failing a filing
+        stamped = []
+
     # Held across the whole sequence: the id is derived from the current count, so an
     # interleaved second filing would otherwise hand out F002 twice and drop one of them.
     with _LOCK:
         findings = list_findings(package, slug)
-        record = {"id": f"F{len(findings) + 1:03d}", "ts": _now(), **finding}
+        record = {"id": f"F{len(findings) + 1:03d}", "ts": _now(),
+                  **({"accounts": stamped} if stamped else {}), **finding}
         findings.append(record)
         _write_or_raise(_findings_path(package, slug), findings)
         update_subproject(package, slug, finding_count=len(findings))

@@ -155,6 +155,22 @@ def _cluster_description(name: str, cluster: dict[str, Any],
         if steps:
             lines.append("- **Steps:** " + " → ".join(str(s) for s in steps))
     lines.append("")
+
+    # Every app's accounts, in one table. A cross-app defect is reproduced under a clinic
+    # account *and* a patient account, and which pair it was is the first thing anyone
+    # debugging a permissions fault needs — it was previously in the prose of one member
+    # finding out of five, or in none of them.
+    import accounts as accounts_mod
+
+    by_package, roles = {}, {}
+    for member, finding in full:
+        stamped = finding.get("accounts") or accounts_mod.stamp(member["package"])
+        if stamped:
+            by_package[member["package"]] = stamped
+            roles[member["package"]] = member.get("role") or member["package"]
+    if by_package:
+        lines.append(accounts_mod.as_markdown(by_package, roles))
+
     lines.append(f"---\nFiled automatically by QA Tester AI — ecosystem `{name}`, cluster "
                  f"`{cluster['id']}`.")
     return "\n".join(lines)

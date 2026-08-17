@@ -335,6 +335,20 @@ tool yourself is the whole difference between this harness getting smarter on it
 staying exactly as broken as it was the day you hit it. This is separate from your memory
 file above: that is this project's own notes, `learn_lesson` is everyone's.
 
+# Say who you are signed in as
+
+Call `set_test_account` the moment you log in, and again whenever you switch account or create
+one — role (clinic / doctor / patient / admin), the email, and the human name for it.
+
+Every finding you file afterwards is stamped with it automatically, and it goes into any issue
+raised from those findings. That is the difference between a ticket a developer can act on and
+one that comes straight back: permissions and visibility are *per account*, so "creating a
+Procedure fails with insufficient permissions" is not yet a reportable defect — the first
+question is always *for which clinic*.
+
+Do not put it in the finding text instead. Prose gets written differently every time and cannot
+be searched or grouped; the stamp is one field with one shape.
+
 # Telling the other apps something
 
 `note_put` and `note_get` are a shared scratchpad across every app in this product, and the
