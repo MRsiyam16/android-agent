@@ -1219,6 +1219,164 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                    f"finishes the tool it is in and then ends the turn; whatever it already "
                    f"filed stays filed.")
 
+    # -- testing a whole app --------------------------------------------------------------
+    @tool("test_app",
+          "Test an entire app, module by module, without coming back to the user between "
+          "modules. This is the answer to \"test the clinic web\": it plans the order, starts "
+          "the first module, and something outside this conversation starts the next one when "
+          "each finishes — so it keeps going while you are asleep and while this session is "
+          "idle. You are told what each module filed as it happens, and handed a turn when a "
+          "module fails, when one stops to ask the user something, and when the sweep is done. "
+          "One campaign per app: the app is the target and one target has one driver.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role (e.g. clinic-web) or package"},
+               "modules": {"type": "array", "items": {"type": "string"},
+                           "description": "Module slugs, in the order to run them. Omit to "
+                                          "take every module the app has, manager excluded."},
+               "only_untested": {"type": "boolean",
+                                 "description": "Skip modules already marked tested. Use for "
+                                                "filling coverage gaps rather than re-running "
+                                                "the whole app."},
+               "goal": {"type": "string",
+                        "description": "What this sweep is for, in a line — quoted back to "
+                                       "every module so each knows what it is part of"},
+               "instruction": {"type": "string",
+                               "description": "Anything every module should be told: an "
+                                              "environment, a login, a defect to watch for"},
+           },
+           "required": ["app"], "additionalProperties": False})
+    async def test_app(args: dict[str, Any]) -> dict[str, Any]:
+        import campaigns as campaigns_mod
+        import stacks
+        from backend.campaign_runner import runner
+
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+
+        ready = await asyncio.to_thread(stacks.status, str(member.get("platform") or ""))
+        if not ready["ready"]:
+            return _err(f"{member['role']} cannot be swept — its {ready['platform']} stack is "
+                        f"not up: {ready['detail']}"
+                        + (f" Fix: {ready['fix']}" if ready.get("fix") else "")
+                        + " Nothing was started. Use start_app first.")
+
+        entries = await asyncio.to_thread(store.list_subprojects, member["package"])
+        by_slug = {str(e.get("slug")): e for e in entries
+                   if not store.is_main_slug(str(e.get("slug") or ""))}
+
+        wanted = [str(s).strip() for s in (args.get("modules") or []) if str(s).strip()]
+        if wanted:
+            missing = [s for s in wanted if s not in by_slug]
+            if missing:
+                return _err(f"{member['role']} has no module(s) {', '.join(missing)}. It has: "
+                            f"{', '.join(by_slug) or 'none'}. Nothing was started.")
+            chosen = wanted
+        else:
+            chosen = list(by_slug)
+        if args.get("only_untested"):
+            chosen = [s for s in chosen if by_slug[s].get("status") != "tested"]
+        if not chosen:
+            return _err(f"No modules to run for {member['role']}. Either it has none — create "
+                        f"some with create_module, or run recon — or `only_untested` filtered "
+                        f"them all out because every module is already marked tested.")
+
+        modules = [{"slug": s, "title": str(by_slug[s].get("title") or s),
+                    "scope": str(by_slug[s].get("scope") or "")} for s in chosen]
+        try:
+            campaign = await asyncio.to_thread(
+                campaigns_mod.create, name, member["package"], modules,
+                role=member["role"], goal=str(args.get("goal") or ""),
+                instruction=str(args.get("instruction") or ""))
+        except ValueError as exc:
+            return _err(str(exc))
+
+        # Started outside this turn on purpose: the first module's run must not be something
+        # this tool waits on, or the tool call would hold open for the length of a test.
+        asyncio.create_task(runner.advance(campaign["id"]))
+        return _ok(
+            f"Started a sweep of {member['role']} — {len(modules)} modules, in this order: "
+            f"{', '.join(chosen)}.\n\nIt runs on its own from here. Each module starts when "
+            f"the one before it finishes; you will see a line in this chat as each ends, and "
+            f"you will be given a turn if one fails, if one stops to ask the user something, "
+            f"or when the sweep is done. Do not poll it — there is nothing to do until then. "
+            f"Use campaign_status if the user asks where it is up to.")
+
+    @tool("campaign_status",
+          "Where the sweeps are up to: which module is running now, what each one filed, and "
+          "anything a campaign is waiting on. Read it when the user asks how testing is going "
+          "— not on a loop, since you are told when something changes.",
+          {"type": "object", "properties": {}, "additionalProperties": False})
+    async def campaign_status(_args: dict[str, Any]) -> dict[str, Any]:
+        import campaigns as campaigns_mod
+
+        rows = await asyncio.to_thread(campaigns_mod.list_all, name)
+        if not rows:
+            return _ok("No app has been swept yet. `test_app` starts one.")
+        out = []
+        for campaign in rows[:8]:
+            counts = campaigns_mod.progress(campaign)
+            out.append(f"# {campaign.get('role') or campaign['package']} — {campaign['status']}"
+                       f"  ({counts['finished']}/{counts['total']} modules, "
+                       f"{counts['findings']} findings)")
+            if campaign.get("goal"):
+                out.append(f"  goal: {campaign['goal']}")
+            if campaign.get("blocked"):
+                blocked = campaign["blocked"]
+                out.append(f"  !! waiting: {blocked.get('reason')}"
+                           + (f" — {blocked.get('module')}" if blocked.get("module") else ""))
+                if blocked.get("question"):
+                    out.append(f"     question: {blocked['question']}")
+            for step in campaign["steps"]:
+                mark = {"running": "->", "done": "ok", "failed": "!!",
+                        "skipped": "--", "pending": "  "}.get(step["status"], "  ")
+                out.append(f"  {mark} {step['module']}  [{step['status']}]"
+                           + (f"  {step['findings']} findings" if step.get("findings") else "")
+                           + (f"  ({step['note']})" if step.get("note") else ""))
+        return _ok("\n".join(out))
+
+    @tool("control_campaign",
+          "Change a running sweep: 'resume' after it paused, 'stop' to end it, or 'skip' one "
+          "module you have decided is not worth running now. Stopping does not undo anything "
+          "already filed; the modules that ran, ran.",
+          {"type": "object",
+           "properties": {
+               "app": {"type": "string", "description": "Role or package"},
+               "action": {"type": "string", "enum": ["resume", "stop", "skip"]},
+               "module": {"type": "string",
+                          "description": "Which module to skip. Only for action=skip."},
+           },
+           "required": ["app", "action"], "additionalProperties": False})
+    async def control_campaign(args: dict[str, Any]) -> dict[str, Any]:
+        import campaigns as campaigns_mod
+        from backend.campaign_runner import runner
+
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+        campaign = await asyncio.to_thread(campaigns_mod.active_for, member["package"])
+        if campaign is None:
+            return _err(f"No sweep is live on {member['role']}. `test_app` starts one.")
+
+        action = str(args.get("action") or "")
+        if action == "stop":
+            await asyncio.to_thread(campaigns_mod.set_status, campaign["id"], "stopped")
+            return _ok(f"Stopped the sweep of {member['role']}. Whatever the modules already "
+                       f"filed stays filed; nothing further starts. A module mid-run keeps "
+                       f"going to the end of its own turn — use stop_module to cut that short.")
+        if action == "skip":
+            slug = str(args.get("module") or "").strip()
+            if not slug:
+                return _err("Say which module to skip.")
+            await asyncio.to_thread(campaigns_mod.skip_step, campaign["id"], slug,
+                                    "skipped by the manager")
+            return _ok(f"`{slug}` will be skipped. The sweep carries on with the rest.")
+
+        asyncio.create_task(runner.advance(campaign["id"]))
+        return _ok(f"Resuming the sweep of {member['role']}. The next pending module starts as "
+                   f"soon as its target is free.")
+
     # -- the files ---------------------------------------------------------------------------
     #
     # Named operations over a closed set of roots rather than a shell — see manager_fs's
@@ -1340,6 +1498,7 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                search_issues, file_cluster, link_cluster, sync_issue_status,
                run_module, queue_retest, list_retests,
                list_devices, pin_device, start_app, running_now, stop_module,
+               test_app, campaign_status, control_campaign,
                list_dir, make_dir, move_path, copy_path, trash_path],
     )
 
@@ -1372,6 +1531,9 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__start_app",
     "mcp__ecosystem__running_now",
     "mcp__ecosystem__stop_module",
+    "mcp__ecosystem__test_app",
+    "mcp__ecosystem__campaign_status",
+    "mcp__ecosystem__control_campaign",
     "mcp__ecosystem__list_dir",
     "mcp__ecosystem__make_dir",
     "mcp__ecosystem__move_path",

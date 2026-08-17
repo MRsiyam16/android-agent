@@ -577,6 +577,125 @@ async function renderRetests() {
   });
 }
 
+// -- sweeps ---------------------------------------------------------------------------
+//
+// A campaign runs for hours, module by module, entirely between the manager's turns. This is
+// where you find out what it is doing without asking it — every step, in order, with the one
+// that is running now marked and the reason for any pause spelled out rather than implied.
+
+const STEP_LABEL = {
+  running: 'running now', done: 'done', failed: 'failed',
+  skipped: 'skipped', pending: 'waiting',
+};
+
+async function renderCampaigns() {
+  canvasTitle.textContent = 'Sweeps';
+  canvasSub.textContent = 'A whole app tested module by module. Each module starts when the '
+    + 'one before it finishes — nobody has to say "next". The manager is handed a turn only '
+    + 'when a module fails, when one stops to ask you something, or when the sweep is done.';
+
+  const rows = await api(ecoUrl('/campaigns'));
+  if (!rows.length) {
+    canvas.appendChild(empty('No app has been swept yet. Ask the manager to "test the clinic '
+                             + 'web" and it will run every module in order.'));
+    return;
+  }
+  rows.forEach((campaign) => canvas.appendChild(campaignCard(campaign)));
+}
+
+function campaignCard(campaign) {
+  const box = el('div', 'campaign' + (campaign.status === 'running' ? ' live' : ''));
+
+  const head = el('div', 'campaign-head');
+  head.append(chip(campaign.role || campaign.package, 'member-role'),
+              chip(campaign.status, 'campaign-status k-' + campaign.status),
+              el('span', 'campaign-count',
+                 `${campaign.finished}/${campaign.total} modules · ${campaign.findings} findings`));
+  box.appendChild(head);
+  if (campaign.goal) box.appendChild(el('div', 'campaign-goal', campaign.goal));
+
+  // The pause reason, loud. A sweep that stopped for something only the user can clear is the
+  // one state where saying nothing costs hours.
+  if (campaign.blocked) {
+    const warn = el('div', 'campaign-blocked');
+    warn.appendChild(el('div', 'campaign-blocked-why',
+                        `Paused — ${campaign.blocked.reason || 'needs a decision'}`
+                        + (campaign.blocked.module ? ` at ${campaign.blocked.module}` : '')));
+    if (campaign.blocked.question) {
+      warn.appendChild(el('div', 'campaign-blocked-q', campaign.blocked.question));
+    }
+    box.appendChild(warn);
+  }
+
+  const list = el('div', 'campaign-steps');
+  (campaign.steps || []).forEach((step) => {
+    const row = el('div', 'campaign-step s-' + step.status);
+    row.append(el('span', 'campaign-step-name', step.module),
+               el('span', 'campaign-step-state', STEP_LABEL[step.status] || step.status));
+    if (step.findings) {
+      row.appendChild(el('span', 'campaign-step-findings', `${step.findings} findings`));
+    }
+    if (step.note) row.appendChild(el('span', 'campaign-step-note', step.note));
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+
+  if (campaign.status === 'running' || campaign.status === 'paused') {
+    const actions = el('div', 'campaign-actions');
+    if (campaign.status === 'paused') {
+      const resume = el('button', 'chip-btn', '▶ Resume');
+      resume.addEventListener('click', () => campaignAction(campaign, 'resume', resume));
+      actions.appendChild(resume);
+    }
+    const stop = el('button', 'chip-btn danger', '■ Stop sweep');
+    stop.addEventListener('click', () => campaignAction(campaign, 'stop', stop));
+    actions.appendChild(stop);
+    box.appendChild(actions);
+  }
+  return box;
+}
+
+async function campaignAction(campaign, action, button) {
+  button.disabled = true;
+  try {
+    await api(ecoUrl(`/campaigns/${encodeURIComponent(campaign.id)}/${action}`),
+              { method: 'POST' });
+    await refresh();
+  } catch (err) {
+    button.disabled = false;
+    button.title = err.message;
+  }
+}
+
+/** The topbar strip. Driven by the board payload and by live `agent_campaign` events, so it
+ *  moves as a sweep moves rather than at the refresh debounce. */
+function renderCampaignStrip(summary) {
+  const strip = document.getElementById('campaignStrip');
+  const text = document.getElementById('campaignText');
+  const bar = document.getElementById('campaignBar');
+  if (!strip) return;
+
+  const live = (summary && summary.campaigns) || [];
+  if (!live.length) {
+    strip.hidden = true;
+    return;
+  }
+  const first = live[0];
+  const blocked = Boolean(first.blocked) || first.status === 'paused';
+  strip.hidden = false;
+  strip.classList.toggle('paused', blocked);
+  text.textContent = live.length > 1
+    ? `${live.length} sweeps running · ${first.role} ${first.finished}/${first.total}`
+    : `${first.role} · ${first.finished}/${first.total}`
+      + (first.current ? ` · ${first.current}` : '')
+      + (blocked ? ' · needs you' : '');
+  const pct = first.total ? Math.round((first.finished / first.total) * 100) : 0;
+  bar.style.width = `${pct}%`;
+  strip.title = blocked
+    ? `Paused: ${(first.blocked || {}).reason || 'needs a decision'}`
+    : `Testing ${first.role} — ${first.current || 'starting'}`;
+}
+
 function retestRow(entry) {
   const box = el('div', 'retest' + (entry.status === 'pending' ? ' pending' : ''));
 
@@ -665,6 +784,7 @@ async function show(name, arg) {
     else if (name === 'clusters') await renderClusters();
     else if (name === 'unclustered') await renderUnclustered();
     else if (name === 'retests') await renderRetests();
+    else if (name === 'campaigns') await renderCampaigns();
     else renderOverview();
   } catch (err) {
     canvas.appendChild(el('div', 'canvas-warn', 'Could not load this view: ' + err.message));
@@ -720,6 +840,15 @@ function renderRail() {
 
   // The pending count, not the total: the queue is a thing to act on, and a badge that keeps
   // climbing as you approve things is one you stop reading.
+  const sweepPill = document.getElementById('countCampaigns');
+  const sweeps = (board.campaigns || {}).live || 0;
+  sweepPill.textContent = sweeps;
+  sweepPill.classList.toggle('nav-count-live', sweeps > 0);
+  sweepPill.title = sweeps
+    ? `${sweeps} app(s) being tested module by module right now`
+    : 'No sweep running';
+  renderCampaignStrip(board.campaigns);
+
   const retestPill = document.getElementById('countRetests');
   const pending = (board.retests || {}).pending || 0;
   retestPill.textContent = pending;
@@ -778,6 +907,9 @@ function initBoard() {
     item.addEventListener('click', () => show(item.dataset.view));
   });
   document.getElementById('refreshBtn').addEventListener('click', refresh);
+  // The strip is the only thing on screen while a sweep runs, so it has to be the way in.
+  document.getElementById('campaignStrip').addEventListener('click', () => show('campaigns'));
 }
 
-export { initBoard, isOurs, refresh, renderRail, scheduleRefresh, show };
+export { initBoard, isOurs, refresh, renderCampaignStrip, renderRail,
+         scheduleRefresh, show };

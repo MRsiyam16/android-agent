@@ -334,3 +334,85 @@
    is the one that must never be the thing pushed off the edge. */
 .agent-head-right .agent-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-head-right .chip-btn { flex-shrink: 0; }
+
+/* ---------------- SWEEPS ---------------- */
+/*
+   A campaign runs for hours across a dozen modules, entirely between the manager's turns.
+   Two surfaces: a strip in the topbar that answers "is anything happening right now?" from
+   anywhere on the page, and a view that answers "what exactly".
+
+   The strip is hidden when nothing runs. An always-present "0 running" is a thing you learn
+   to ignore, and then it is ignored on the day it matters.
+*/
+.campaign-strip {
+  display: flex; align-items: center; gap: 9px;
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill); padding: 4px 12px 4px 10px;
+  color: var(--ink-muted); font-family: var(--font-body); font-size: 11.5px;
+  cursor: pointer; max-width: 340px;
+}
+.campaign-strip:hover { color: var(--ink); border-color: var(--ink-faint); }
+.campaign-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.campaign-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--success);
+  flex-shrink: 0; animation: campaign-pulse 1.8s ease-in-out infinite;
+}
+/* Paused is not running. Same strip, no pulse, warning colour — a blinking dot on a sweep
+   that stopped hours ago is the worst of both: it reads as progress and is not. */
+.campaign-strip.paused .campaign-dot { background: var(--accent-orange); animation: none; }
+.campaign-strip.paused { border-color: var(--accent-orange); color: var(--ink); }
+@keyframes campaign-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .campaign-dot { animation: none; }
+}
+.campaign-bar {
+  width: 54px; height: 4px; border-radius: 2px; background: var(--surface-3);
+  overflow: hidden; flex-shrink: 0;
+}
+.campaign-bar > i { display: block; height: 100%; background: var(--success); width: 0; }
+.campaign-strip.paused .campaign-bar > i { background: var(--accent-orange); }
+
+.nav-count-live {
+  background: var(--success); color: var(--canvas); font-weight: 600;
+}
+
+.campaign {
+  border: 1px solid var(--hairline); border-radius: var(--radius-md);
+  background: var(--surface-1); padding: 14px 16px; margin-bottom: 12px;
+}
+.campaign.live { border-color: var(--success); }
+.campaign-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.campaign-status { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.k-running { color: var(--success); }
+.k-paused { color: var(--accent-orange); }
+.k-done { color: var(--ink-muted); }
+.k-stopped { color: var(--ink-faint); }
+.campaign-count { color: var(--ink-muted); font-size: 11.5px; margin-left: auto;
+                  font-variant-numeric: tabular-nums; }
+.campaign-goal { color: var(--ink-muted); font-size: 12px; margin-top: 6px; }
+
+.campaign-blocked {
+  margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: var(--surface-2); border-left: 3px solid var(--accent-orange);
+}
+.campaign-blocked-why { font-size: 12px; color: var(--ink); }
+.campaign-blocked-q { font-size: 12px; color: var(--ink-muted); margin-top: 5px; }
+
+.campaign-steps { margin-top: 11px; display: flex; flex-direction: column; gap: 2px; }
+.campaign-step {
+  display: flex; align-items: baseline; gap: 10px; padding: 4px 8px;
+  border-radius: 6px; font-size: 12px; color: var(--ink-muted);
+}
+.campaign-step-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); }
+.campaign-step-state { font-size: 11px; }
+.campaign-step-findings { margin-left: auto; font-variant-numeric: tabular-nums; }
+.campaign-step-note { font-size: 11px; color: var(--ink-faint); }
+.campaign-step.s-running { background: var(--surface-2); color: var(--ink); }
+.campaign-step.s-running .campaign-step-state { color: var(--success); }
+.campaign-step.s-failed .campaign-step-state { color: var(--danger); }
+.campaign-step.s-skipped { opacity: 0.55; }
+.campaign-step.s-pending { opacity: 0.7; }
+.campaign-step.s-done .campaign-step-state { color: var(--ink-faint); }
+
+.campaign-actions { margin-top: 12px; display: flex; gap: 8px; }
+.campaign-actions .chip-btn.danger { color: var(--danger); }

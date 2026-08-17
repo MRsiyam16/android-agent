@@ -30,6 +30,24 @@ logger = logging.getLogger("server.agent_bridge")
 
 async def _emit(event: dict[str, Any]) -> None:
     await manager.broadcast(event)
+    # Every event from every session passes here already, stamped with its package and slug —
+    # which makes it the one place that can tell a campaign its step just ended. The
+    # alternative was a callback threaded down into `AgentSession`, where the runtime would
+    # have to know what a campaign is; it does not, and should not.
+    #
+    # Guarded because this is the hot path for the whole dashboard: a campaign that throws
+    # must not stop a screenshot reaching the browser.
+    try:
+        from .campaign_runner import runner
+
+        await runner.notice(event)
+    except Exception:  # noqa: BLE001
+        logger.exception("campaign runner failed on %s", event.get("type"))
+
+
+async def emit(event: dict[str, Any]) -> None:
+    """Broadcast an event that did not come from a session — the campaign runner's own."""
+    await manager.broadcast(event)
 
 
 sessions = agent_runtime.SessionRegistry(_emit)

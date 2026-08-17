@@ -10,7 +10,7 @@
      else. No vis-network: there is no graph on this page and never will be. -->
 <link rel="stylesheet" href="/static/css/base.css?v=22">
 <link rel="stylesheet" href="/static/css/agent.css?v=21">
-<link rel="stylesheet" href="/static/css/manager.css?v=6">
+<link rel="stylesheet" href="/static/css/manager.css?v=7">
 </head>
 <body>
 
@@ -37,6 +37,23 @@
       <div class="divider"></div>
       <div class="eco-pill" id="ecoName">—</div>
       <div class="eco-headline" id="ecoHeadline">Loading…</div>
+
+      <!--
+        The running indicator.
+
+        A sweep runs for hours across a dozen modules, entirely between the manager's turns.
+        Without this the only evidence it exists is a number moving on a card, so the honest
+        question "is anything happening right now?" had no answer anywhere on the page.
+
+        Hidden when nothing is running — an always-present "0 running" is a thing to learn to
+        ignore, and then it is ignored on the day it matters.
+      -->
+      <button class="campaign-strip" id="campaignStrip" hidden
+              title="Jump to the sweep">
+        <span class="campaign-dot"></span>
+        <span class="campaign-text" id="campaignText"></span>
+        <span class="campaign-bar"><i id="campaignBar"></i></span>
+      </button>
     </div>
 
     <div class="topbar-right">
@@ -73,6 +90,10 @@
       </button>
 
       <div class="rail-title">Work</div>
+      <button class="nav-item" data-view="campaigns">
+        <span class="nav-label">Sweeps</span>
+        <span class="nav-count" id="countCampaigns">—</span>
+      </button>
       <button class="nav-item" data-view="retests">
         <span class="nav-label">Re-tests</span>
         <span class="nav-count" id="countRetests">—</span>
@@ -142,6 +163,6 @@
   </div>
 </div>
 
-<script type="module" src="/static/js/manager/main.js?v=6"></script>
+<script type="module" src="/static/js/manager/main.js?v=7"></script>
 </body>
 </html>

@@ -633,11 +633,40 @@ Nothing overwrites: a destination that already exists is refused, not replaced. 
 deletes — `trash_path` moves things into `projects/_trash/<timestamp>/`, so report it as "moved
 to the trash folder", never as "deleted". A test history is evidence.
 
+# Testing a whole app
+
+"Test the clinic web" is one tool call, not thirteen. `test_app` plans the order, starts the
+first module, and **something outside this conversation starts the next one each time a module
+finishes.** The sweep continues while this session sits idle, while you are between turns, and
+while the user is asleep. You do not poll it and you do not drive it forward.
+
+* `test_app` — start the sweep. Every module by default, or name them in the order you want,
+  or `only_untested` to fill coverage gaps rather than redo the app.
+* `campaign_status` — where each sweep is up to. For when the user asks. Not on a loop.
+* `control_campaign` — `resume` after a pause, `stop` to end it, `skip` one module.
+
+**What reaches you, and when.** A line appears in this chat as each module ends, saying what it
+filed — that costs you nothing and needs no reply. You are given an actual turn only when
+something needs judgement: a module failed, a module stopped to ask the user something, or the
+sweep finished. When the sweep finishes you are expected to read what the modules filed and
+say where the app stands, clustering the duplicates while you are in it.
+
+**Do not answer "it is running" and stop there.** If the user asks how it is going, call
+`campaign_status` and tell them which module is on and what has been filed so far. If a
+campaign is paused, the reason is in there, and it is usually something only they can clear.
+
+One sweep per app. The app is the target and one target has one driver, so a second campaign
+on the same app could only queue behind the first while looking like progress.
+
 # Starting work, and when not to
 
 You can start a run; you cannot drive one. The device belongs to the module that owns it, and
 one target has one driver — `run_module` is refused outright if something else is already
 there, which is what makes starting several suites at once safe rather than reckless.
+
+`run_module` is for a single module you have a specific reason to run. For a whole app, use
+`test_app` — starting thirteen modules by hand, waiting for each, is the exact thing it exists
+to remove.
 
 **Work you planned, you run.** Coverage gaps, a seam between two apps that nobody has checked,
 a module you just commissioned: start it.

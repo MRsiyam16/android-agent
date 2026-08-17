@@ -5,7 +5,8 @@
 // one is a line, so ordinary imports work and this file is short.
 
 import { eco, loadBoard } from './api.js';
-import { initBoard, isOurs, renderRail, scheduleRefresh, show } from './board.js';
+import { initBoard, isOurs, renderCampaignStrip, renderRail, scheduleRefresh,
+         show } from './board.js';
 import { append, attachConv, handleAgentEvent, initConv } from './conv.js';
 
 // Events that change what this board shows. A tester driving a phone in another project emits
@@ -22,7 +23,22 @@ const BOARD_EVENTS = new Set([
   'agent_subprojects_proposed',    // recon proposed modules — coverage denominators move
   'agent_subproject_updated',      // a module was approved or marked tested
   'agent_done',                    // end of a run: last chance to catch anything missed
+  'agent_campaign',                // a sweep advanced a step, paused, or finished
 ]);
+
+/** Live campaign progress, straight onto the topbar strip.
+ *
+ *  Not routed through `scheduleRefresh`: that debounces 1.5s and re-reads five projects'
+ *  findings, which is right for a defect count and absurd for a progress bar. The event
+ *  already carries the counts, so the indicator moves the instant a module starts.
+ */
+function handleCampaignEvent(msg) {
+  if (msg.type !== 'agent_campaign') return;
+  const summary = { live: 1, campaigns: [{ ...msg, id: msg.campaign }] };
+  renderCampaignStrip(msg.status === 'done' || msg.status === 'stopped'
+    ? { live: 0, campaigns: [] }
+    : summary);
+}
 
 const conn = document.getElementById('conn');
 const connLabel = document.getElementById('connLabel');
@@ -45,6 +61,7 @@ function connectWs() {
     try { msg = JSON.parse(evt.data); } catch { return; }
     if (!msg.type || !msg.type.startsWith('agent_')) return;
     handleAgentEvent(msg);                       // the conversation: supervisor only
+    handleCampaignEvent(msg);                    // the strip: immediate, not debounced
     if (BOARD_EVENTS.has(msg.type) && isOurs(msg.package)) scheduleRefresh();
   };
 }

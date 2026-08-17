@@ -12,12 +12,14 @@ powers, and only the first is here.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+import campaigns as campaigns_mod
 import clusters as clusters_mod
 import ecosystem as ecosystem_mod
 import retests as retests_mod
@@ -87,7 +89,41 @@ async def get_board(name: str):
         "cross_app": [c for c in rows if c["scope"] == "cross-app"],
         "unclustered": len(unclustered),
         "retests": retests_mod.summary(name),
+        # The running indicator's data. In the board payload rather than its own request so
+        # the page cannot show a sweep against totals read a moment apart from it.
+        "campaigns": campaigns_mod.summary(name),
     }
+
+
+@router.get("/ecosystems/{name}/campaigns")
+async def get_campaigns(name: str, live: bool = False):
+    """Sweeps over this product's apps, newest first. `live=true` for the ones still going."""
+    rows = campaigns_mod.live(name) if live else campaigns_mod.list_all(name)
+    return [{**c, **campaigns_mod.progress(c)} for c in rows]
+
+
+@router.post("/ecosystems/{name}/campaigns/{campaign_id:path}/stop")
+async def stop_campaign(name: str, campaign_id: str):
+    """End a sweep. Nothing already filed is undone, and a module mid-run finishes its turn."""
+    campaign = campaigns_mod.get(campaign_id)
+    if campaign is None or campaign.get("ecosystem") != name:
+        raise HTTPException(status_code=404, detail=f"No campaign {campaign_id!r}")
+    return campaigns_mod.set_status(campaign_id, "stopped")
+
+
+@router.post("/ecosystems/{name}/campaigns/{campaign_id:path}/resume")
+async def resume_campaign(name: str, campaign_id: str):
+    """Pick a paused sweep back up at its next pending module."""
+    from ..campaign_runner import runner
+
+    campaign = campaigns_mod.get(campaign_id)
+    if campaign is None or campaign.get("ecosystem") != name:
+        raise HTTPException(status_code=404, detail=f"No campaign {campaign_id!r}")
+    if campaign["status"] in ("done", "stopped"):
+        raise HTTPException(status_code=409,
+                            detail=f"That sweep is already {campaign['status']}.")
+    asyncio.create_task(runner.advance(campaign_id))
+    return {"ok": True, "id": campaign_id, "resuming": True}
 
 
 @router.get("/ecosystems/{name}/modules")

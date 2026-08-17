@@ -75,6 +75,20 @@ def create_app() -> FastAPI:
     app.include_router(ecosystem_routes.router)
 
     @app.on_event("startup")
+    async def _pause_orphaned_campaigns() -> None:
+        """A sweep's steps run in this process, so a restart leaves none of them running.
+
+        The file would still say `running` and the board would keep reporting a module under
+        test that nothing is testing — which is worse than reporting nothing, because it is
+        the same shape as progress. Paused rather than stopped: the work is still wanted.
+        """
+        import campaigns
+
+        for campaign in campaigns.reset_orphans():
+            logger.info("campaign %s was live when the server stopped — paused at %s",
+                        campaign["id"], (campaign.get("blocked") or {}).get("module"))
+
+    @app.on_event("startup")
     async def _prewarm_agent() -> None:
         """Bring up a Claude Code session for the last-used module in the background.
 
