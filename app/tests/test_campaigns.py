@@ -252,6 +252,60 @@ class TestTheLoop:
         drive([manager_done()])
         assert campaigns.get(campaign["id"])["review_asked"] is True
 
+    def test_a_refused_review_is_offered_again_on_a_clock_not_on_an_event(self, monkeypatch):
+        """The deadlock this replaced, found by running a real journey: a step ended while the
+        manager was mid-sentence, the turn was refused, and the recovery waited for the
+        manager's *next* turn — which never came, because it was idle precisely for want of
+        anything to say. Live job, `reviewing` forever, nothing able to move it.
+        """
+        import backend.campaign_runner as runner_mod
+
+        calls = []
+
+        def busy_once(package, slug, text, **kwargs):
+            calls.append((package, slug))
+            if package == NAME and len(calls) == 1:
+                raise agent_bridge.RunRefused("the manager is already running")
+            return {"package": package, "slug": slug, "target": package, "started": True,
+                    "watching": False, "watch_url": ""}
+
+        monkeypatch.setattr(agent_bridge, "start_run", busy_once)
+        monkeypatch.setattr(runner_mod, "REVIEW_RETRY_SECONDS", 0.01)
+        campaign = sweep()
+        campaigns.start_step(campaign["id"], "booking", WEB)
+
+        async def go():
+            runner = CampaignRunner()
+            await runner.notice(done("booking"))
+            # No further events at all — nothing but the clock may move this.
+            await asyncio.sleep(0.15)
+
+        asyncio.run(go())
+        assert campaigns.get(campaign["id"])["review_asked"] is True
+
+    def test_a_manager_that_never_frees_up_pauses_the_job_visibly(self, monkeypatch):
+        """Giving up has to be a pause on the board, not a silent stall — a job nobody could
+        be told about looks exactly like one still running."""
+        import backend.campaign_runner as runner_mod
+
+        monkeypatch.setattr(agent_bridge, "start_run",
+                            lambda p, s, t, **kw: (_ for _ in ()).throw(
+                                agent_bridge.RunRefused("always busy")))
+        monkeypatch.setattr(runner_mod, "REVIEW_RETRY_SECONDS", 0.001)
+        monkeypatch.setattr(runner_mod, "REVIEW_RETRY_LIMIT", 3)
+        campaign = sweep()
+        campaigns.start_step(campaign["id"], "booking", WEB)
+
+        async def go():
+            runner = CampaignRunner()
+            await runner.notice(done("booking"))
+            await asyncio.sleep(0.1)
+
+        asyncio.run(go())
+        after = campaigns.get(campaign["id"])
+        assert after["status"] == "paused"
+        assert "never became free" in after["blocked"]["reason"]
+
     def test_what_a_step_said_is_carried_into_the_next_steps_brief(self, started):
         """The handoff. Without it the iPad step looks for *an* appointment, finds one, and
         reports a pass it never made."""

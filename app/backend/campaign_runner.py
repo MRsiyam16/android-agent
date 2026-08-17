@@ -49,6 +49,17 @@ TARGET_WAIT_SECONDS = 90.0
 #: Events that end a step, mapped to what they mean for it.
 _ENDINGS = {"agent_done": "done", "agent_error": "failed", "agent_parked": "failed"}
 
+#: How long to wait before offering the manager its review turn again, and how many times.
+#:
+#: A step can end while the manager is still mid-sentence about the previous one, and a turn
+#: offered then is refused. The original recovery waited for the manager's *next* turn to
+#: notice — which assumes it will take one, and it will not: it is idle precisely because
+#: nobody is talking to it. That deadlocked a live journey with `status=reviewing,
+#: review_asked=False` and nothing in the system able to move it. So the retry is on a clock
+#: rather than on an event that may never arrive.
+REVIEW_RETRY_SECONDS = 20.0
+REVIEW_RETRY_LIMIT = 15
+
 
 def _step_brief(campaign: dict[str, Any], step: dict[str, Any], index: int, total: int,
                 previous: Optional[dict[str, Any]]) -> str:
@@ -393,13 +404,44 @@ class CampaignRunner:
 
         reviewing = campaigns.set_status(campaign["id"], "reviewing") or campaign
         await self._broadcast(reviewing)
-        asked = await self._hand_turn(
-            reviewing, _review_brief(reviewing, step, outcome, findings, note))
+        brief = _review_brief(reviewing, step, outcome, findings, note)
+        asked = await self._hand_turn(reviewing, brief)
         campaigns.set_review_asked(campaign["id"], asked)
         if not asked:
-            # The manager was mid-sentence. Left in `reviewing` with the flag down, so the next
-            # time it goes idle this job gets its turn instead of waiting forever for one.
-            logger.info("job %s is waiting for the manager to free up", campaign["id"])
+            # The manager was mid-sentence about the previous step. Retried on a clock rather
+            # than on its next turn ending: it is idle *because* nobody is talking to it, so
+            # waiting for a turn it has no reason to take is waiting forever.
+            logger.info("job %s: manager busy, will offer the review again", campaign["id"])
+            asyncio.create_task(self._retry_review(campaign["id"], brief))
+
+    async def _retry_review(self, campaign_id: str, brief: str) -> None:
+        """Keep offering the manager its review turn until it takes one, then give up loudly.
+
+        Giving up is a pause, not a silent stall: a job that stopped because nobody could be
+        told about it must say so on the board, or it looks exactly like one still running.
+        """
+        for _ in range(REVIEW_RETRY_LIMIT):
+            await asyncio.sleep(REVIEW_RETRY_SECONDS)
+            campaign = campaigns.get(campaign_id)
+            if campaign is None or campaign["status"] != "reviewing":
+                return                      # someone else moved it on
+            if campaign.get("review_asked"):
+                return
+            if await self._hand_turn(campaign, brief):
+                campaigns.set_review_asked(campaign_id, True)
+                return
+
+        campaign = campaigns.get(campaign_id)
+        if campaign is None or campaign["status"] != "reviewing":
+            return
+        paused = campaigns.set_status(campaign_id, "paused", blocked={
+            "reason": "the manager never became free to review the last step",
+            "module": (campaigns.last_finished_step(campaign) or {}).get("module")})
+        await self._broadcast(paused or campaign)
+        await self._raise_with_user(
+            campaign, "A job is waiting on the manager",
+            "The last step finished but the manager has been busy ever since, so nothing has "
+            "read it and the next step has not started. Say 'resume' in the manager chat.")
 
     async def _manager_turn_ended(self, package: str, slug: str, kind: str) -> bool:
         """If this was the manager finishing a turn, move every job that was waiting on it."""

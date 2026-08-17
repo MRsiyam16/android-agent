@@ -7,7 +7,7 @@
 Operational knowledge only — how to *run* the system, never what any app under
 test did. Test findings belong in a report, not here.
 
-Runs recorded: **150** · last updated: 2026-08-17T07:29:24+00:00
+Runs recorded: **154** · last updated: 2026-08-17T09:08:37+00:00
 
 ## Environment
 
@@ -66,13 +66,13 @@ the wrong screen, which downstream becomes a false defect.
 
 ## Recent runs
 
-29/30 of the last runs completed without raising.
+30/30 of the last runs completed without raising.
 
-- `2026-08-17T07:29:24+00:00` agent:main — 18.1s, ok (turns=4 taps=0)
+- `2026-08-17T09:08:37+00:00` agent:main — 25.2s, ok (turns=6 taps=0)
+- `2026-08-17T09:03:50+00:00` agent:main — 26.4s, ok (taps=0 turns=3)
+- `2026-08-17T08:59:07+00:00` agent:main — 98.7s, ok (taps=0 turns=7)
+- `2026-08-17T08:56:28+00:00` agent:main — 80.6s, ok (taps=0 turns=5)
+- `2026-08-17T07:29:24+00:00` agent:main — 18.1s, ok (taps=0 turns=4)
 - `2026-08-17T07:28:20+00:00` agent:my-visits-passport — 939.0s, ok (taps=42 turns=239)
 - `2026-08-17T07:22:33+00:00` agent:procedures-care-catalog — 443.1s, ok (taps=17 turns=105)
 - `2026-08-17T07:15:12+00:00` agent:main — 52.3s, ok (taps=0 turns=6)
-- `2026-08-17T07:11:28+00:00` agent:main — 14.8s, ok (taps=0 turns=3)
-- `2026-08-17T06:07:12+00:00` agent:home — 1130.1s, ok (taps=36 turns=262)
-- `2026-08-17T05:48:26+00:00` agent:main — 36.6s, ok (taps=0 turns=7)
-- `2026-08-15T06:30:45+00:00` agent:practitioners-create-test-doctor — 2128.8s, ok (taps=68 turns=243)

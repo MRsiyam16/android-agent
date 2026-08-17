@@ -461,6 +461,61 @@ class TestWebLaunchTakesAUrl:
         assert not _same_origin("", "example.com")
 
 
+# -- the 32k cliff ------------------------------------------------------------------------------
+class TestSystemPromptIsAFile:
+    """A prompt long enough to break the spawn, and a failure that named the wrong thing.
+
+    Windows caps a whole command line at 32,767 characters. The CLI was spawned with
+    `--system-prompt <the entire prompt>`, and one module's prompt reached 32,852 — eighty-five
+    over. `subprocess` raised `FileNotFoundError [WinError 206] the filename or extension is too
+    long`, the SDK catches FileNotFoundError and reports `CLINotFoundError`, and the operator is
+    told to install a CLI that is present and runs fine from a shell.
+
+    It killed a live cross-app journey twice while the binary, PATH and working directory were
+    all checked by hand. `--system-prompt-file` has no limit, so the prompt goes in a file.
+    """
+
+    def test_the_prompt_is_handed_over_as_a_file_not_an_argument(self, eco, monkeypatch):
+        from agent.runtime import AgentSession
+
+        async def emit(_event):
+            return None
+
+        session = AgentSession(WEB, "search", emit, platform="web")
+        options = session._options()
+        assert isinstance(options.system_prompt, dict), (
+            "the prompt must not be an argv string — that is the 32k cliff")
+        assert options.system_prompt["type"] == "file"
+        assert Path(options.system_prompt["path"]).is_file()
+
+    def test_the_file_holds_the_prompt_the_agent_would_have_been_given(self, eco):
+        from agent import prompts
+        from agent.runtime import AgentSession
+
+        async def emit(_event):
+            return None
+
+        session = AgentSession(WEB, "search", emit, platform="web")
+        written = Path(session._options().system_prompt["path"]).read_text(encoding="utf-8")
+        assert written == prompts.build_system_prompt(WEB, "search", "Search", "",
+                                                      platform="web")
+
+    def test_a_prompt_past_the_windows_limit_still_starts(self, eco, monkeypatch):
+        """The exact shape of the bug: a scope long enough to push the whole thing over."""
+        from agent import store
+        from agent.runtime import AgentSession
+
+        store.update_subproject(WEB, "search", scope="x" * 40_000)
+
+        async def emit(_event):
+            return None
+
+        options = AgentSession(WEB, "search", emit, platform="web")._options()
+        assert isinstance(options.system_prompt, dict)
+        body = Path(options.system_prompt["path"]).read_text(encoding="utf-8")
+        assert len(body) > 32_767, "this test is meaningless if the prompt is under the limit"
+
+
 # -- the prompt ----------------------------------------------------------------------------------
 def test_the_prompt_names_every_tool_and_the_rules_the_tools_enforce(eco):
     """A tool the prompt does not name is one the agent will not reach for; a rule stated only

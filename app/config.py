@@ -71,7 +71,26 @@ IOS_APP_LIST_TTL_SECONDS: float = float(os.environ.get("IOS_APP_LIST_TTL_SECONDS
 # happen live rather than being told about it afterwards. Set WEB_HEADLESS=true for CI-style
 # runs where nobody is watching.
 WEB_HEADLESS: bool = os.environ.get("WEB_HEADLESS", "false").lower() in ("1", "true", "yes")
-WEB_BROWSER_CHANNEL: str = os.environ.get("WEB_BROWSER_CHANNEL", "chromium")
+# Which browser a web run drives. Two different things behind one setting, because they are
+# two different things in Playwright and conflating them silently picked the wrong one:
+#
+#   chromium | firefox | webkit   a browser *type* Playwright ships and installs itself
+#   msedge | chrome | msedge-beta | chrome-beta
+#                                 a *channel* — the real Microsoft Edge or Google Chrome
+#                                 already installed on this machine, driven through Chromium
+#
+# The name said "channel" and the code did `getattr(playwright, value)`, which only ever
+# resolves a type — so `msedge` fell through to the default and a run asked for in Edge
+# quietly happened in Chromium. Both spellings work now.
+#
+# Note what this cannot do: attach to a browser window you already have open. Playwright
+# drives a browser it launched. An existing window would have to have been started with
+# --remote-debugging-port before it opened, which nobody does by accident.
+WEB_BROWSER_CHANNEL: str = os.environ.get("WEB_BROWSER_CHANNEL", "chromium").strip()
+
+#: Values that name an installed browser rather than one of Playwright's own.
+WEB_BROWSER_CHANNELS = ("msedge", "msedge-beta", "msedge-dev", "chrome", "chrome-beta",
+                        "chrome-dev")
 WEB_DEFAULT_VIEWPORT: tuple[int, int] = (
     int(os.environ.get("WEB_VIEWPORT_W", 1280)), int(os.environ.get("WEB_VIEWPORT_H", 800)))
 

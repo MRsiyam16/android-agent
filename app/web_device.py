@@ -423,8 +423,15 @@ class WebDevice:
                 "`playwright install chromium`.") from exc
         try:
             self._pw = sync_playwright().start()
-            channel = config.WEB_BROWSER_CHANNEL
-            browser_type = getattr(self._pw, channel, self._pw.chromium)
+            # A *channel* names a browser already installed on this machine (real Edge, real
+            # Chrome) and is launched through Chromium; a *type* is one Playwright ships. The
+            # old code resolved everything with `getattr`, which only ever finds a type — so
+            # `msedge` fell through to the default and a run asked for in Edge quietly happened
+            # in Chromium, which is the sort of wrong answer nobody checks.
+            wanted = config.WEB_BROWSER_CHANNEL
+            channel = wanted if wanted in config.WEB_BROWSER_CHANNELS else None
+            browser_type = self._pw.chromium if channel else getattr(self._pw, wanted,
+                                                                     self._pw.chromium)
             width, height = config.WEB_DEFAULT_VIEWPORT
             launch_args: list[str] = []
             if not config.WEB_HEADLESS and browser_type is self._pw.chromium:
@@ -437,7 +444,18 @@ class WebDevice:
                 # visibly snap to once the viewport emulation lands. Chromium-only: Firefox
                 # and WebKit take different launch flags entirely.
                 launch_args = [f"--window-size={width},{height + 90}", "--window-position=0,0"]
-            self._browser = browser_type.launch(headless=config.WEB_HEADLESS, args=launch_args)
+            try:
+                self._browser = browser_type.launch(
+                    headless=config.WEB_HEADLESS, args=launch_args,
+                    **({"channel": channel} if channel else {}))
+            except Exception as exc:  # noqa: BLE001 - a missing channel must name itself
+                if not channel:
+                    raise
+                raise DeviceError(
+                    f"Could not launch {channel!r}: {exc}\nThat channel drives the copy of "
+                    f"the browser installed on this machine, so it has to actually be "
+                    f"installed. Set WEB_BROWSER_CHANNEL=chromium in app/.env to go back to "
+                    f"Playwright's own build.") from exc
             self._context = self._browser.new_context(
                 viewport={"width": width, "height": height},
                 device_scale_factor=config.WEB_SCREENSHOT_SCALE)

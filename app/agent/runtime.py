@@ -234,10 +234,36 @@ class AgentSession:
                     f"device tools; use Read/Write only for screenshots, memory and the report.",
             }}
 
+        # Written to a file rather than passed as an argument, and this is not a style
+        # preference — Windows caps a whole command line at 32,767 characters, the CLI is
+        # spawned with `--system-prompt <the entire prompt>`, and this prompt crossed that
+        # line. What made it expensive is how it failed: `subprocess` raises
+        # `FileNotFoundError [WinError 206] The filename or extension is too long`, the SDK
+        # catches FileNotFoundError and reports `CLINotFoundError`, and the user is told to
+        # install a CLI that is sitting right there and runs perfectly from a shell. A live
+        # journey died on it twice while I checked the file existed, checked PATH, checked the
+        # working directory, and ran the binary by hand.
+        #
+        # `--system-prompt-file` has no such limit. The file lives in the module's own working
+        # directory, is rewritten every connect (the prompt is assembled fresh each time and
+        # the briefing inside it changes), and is readable afterwards, which makes "what was
+        # this agent actually told" answerable instead of inferred.
+        prompt_path = workdir / "system-prompt.md"
+        prompt_text = prompts.build_system_prompt(
+            self.package, self.slug, title, scope, platform=self.device.resolved_platform)
+        try:
+            prompt_path.write_text(prompt_text, encoding="utf-8")
+            system_prompt: Any = {"type": "file", "path": str(prompt_path)}
+        except OSError as exc:
+            # A prompt that cannot be written is not a reason to refuse to start; the inline
+            # form still works for everything under the limit, which is most modules.
+            logger.warning("could not write the system prompt for %s/%s (%s) — passing it "
+                           "inline, which fails above ~32k characters on Windows",
+                           self.package, self.slug, exc)
+            system_prompt = prompt_text
+
         options = ClaudeAgentOptions(
-            system_prompt=prompts.build_system_prompt(
-                self.package, self.slug, title, scope,
-                platform=self.device.resolved_platform),
+            system_prompt=system_prompt,
             mcp_servers=mcp_servers,
             allowed_tools=allowed,
             disallowed_tools=BLOCKED_TOOLS,
@@ -281,6 +307,21 @@ class AgentSession:
             client = ClaudeSDKClient(options=self._options())
             await client.connect()
         except CLINotFoundError as exc:
+            # The SDK reports every `FileNotFoundError` from the spawn as "CLI not found",
+            # including Windows' [WinError 206] "the filename or extension is too long" —
+            # which is not about the filename at all, it is the whole command line being over
+            # 32,767 characters. Told "install the CLI", you go and check a binary that is
+            # present and works, and the actual cause is never even suspected. So the two are
+            # told apart here, by looking at whether the file the SDK named is really absent.
+            named = str(exc).rsplit(":", 1)[-1].strip()
+            if named and os.path.isfile(named):
+                raise RuntimeError(
+                    f"The Claude Code CLI is installed and runnable at {named}, so this is "
+                    f"not a missing CLI — the spawn itself failed. On Windows the usual cause "
+                    f"is the command line exceeding 32,767 characters, which the SDK reports "
+                    f"as a missing file. This module's system prompt is passed as a file for "
+                    f"exactly that reason; if it is being passed inline, check the warning "
+                    f"above. ({exc})") from exc
             raise RuntimeError(
                 "The Claude Code CLI was not found. Install it with "
                 "`npm i -g @anthropic-ai/claude-code`, then run `claude` once to sign in "
