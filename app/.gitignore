@@ -67,6 +67,10 @@ server.log
 notes_test.log
 run-*.log
 projects/
+# The second instance's notebook (start_verifier.py sets PROJECTS_DIR=verify-projects). Same
+# reason as `projects/` above: findings, transcripts and screenshots of apps under test have
+# never been in git — and these are about a patch that exists only in a worktree on this PC.
+verify-projects/
 
 # Output from the ad-hoc driver scripts (which are themselves ignored via test_*.py):
 # findings dumps and screenshot folders from one particular run against one particular app.

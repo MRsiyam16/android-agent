@@ -15,6 +15,28 @@ goes on working with no migration. The registry only ever records the exception.
 Paths are stored absolute and resolved on write. A relative path in this file would be read
 back against the server's working directory, which is not the same on a double-clicked .bat as
 it is from a terminal — the project would simply appear empty depending on how it was started.
+
+**Two harnesses, one checkout.** `PROJECTS_DIR` moves the whole notebook — the project folders
+*and* every cross-project file beside them: `registry.json`, `clusters.json`, `campaigns.json`,
+`retests.json`, `verifications.json`, `scratchpad.json`, `accounts.json`, `ECOSYSTEM.md`,
+`last-opened.json`, `_trash/`. That is the point of it being one setting rather than one per
+file.
+
+It exists because a second instance now runs beside the first (`start_verifier.py`, port 8001,
+`PROJECTS_DIR=verify-projects`). The QA Master tests the staging build and files what it finds;
+the Verifier re-runs one case against a *patched* build that is deployed nowhere, on behalf of
+Bugmaster's fix pipeline. Sharing a notebook would mix those two, and the mixture is not merely
+untidy — it is wrong in both directions. A `bug` filed against an unmerged patch would show up
+on the product board as a defect in the shipped app and get filed to Blackcode. A `pass`
+recorded on a patch would read, later, as the staging build having been re-tested. The learned
+memory drifts the same way: "the booking screen is fine now" is a fact about a build that
+exists only in a worktree on this PC.
+
+Absolute values are used as given; a relative one is resolved against `BASE_DIR` (`app/`), so
+`PROJECTS_DIR=verify-projects` means the same folder whether the process was started from a
+terminal, from a .bat that cds itself, or from a service. Read at import, because every path in
+the system hangs off it and a value that could change mid-process would leave half the writes
+in one notebook and half in the other.
 """
 from __future__ import annotations
 
@@ -29,12 +51,25 @@ logger = logging.getLogger("project_paths")
 
 BASE_DIR = Path(__file__).resolve().parent
 
+def _configured_projects_dir() -> Path:
+    """`PROJECTS_DIR` if it is set, else the `projects/` folder beside this file.
+
+    A relative value is resolved against `BASE_DIR` rather than the working directory, for the
+    same reason the registry stores absolute paths: `app/` is a fixed point and the cwd is not.
+    """
+    raw = os.environ.get("PROJECTS_DIR", "").strip().strip('"')
+    if not raw:
+        return BASE_DIR / "projects"
+    chosen = Path(raw).expanduser()
+    return chosen if chosen.is_absolute() else BASE_DIR / chosen
+
+
 #: Where projects live unless one has been pointed elsewhere. Read through the helpers below
 #: rather than captured at import, so a test can repoint it at a tmp directory and have every
 #: path — including the registry's own — follow. A module-level constant baked into
 #: `_REGISTRY_PATH` at import time would leave the registry behind in the real projects folder
 #: while everything else moved, which is worse than not being patchable at all.
-DEFAULT_PROJECTS_DIR = BASE_DIR / "projects"
+DEFAULT_PROJECTS_DIR = _configured_projects_dir()
 
 
 def _registry_path() -> Path:

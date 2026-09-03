@@ -37,6 +37,25 @@ def _discover_adb_path() -> str:
 # --- ADB / device -----------------------------------------------------------
 ADB_PATH: str = _discover_adb_path()
 
+# --- Android emulator -----------------------------------------------------------
+# A headless AVD, for verification runs that do not need the physical phone (see
+# `emulator.py` and docs/VERIFIER.md). Nothing starts it automatically — `stacks.status`
+# names it in its fix hint and `python emulator.py --ensure` runs it.
+#
+# The name is an AVD id as `emulator -list-avds` prints it, not a display name: the default is
+# the stock "Medium Phone" image Android Studio creates. Change it if you made your own.
+ANDROID_AVD_NAME: str = os.environ.get("ANDROID_AVD_NAME", "Medium_Phone_API_36.1")
+
+# Not resolved by search the way ADB_PATH is, because there is nothing to search: the emulator
+# binary is never on PATH on Windows and lives at a fixed place under the SDK. Expanded at use
+# rather than here, so a .env written on another machine still reads.
+EMULATOR_PATH: str = os.environ.get(
+    "EMULATOR_PATH", r"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe")
+
+# Ceiling for a cold AVD boot: process start, adb sees it, `sys.boot_completed` turns 1.
+ANDROID_EMULATOR_BOOT_TIMEOUT_SECONDS: float = float(
+    os.environ.get("ANDROID_EMULATOR_BOOT_TIMEOUT_SECONDS", 180))
+
 # --- iOS / WebDriverAgent -----------------------------------------------------------
 # The iOS adapter talks to WebDriverAgent over HTTP on a forwarded port, and shells out to
 # the pymobiledevice3 CLI for the few things WDA does not cover (device list, installed

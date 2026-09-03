@@ -81,6 +81,20 @@ def _env() -> dict[str, str]:
     return dict(os.environ)
 
 
+def _default_title() -> str:
+    """Which instance this notification came from.
+
+    Two harnesses can be up at once — the QA Master on :8000 and the QA Verifier on :8001 (see
+    `start_verifier.py`) — and their toasts are otherwise identical. A 2am "a job needs a
+    human" that does not say *which* one costs a round trip to find out, which is most of what
+    a notification was for. `QA_NOTIFY_TITLE` is set by the launcher, so an instance nobody
+    configured still reads as plain QA Tester AI.
+    """
+    import os
+
+    return os.environ.get("QA_NOTIFY_TITLE", "").strip() or "QA Tester AI"
+
+
 def send(title: str, body: str) -> None:
     """Show a notification. Returns immediately; never raises."""
     if not config.AGENT_DESKTOP_NOTIFICATIONS:
@@ -89,7 +103,7 @@ def send(title: str, body: str) -> None:
     # Trimmed rather than wrapped: a toast shows two lines and silently truncates the rest, so
     # the useful half has to be at the front.
     text = " ".join(str(body or "").split())[:240]
-    head = " ".join(str(title or "QA Tester AI").split())[:64]
+    head = " ".join(str(title or _default_title()).split())[:64]
 
     def _go() -> None:
         if _run(_TOAST, head, text):

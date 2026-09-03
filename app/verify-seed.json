@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "The metaesthetics-verify ecosystem, as start_verifier.py creates it the first time it",
+    "runs. Data rather than code so the shape of the verifier's fleet can be corrected",
+    "without editing a launcher — and so the three roles here are visibly the same three",
+    "roles Bugmaster's device gate names in a job's `qaRole`.",
+    "",
+    "`from_project` is a folder under app/projects (the QA Master's notebook, which the",
+    "verifier does not otherwise touch). The listed fields are copied out of that project's",
+    "meta.json at seed time, so the verifier tests the same package and platform the real",
+    "suite does rather than a frozen copy that drifts. device_serial is never copied: the",
+    "iOS roles must not inherit the real iPad's pin, and the Android role gets its own.",
+    "",
+    "patient-android is pinned to emulator-5554 on purpose. Most fixes are screen logic and",
+    "the AVD is always there; jobs that need real hardware are marked needsRealDevice by",
+    "Bugmaster and wait for the phone instead. See docs/VERIFIER.md."
+  ],
+  "ecosystem": "metaesthetics-verify",
+  "source_dir": "projects",
+  "members": [
+    {
+      "role": "patient-android",
+      "package": "com.metaestetics.mobile_clientapp",
+      "platform": "android",
+      "device_serial": "emulator-5554",
+      "from_project": "com.metaestetics.mobile_clientapp",
+      "copy": ["blackcode_project_id"]
+    },
+    {
+      "role": "patient-ios",
+      "from_project": "Metaesthetics_iphone_Test",
+      "copy": ["package", "platform", "bundle_id", "bundle", "blackcode_project_id"]
+    },
+    {
+      "role": "doctor-ipad",
+      "from_project": "ipad_Test",
+      "copy": ["package", "platform", "bundle_id", "bundle", "blackcode_project_id"]
+    }
+  ]
+}

@@ -22,6 +22,7 @@ from .routes import ecosystem as ecosystem_routes
 from .routes import pages as page_routes
 from .routes import projects as project_routes
 from .routes import telemetry as telemetry_routes
+from .routes import verifications as verification_routes
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -69,6 +70,11 @@ def create_app() -> FastAPI:
     app.include_router(project_routes.router)
     app.include_router(device_routes.router)
     app.include_router(agent_routes.router)
+    # The bridge another system reads this harness through. Its own router because its
+    # audience is not the dashboard: the shape of these two responses is a contract with
+    # Bugmaster's worker, and burying them among the browser's endpoints would invite the
+    # next person to reshape them for a page.
+    app.include_router(verification_routes.router)
     # Last because it is the only router that reaches across projects: everything it reads is
     # built from what the routers above own. Its one `/projects/...` path takes a literal
     # `/ecosystem` suffix, which no route above can shadow.

@@ -59,6 +59,7 @@ import config
 import ecosystem as ecosystem_mod
 import ecosystem_report as ecosystem_report_mod
 import retests as retests_mod
+import verifications as verifications_mod
 from agent import store
 from agent.store import StoreWriteError
 
@@ -1088,6 +1089,149 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
             + (f"  (#{r['issue_id']})" if r.get("issue_id") else "")
             + f"\n      {r['reason']}" for r in rows))
 
+    def _campaign_for(package: str, slug: str) -> Optional[str]:
+        """The newest job in this product that ran that module, or None. Never raises: a
+        missing campaign id is a field the other side treats as optional, not a failure."""
+        import campaigns as campaigns_mod
+
+        try:
+            for campaign in campaigns_mod.list_all(name):
+                for step in campaign.get("steps", []):
+                    if step.get("package") == package and step.get("module") == slug:
+                        return str(campaign.get("id") or "") or None
+        except Exception:  # noqa: BLE001 - bookkeeping, never worth losing a verdict over
+            pass
+        return None
+
+    # -- answering the fix pipeline ----------------------------------------------------------
+    #
+    # `queue_retest` above is work *this* system wants doing. These two are the opposite
+    # direction: another system (Bugmaster, on a VPS) has made a fix it cannot test, because
+    # the device is on this desk. It asks for one case to be re-run and waits for a verdict it
+    # will gate a merge on. See docs/VERIFIER.md and BRIDGE.md §5.
+    @tool("report_verification",
+          "Answer a Bugmaster verification job — the ONLY way a verdict reaches the fix "
+          "pipeline. Call it once, on the review turn after the `run_journey` step for a "
+          "message that began `Bugmaster verification job`.\n\n"
+          "`pass` means you looked at what the module filed and the case now works. `fail` "
+          "means it does not — Bugmaster sends the fixer round again with your findings, so "
+          "a fail is useful, not a failure. `blocked` means nobody checked: the run errored, "
+          "the agent asked a question nobody was there to answer, the device never appeared. "
+          "Blocked is never softened into a pass; \"could not check\" is its own answer and "
+          "the pipeline knows what to do with it.\n\n"
+          "List every finding the verdict stands on in `finding_ids`. They are copied into "
+          "the answer with their screenshots, so the other side never has to read this "
+          "harness's disk — and a `pass` is refused if any of them is a bug.",
+          {"type": "object",
+           "properties": {
+               "job_id": {"type": "string",
+                          "description": "The job id from the message, e.g. dj_01J..."},
+               "verdict": {"type": "string", "enum": list(verifications_mod.VERDICTS)},
+               "finding_ids": {"type": "array", "items": {"type": "string"},
+                               "description": "Finding ids in that module, e.g. [\"F001\"]"},
+               "note": {"type": "string",
+                        "description": "One paragraph a human will read: what was re-run, on "
+                                       "what, and what happened"},
+               "module": {"type": "string", "description": "Module slug the step ran in"},
+               "app": {"type": "string", "description": "Role or package it ran on"},
+           },
+           "required": ["job_id", "verdict", "finding_ids", "note", "module", "app"],
+           "additionalProperties": False})
+    async def report_verification(args: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(args.get("job_id") or "").strip()
+        verdict = str(args.get("verdict") or "").strip().lower()
+        slug = str(args.get("module") or "").strip()
+        if not job_id:
+            return _err("Which job? The id is in the message that asked for this run — it "
+                        "looks like `dj_01J...`.")
+        if verdict not in verifications_mod.VERDICTS:
+            return _err(f"{verdict!r} is not a verdict. It is one of: "
+                        f"{', '.join(verifications_mod.VERDICTS)}.")
+        member = await asyncio.to_thread(_resolve_app, str(args.get("app") or ""))
+        if member is None:
+            return _err(f"No app {args.get('app')!r} in {name!r}. The apps are: {_app_names()}.")
+
+        # Refused before anything is written, and refused even when the ids all resolve: a
+        # verdict this system has already given is one the pipeline has already acted on.
+        existing = await asyncio.to_thread(verifications_mod.get, job_id)
+        if existing is not None:
+            if str(existing.get("verdict")) == verdict:
+                return _ok(f"{job_id} was already reported as {verdict} at "
+                           f"{existing.get('reported_at')} — not recorded twice. Nothing more "
+                           f"to do for this job.")
+            return _err(
+                f"{job_id} was already reported as {existing.get('verdict')!r} at "
+                f"{existing.get('reported_at')}, and a job is answered once — the fix pipeline "
+                f"has read that answer. If you now believe the verdict was wrong, say so to "
+                f"the user; do not report a second one.")
+
+        findings, missing = await asyncio.to_thread(
+            verifications_mod.resolve_findings, member["package"], slug,
+            [str(f) for f in (args.get("finding_ids") or [])])
+        if missing:
+            known = ", ".join(f["id"] for f in await asyncio.to_thread(
+                store.list_findings, member["package"], slug)) or "none"
+            return _err(f"No finding {', '.join(missing)} in {member['role']}/{slug}. "
+                        f"It has: {known}. Nothing was reported.")
+
+        # The one substantive rule in this tool. A `bug` in a verification run means "still not
+        # fixed" — that is the whole reason the run happened — so a pass carrying one is the
+        # answer contradicting its own evidence, and it would merge a broken fix.
+        bugs = [f["id"] for f in findings if str(f.get("kind")) == "bug"]
+        if verdict == "pass" and bugs:
+            return _err(
+                f"Refused: {', '.join(bugs)} "
+                + ("is a bug" if len(bugs) == 1 else "are bugs")
+                + " and you are reporting a pass. In a verification run a bug finding means "
+                  "*the fix did not work* — report `fail` with those findings and Bugmaster "
+                  "will send the fixer round again. If you think the finding is wrong, that is "
+                  "a conversation to have before answering the job, not a pass over the top "
+                  "of it.")
+
+        # Looked up rather than asked for. The manager knows the job id and the module; the
+        # campaign id is this harness's own bookkeeping, and making the agent quote it back is
+        # one more thing it can get wrong. The worker uses it only for its fallback path, when
+        # no verification arrived at all — see BRIDGE.md §5.4.
+        campaign_id = await asyncio.to_thread(_campaign_for, member["package"], slug)
+        try:
+            record = await asyncio.to_thread(
+                verifications_mod.report, job_id, verdict=verdict,
+                finding_ids=[str(f) for f in (args.get("finding_ids") or [])],
+                note=str(args.get("note") or ""), package=member["package"], module=slug,
+                campaign_id=campaign_id)
+        except ValueError as exc:
+            return _err(str(exc))
+
+        tally = _tally_line(_counts(record["findings"])) if record["findings"] else "no findings"
+        return _ok(f"Reported {verdict} for {job_id} ({member['role']}/{slug}; {tally}). The "
+                   f"worker polling GET /verifications/{job_id} will pick it up within "
+                   f"~15 seconds and Bugmaster gates on it. Do not file a Blackcode issue for "
+                   f"this run — the build under test is a patch that is deployed nowhere, and "
+                   f"Bugmaster files and loops on its own.")
+
+    @tool("list_verifications",
+          "Bugmaster verification jobs this harness has already answered, newest first. Read "
+          "it when you are unsure whether a job was reported — an unanswered job is one the "
+          "pipeline is still waiting on, and a second answer to an answered one is refused.",
+          {"type": "object",
+           "properties": {"limit": {"type": "integer",
+                                    "description": "How many to list (default 20)"}},
+           "additionalProperties": False})
+    async def list_verifications(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            limit = int(args.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        rows = await asyncio.to_thread(verifications_mod.list_recent, limit)
+        if not rows:
+            return _ok("No verification job has been answered from this instance.")
+        return _ok("\n".join(
+            f"[{r['verdict']}] {r['job_id']} — {r.get('package')}/{r.get('module')} "
+            f"({r.get('reported_at')})"
+            + (f"\n      {' '.join(str(r.get('note') or '').split())[:200]}"
+               if r.get("note") else "")
+            for r in rows))
+
     # -- the hardware under the runs --------------------------------------------------------
     #
     # `run_module` answers "may this run take the target?". These answer the question
@@ -1856,6 +2000,7 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                search_issues, file_cluster, attach_evidence, link_cluster,
                sync_issue_status,
                run_module, queue_retest, list_retests,
+               report_verification, list_verifications,
                list_devices, pin_device, start_app, running_now, stop_module,
                test_app, run_journey, campaign_status, control_campaign,
                set_step_brief, note_put, note_list, note_drop,
@@ -1888,6 +2033,8 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__run_module",
     "mcp__ecosystem__queue_retest",
     "mcp__ecosystem__list_retests",
+    "mcp__ecosystem__report_verification",
+    "mcp__ecosystem__list_verifications",
     "mcp__ecosystem__list_devices",
     "mcp__ecosystem__pin_device",
     "mcp__ecosystem__start_app",
