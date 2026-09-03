@@ -325,15 +325,21 @@ def spawn_console(title: str, args: list[str]) -> None:
 
 
 def spawn_elevated(args: list[str]) -> bool:
-    """Start a command via UAC. Returns False if the prompt was declined.
+    """Start a command via UAC, in its own console window that stays open on failure.
 
     Only `remote tunneld` needs this — it creates a network interface. Elevating the whole
     launcher instead would run the dashboard, the agent and the browser as administrator too,
     which is a much larger blast radius for one process's requirement.
+
+    Wrapped in `cmd /c` with the same title/pause treatment as `spawn_console`. Without it, a
+    tunneld that dies right after the UAC prompt — a dropped pairing, a tunnel already bound —
+    closes its elevated window before anything it printed is visible, which is indistinguishable
+    from the prompt itself having done nothing.
     """
-    arglist = ", ".join(f"'{a}'" for a in args[1:])
-    script = f"Start-Process -Verb RunAs -FilePath '{args[0]}'" + (
-        f" -ArgumentList {arglist}" if arglist else "")
+    inner = subprocess.list2cmdline(args)
+    command = f'title WDA tunnel & {inner} & echo. & echo [WDA tunnel exited] & pause'
+    arglist = ", ".join(f"'{a}'" for a in ("/c", command))
+    script = f"Start-Process -Verb RunAs -FilePath 'cmd.exe' -ArgumentList {arglist}"
     try:
         result = subprocess.run(["powershell", "-NoProfile", "-Command", script],
                                 capture_output=True, text=True, timeout=120)

@@ -57,6 +57,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 import clusters as clusters_mod
 import config
 import ecosystem as ecosystem_mod
+import ecosystem_report as ecosystem_report_mod
 import retests as retests_mod
 from agent import store
 from agent.store import StoreWriteError
@@ -488,6 +489,34 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
             out.append(f"{cluster['size']}x [{cluster['confidence']}] {cluster['title']}")
             out.append(f"      {', '.join(cluster['roles'])}")
         return _ok("\n".join(out))
+
+    @tool("export_report",
+          "Write the whole product's QA state to a file on disk — Markdown or HTML — that the "
+          "user can download from the dashboard's Reports view or open directly, e.g. to send "
+          "to someone who has never opened this dashboard. Every app, every open defect, worst "
+          "first, from the same numbers ecosystem_report shows in chat. Use this specifically "
+          "when the user asks for a report, an export, or a file to save or download — "
+          "ecosystem_report answers the same question in the conversation, this one produces "
+          "a file instead.",
+          {"type": "object",
+           "properties": {
+               "format": {"type": "string", "enum": ["markdown", "html"],
+                          "description": "'markdown' for a plain-text .md file, 'html' for a "
+                                         "styled page that opens straight in a browser. "
+                                         "Defaults to markdown."},
+           },
+           "additionalProperties": False})
+    async def export_report(args: dict[str, Any]) -> dict[str, Any]:
+        fmt = str(args.get("format") or "markdown").strip().lower()
+        if fmt not in ("markdown", "md", "html"):
+            return _err(f"Unknown format {fmt!r} — use 'markdown' or 'html'.")
+        try:
+            path = await asyncio.to_thread(ecosystem_report_mod.write_report, name, fmt)
+        except (OSError, ValueError) as exc:
+            return _err(f"Could not write the report: {exc}")
+        return _ok(f"Wrote {path.name} ({fmt}) to {path.parent}. The user can download it from "
+                   f"the dashboard's Reports view (left rail, under Work), or it can be fetched "
+                   f"directly at GET /ecosystems/{name}/reports/{path.name}.")
 
     @tool("create_module",
           "Create a module in one of the apps — how this tier commissions work. It does not "
@@ -1823,7 +1852,7 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         version="1.0.0",
         tools=[list_apps, read_app, read_finding, unclustered_defects,
                list_clusters, read_cluster, save_cluster, delete_cluster,
-               ecosystem_report, create_module, update_module,
+               ecosystem_report, export_report, create_module, update_module,
                search_issues, file_cluster, attach_evidence, link_cluster,
                sync_issue_status,
                run_module, queue_retest, list_retests,
@@ -1848,6 +1877,7 @@ ECOSYSTEM_TOOL_NAMES = [
     "mcp__ecosystem__save_cluster",
     "mcp__ecosystem__delete_cluster",
     "mcp__ecosystem__ecosystem_report",
+    "mcp__ecosystem__export_report",
     "mcp__ecosystem__create_module",
     "mcp__ecosystem__update_module",
     "mcp__ecosystem__search_issues",

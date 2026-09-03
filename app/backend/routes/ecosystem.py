@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import campaigns as campaigns_mod
 import clusters as clusters_mod
 import ecosystem as ecosystem_mod
+import ecosystem_report as ecosystem_report_mod
 import retests as retests_mod
 import scratchpad as scratchpad_mod
 
@@ -46,6 +49,10 @@ class MemberPayload(BaseModel):
 class TagPayload(BaseModel):
     ecosystem: str
     role: str
+
+
+class ReportPayload(BaseModel):
+    format: str = "markdown"
 
 
 @router.get("/ecosystems")
@@ -116,6 +123,50 @@ async def drop_note(name: str, key: str):
     if not scratchpad_mod.drop(name, key):
         raise HTTPException(status_code=404, detail=f"No note called {key!r}")
     return {"ok": True, "key": key}
+
+
+@router.get("/ecosystems/{name}/reports")
+async def list_reports(name: str):
+    """Every report file written for this product, newest first — what the Reports view in
+    the dashboard downloads from. Generating one is the manager's job (`export_report`, asked
+    for in chat); this only lists and serves what already exists on disk."""
+    if name not in ecosystem_mod.ecosystems():
+        raise HTTPException(status_code=404, detail=f"No ecosystem named {name!r}")
+    return await asyncio.to_thread(ecosystem_report_mod.list_reports, name)
+
+
+@router.post("/ecosystems/{name}/reports")
+async def generate_report(name: str, payload: ReportPayload):
+    """Write a fresh report now, from the dashboard rather than by asking the manager to.
+    Same file the `export_report` tool produces — this is the button for when nobody wants to
+    type a chat message for it."""
+    if name not in ecosystem_mod.ecosystems():
+        raise HTTPException(status_code=404, detail=f"No ecosystem named {name!r}")
+    try:
+        path = await asyncio.to_thread(ecosystem_report_mod.write_report, name, payload.format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write the report: {exc}") from exc
+    return {"ok": True, "filename": path.name}
+
+
+@router.get("/ecosystems/{name}/reports/{filename}")
+async def download_report(name: str, filename: str):
+    """Serve one report file for the browser to download or open.
+
+    `filename` arrives from the browser, so it is resolved against this ecosystem's own reports
+    folder and checked to still be inside it before being opened — the same whitelist-a-root
+    pattern `/agent/shot` uses for screenshots, not a trust of whatever path was typed in.
+    """
+    if name not in ecosystem_mod.ecosystems():
+        raise HTTPException(status_code=404, detail=f"No ecosystem named {name!r}")
+    root = ecosystem_report_mod.reports_dir(name).resolve()
+    resolved = (root / Path(filename).name).resolve()
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="No such report")
+    media_type = "text/html" if resolved.suffix == ".html" else "text/markdown"
+    return FileResponse(resolved, media_type=media_type, filename=resolved.name)
 
 
 @router.post("/ecosystems/{name}/campaigns/{campaign_id:path}/stop")

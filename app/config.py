@@ -113,6 +113,28 @@ WEB_BREAKPOINTS: dict[str, tuple[int, int]] = {
 }
 WEB_NAV_TIMEOUT_SECONDS: float = float(os.environ.get("WEB_NAV_TIMEOUT_SECONDS", 30))
 
+# --- Windows / VirtualBox -----------------------------------------------------------
+# The Windows adapter drives a headless VirtualBox VM: `vbox.py` shells out to VBoxManage for
+# lifecycle (boot/poweroff/snapshot restore), and `windows_device.py` talks HTTP to
+# `windows_agent.py`, a control server running inside the guest. Nothing here is used unless
+# a Windows target is actually selected. See docs/WINDOWS_SETUP.md for the one-time VM setup
+# this all assumes is already done.
+VBOXMANAGE_PATH: str = os.environ.get(
+    "VBOXMANAGE_PATH", r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe")
+
+# Must match windows_agent.py's own WINDOWS_AGENT_PORT env var inside the guest.
+WINDOWS_AGENT_PORT: int = int(os.environ.get("WINDOWS_AGENT_PORT", 9100))
+
+# Ceiling for a cold VM boot: power on, Guest Additions publish an IP, windows_agent.py
+# answers /status. Generous because a snapshot-backed Windows guest can take a while to reach
+# a logged-in, agent-listening desktop even with auto-logon configured.
+WINDOWS_VM_BOOT_TIMEOUT_SECONDS: float = float(
+    os.environ.get("WINDOWS_VM_BOOT_TIMEOUT_SECONDS", 180))
+WINDOWS_AGENT_POLL_SECONDS: float = float(os.environ.get("WINDOWS_AGENT_POLL_SECONDS", 2))
+
+# The snapshot `WindowsDevice.restore_snapshot()` targets when a project doesn't name its own.
+WINDOWS_DEFAULT_SNAPSHOT: str = os.environ.get("WINDOWS_DEFAULT_SNAPSHOT", "clean")
+
 # --- Telemetry server ---------------------------------------------------------
 # Loopback by default, deliberately. /command is unauthenticated remote control of the
 # phone — arbitrary taps, launches and screenshots — so binding it to 0.0.0.0 hands anyone

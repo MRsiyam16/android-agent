@@ -228,6 +228,16 @@ class TestDeviceRouting:
         assert platform == "ios"
         assert serial != "R5CT30"
 
+    def test_a_web_runs_url_is_never_borrowed_by_a_native_project(self, projects_on_disk,
+                                                                   attached, monkeypatch):
+        """A website suite posts its URL as the live serial; nothing lists a URL, so the
+        "trust an unlisted serial" rule handed a fresh Android project "https://…" and every
+        read failed with "device … not online". Fall through to the one attached phone."""
+        from backend import state
+        monkeypatch.setattr(state, "device_serial",
+                            lambda: "https://metaesthetics-staging.web.app/")
+        assert self._device_for("com.droid") == ("R5CT30", "android")
+
     def test_with_one_device_of_the_right_kind_it_is_chosen(self, projects_on_disk, monkeypatch):
         from backend import agent_bridge, state
         monkeypatch.setattr(agent_bridge, "attached",

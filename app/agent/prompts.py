@@ -9,6 +9,7 @@ this file was written still reach the agent.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 import config
 from agent import store
@@ -616,6 +617,10 @@ as good news without checking `status` and whether it ever ran.
 * `delete_cluster` — undo a grouping when it turns out to be wrong.
 * `ecosystem_report` — the whole product: filed vs distinct, and the cross-app defects worst
   first. Read it before saying anything about totals.
+* `export_report` — the same product-wide picture as `ecosystem_report`, but written to a
+  Markdown or HTML file instead of said in chat. Use it when the user wants something to
+  download, save, or send to someone who has never opened this dashboard — not for answering a
+  question in the conversation, which `ecosystem_report` already does without touching disk.
 * `create_module` — commission work in a named app. It does not run it; the module appears in
   that project's rail and waits. Put in `scope` what the other app already found, so whoever
   runs it knows which half they are checking.
@@ -782,7 +787,10 @@ def build_manager_prompt(package: str, slug: str, platform: str = "android") -> 
 
 
 def build_system_prompt(package: str, slug: str, title: str, scope: str,
-                        platform: str = "android") -> str:
+                        platform: str = "android",
+                        peer_platform: Optional[str] = None,
+                        package_a: Optional[str] = None,
+                        package_b: Optional[str] = None) -> str:
     """Assemble the prompt: core rules, the live harness briefing, then this module's brief.
 
     The manager module gets a different core — it manages the breakdown and must not file
@@ -791,7 +799,10 @@ def build_system_prompt(package: str, slug: str, title: str, scope: str,
     project: `runtime._options` asks for "the prompt for this module" and gets it.
 
     `platform` defaults to Android so that every existing caller — and the tests that call
-    this positionally — keeps the prompt it already had, unchanged.
+    this positionally — keeps the prompt it already had, unchanged. `peer_platform` is the one
+    signal that this module drives a *second* device (see `DeviceSession.has_peer`) — every
+    other new parameter here defaults to None/unused so a project with no peer configured
+    builds exactly the prompt it always has.
     """
     # A third core, for a session whose project supervises an ecosystem rather than being an
     # app. Checked first because such a project has a `main` slug too — it just manages other
@@ -850,6 +861,25 @@ def build_system_prompt(package: str, slug: str, title: str, scope: str,
         brief.append(f"Module: **{title}** (`{slug}`)")
     if scope:
         brief.append(f"Scope: {scope}")
+    if peer_platform:
+        # Present only when this module is wired to a second phone (see
+        # `agent.runtime._peer_config`) — an ordinary single-device module never sees this,
+        # so it stays silent about a capability it does not have.
+        brief.append(
+            f"\nThis module drives TWO devices at once, not one. Every device tool "
+            f"(read_screen, tap_element, type_text, launch, ...) takes an optional "
+            f"`device: \"a\"|\"b\"` argument; omit it and it means device a.\n"
+            f"  device a — {_device_kind(platform)}, app id `{package_a or package}`\n"
+            f"  device b — {_device_kind(peer_platform)}, app id `{package_b or package}`\n"
+            f"Screen state (what read_screen returned, what tap_element/tap_text can hit) is "
+            f"tracked separately per device — reading device a does not tell you anything "
+            f"about what is currently on device b's screen, and vice versa. To simulate a "
+            f"conversation between them: act on one device, `read_screen(device=\"b\")` to "
+            f"see what the other now shows, act there, switch back. Never assume a message "
+            f"arrived — read the receiving device's screen and confirm the actual text before "
+            f"calling it delivered. When filing a finding about device b specifically, pass "
+            f"`device=\"b\"` to record_finding so the timing check applies to the right "
+            f"screen.")
     if not supervises:
         creds = store.secret_keys(package)
         brief.append("Stored test credentials: " + (", ".join(creds) if creds

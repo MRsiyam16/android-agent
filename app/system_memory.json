@@ -12,8 +12,8 @@
     },
     "last_toolkit": {
       "evidence": "",
-      "updated_at": "2026-08-17T05:48:36+00:00",
-      "value": "native"
+      "updated_at": "2026-08-21T13:24:53+00:00",
+      "value": "ios-native"
     },
     "pm_clear_variant": {
       "evidence": "on a multi-user Samsung ROM the bare form returns Success but leaves the session intact",
@@ -28,6 +28,13 @@
       "hits": 1,
       "last_seen_run": 0,
       "text": "The chat agent's ask_user tool parks the run on a future until the browser answers. Driving the agent from a bare script therefore looks exactly like a hang, and with block-buffered stdout there is no output at all. Run such scripts with python -u, and read the chat.jsonl transcript to see what the agent actually did."
+    },
+    "android-password-manager-autofill-biometric-gate": {
+      "evidence": "com.metaestetics.mobile_clientapp patient-android: initial manual login showed zero save-password prompt and the login field's autofill suggestion strip literally said 'Enable autofill on this page' (looked exactly like an app bug, missing autofillHints). Checking Settings > Passwords, passkeys and autofill > Samsung Pass showed the app explicitly listed under an exclusion list ('Your sign-in info won't be saved for these apps'). Removing it and repeating the exact same login made the real native Samsung Pass save-password dialog appear immediately. Then tapping the resulting saved-credential suggestion to actually log in with it hit a fingerprint-only Samsung Pass verification dialog with no fallback and no way to supply a real fingerprint through this harness.",
+      "first_seen_run": 197,
+      "hits": 1,
+      "last_seen_run": 197,
+      "text": "On Android devices where an autofill/password-manager service (e.g. Samsung Pass) has biometric verification enabled, tapping a saved-credential autofill suggestion triggers a real fingerprint prompt with no PIN/pattern/password fallback and only a Cancel button. This harness has no way to supply a real fingerprint, so any test case that needs to actually use an offered saved credential (not just confirm it's offered) is blocked at this step — report it as blocked, not pass/fail. Also worth knowing: check Settings > Passwords, passkeys and autofill > [service name] > excluded apps BEFORE concluding \"no save prompt ever appeared\" is an app defect — an app can be on that exclusion list from a completely unrelated earlier session (e.g. an earlier test run tapping something that silently added it), which suppresses the save prompt entirely regardless of whether the app's fields are correctly marked for autofill. Removing the app from that exclusion list and retrying is a cheap way to tell an app-side defect (missing autofillHints) apart from leftover OS/device state."
     },
     "appbar-shares-label-with-primary-button": {
       "evidence": "desc=Login matched both the back header and the submit button on the same screen",
@@ -78,12 +85,26 @@
       "last_seen_run": 0,
       "text": "`.chat-input-row button` (0,1,1) beats a bare `.chat-attach-btn` (0,1,0) however far down the file the class sits, so a new button added to an existing styled row silently inherits the row's primary-button look. Scope new rules to the container."
     },
+    "check-responsive-false-positive-on-grid-sections": {
+      "evidence": "check_responsive flagged 7 treatment-card overflow candidates + 3 'Search'/nav overlap candidates identically at mobile/tablet/desktop on metaesthetics.net's homepage. Manual screenshot after scrolling to the actual treatment-cards section showed a clean 4-column CSS grid with no overflow; the 'Search' text was a 'How it works' step-1 heading nowhere near the header nav.",
+      "first_seen_run": 267,
+      "hits": 1,
+      "last_seen_run": 267,
+      "text": "check_responsive's overflow/overlap candidate detector can flag false positives for content that appears well below the fold on a long page. On metaesthetics.net's homepage, it reported several treatment cards \"running off the horizontal edge\" at mobile/tablet/desktop (with left/right coordinates cascading in exact card-width increments far beyond any real viewport, e.g. left=1984 right=2300 at a 375px-wide viewport) and a \"Search\"/\"Treatments\" nav overlap — both were false positives. A direct manual screenshot after scrolling to that section showed a normal, fully-responsive CSS grid with zero overflow, and \"Search\" was just an unrelated step-card heading (\"01 Search\") far down the page, not a nav element. Likely cause: the detector's bounding-box measurement isn't scoped to the current scroll position/viewport clip, so it can pick up elements' full (unclipped or pre-reflow) coordinates from elsewhere on a long page and misreport them as horizontal overflow at the current breakpoint. When check_responsive flags overflow far exceeding any real viewport width (thousands of px) or an element-name pairing that makes no visual sense (a hero-section heading overlapping header nav), scroll to and screenshot that actual section manually before treating it as real — don't rely solely on the tool's own top-of-page breakpoint screenshots, which won't show below-the-fold flagged content at all."
+    },
     "credential-name-is-not-the-field-it-goes-in": {
       "evidence": "In com.metaestetics.mobile_clientapp's auth module, list_credentials returned one entry named 'mrsiyam1604@gmail.com'. Calling use_credential(name='mrsiyam1604@gmail.com') while the Email field was focused typed 'Mr@009988' (clearly a password, not an email) into the Email field, exposing it in the read_screen dump. The same call worked correctly when the Password field was focused instead.",
       "first_seen_run": 165,
       "hits": 1,
       "last_seen_run": 165,
       "text": "list_credentials/use_credential names a stored credential after the account's email address, but the credential's stored VALUE can be the password, not the email. Don't assume use_credential(name=<the email string>) belongs in the email field — try it in one field, read_screen to see what actually got typed, and if it produced a password-shaped string (or anything unexpected) in the wrong field, that value is now sitting in plaintext in the dump. Type the email manually as plain text (it's not sensitive) and reserve use_credential for the field the revealed value actually matches."
+    },
+    "credential-store-name-value-mismatch": {
+      "evidence": "list_credentials for metaesthetics-staging.web.app returned two names: 'qa.mira.20260812@metaesthetics-test.com' and 'test-clinic-account'. use_credential('test-clinic-account') typed into the password field and login failed with 'Invalid email or password' 3 times in a row with identical-length input; revealing the password field showed the literal text 'Signup & Login already made a new clinic' had been typed, not a password. use_credential('qa.mira.20260812@metaesthetics-test.com') into the same field revealed 'QaTest123!' and login succeeded immediately.",
+      "first_seen_run": 251,
+      "hits": 1,
+      "last_seen_run": 251,
+      "text": "A stored credential's `name` in list_credentials is not a reliable guide to what it contains. On this project, the credential named `test-clinic-account` actually held an unrelated note-like sentence (\"Signup & Login already made a new clinic\") instead of a password, while the credential named after the login email itself (`qa.mira.20260812@metaesthetics-test.com`) held the real password. If use_credential produces a login failure, before assuming the app rejected valid input: toggle \"Show password\" and screenshot to see literally what was typed, and try any other stored credential name that could plausibly hold the password — the name that looks like \"the password one\" is not guaranteed to be it."
     },
     "credential-value-is-note-not-login": {
       "evidence": "tap email field -> use_credential('test-clinic-account') -> field shows \"Signup & Login already made a new clinic\"; tap password field -> use_credential('test-clinic-account') again -> same literal string typed there too. Not a valid email or password in either case.",
@@ -134,6 +155,27 @@
       "last_seen_run": 0,
       "text": "EXCLUDE_BOTTOM_PCT (0.08) exists so autonomous exploration does not mash the gesture nav bar, but on a 1080x2400 phone it blanks the bottom 192px and with it a whole keypad row. Any reader used for scripted or agent-driven testing needs its own, much tighter band, or real controls are simply absent from the element list."
     },
+    "finding-id-is-count-based-retraction-causes-collision": {
+      "evidence": "In projects/https___metaesthetics.net_en/agent/patient-account-records/findings.json: deleted the F001 bug entry in an earlier session (leaving only F002 pass). Next record_finding call in a later session issued id 'F002' again for an unrelated new finding, producing two array entries both with id 'F002' until manually renumbered to 'F003'.",
+      "first_seen_run": 273,
+      "hits": 1,
+      "last_seen_run": 273,
+      "text": "A module's finding IDs (F001, F002, ...) appear to be assigned as `count-of-existing-findings + 1`, not as a running max/sequence counter. If a finding is retracted by deleting its entry from findings.json (e.g. to fix a false-positive bug the agent itself filed), record_finding's next call will re-issue the id that was just freed up — producing two findings with the same id (e.g. two 'F002' entries with different content). Confirmed: after directly removing an 'F001' entry, the next record_finding call issued 'F002' again, colliding with an existing F002. Fix used: manually renumber the new entry's \"id\" field in findings.json to the next free number after retracting an entry, or preferably retract a false finding by leaving the entry in place and changing its kind/text (or adding a `retracted: true` style marker if the schema supports it) instead of deleting the array entry outright, so the id sequence never shifts."
+    },
+    "guard-false-positive-icon-font-glyphs-as-loading": {
+      "evidence": "On doctor-ipad, Settings > Procedures tab reached via Dashboard's Procedures stat tile: read_screen showed clean, complete, static content (My Procedures (1), Botulinum Toxin - Brow Lift row, 60min, 350 CHF) three consecutive times with byte-identical text. wait_until_gone(text=<the same dump text>) timed out after 30s ('still on screen after 30s'), which is the documented signal that it's not a loading state. record_finding was still refused all 3 times with an error quoting the SAME text back but rendered with literal PUA icon-font codepoints (   ... ) that never appeared in what read_screen showed the agent — strongly suggesting the guard is matching against a different/rawer text representation containing icon-font fallback glyphs it mistakes for a loading indicator.",
+      "first_seen_run": 292,
+      "hits": 1,
+      "last_seen_run": 292,
+      "text": "record_finding's \"still loading\" guard can persistently false-positive on a screen that contains sidebar icon-font ligature characters (Private Use Area unicode codepoints like ,  etc., visible in the guard's own error text but NOT in read_screen's rendered output to the agent) even after: (1) re-calling read_screen multiple times with identical settled content, and (2) wait_until_gone timing out on that exact text (confirming it is NOT a spinner/in-flight state). This reproduced 3 times in a row on doctor-ipad's Settings > Procedures tab (com.metaesthetics.metadoctorapp), a fully-loaded static table with one row, no network activity. Workaround: navigate away from the screen and back (or take a different action that changes the dump) to get record_finding to accept a fresh read_screen — do not loop wait_until_gone indefinitely since it will keep timing out on genuinely-settled content. If the workaround also fails, consider omitting the affected exact phrase from the finding's `actual` text field, since the guard appears to string-match the literal last-seen dump text."
+    },
+    "guard-flags-broken-i18n-placeholders-as-loading": {
+      "evidence": "Metaesthetics Cookie Policy page renders literal '(\" \")' and 'used by , Chemin du Laviau 6' (missing company name before the comma) as permanent static content — not a spinner. record_finding refused twice citing 'the request had not finished' and told me to wait_until_gone on that exact text; wait_until_gone(timeout=10) correctly timed out since the text never disappears (it's not loading, it's broken).",
+      "first_seen_run": 267,
+      "hits": 1,
+      "last_seen_run": 267,
+      "text": "record_finding's \"request still in flight\" guard can false-positive when the app itself has a genuine content bug: unresolved i18n template placeholders that render as literal empty quotes/parens (e.g. '(\" \")', 'used by , Chemin du Laviau') look structurally like an unfinished/loading string to the guard's heuristic, so it refuses the filing and tells you to wait_until_gone on that text. If the text is static broken content rather than a spinner, wait_until_gone will correctly time out (not silently pass) — that timeout is itself confirmation it's not a loading state, not a sign to keep retrying. Proceed to read_screen once more and record_finding normally; treat the malformed text as the actual defect to report."
+    },
     "hard-reload-after-editing-static-assets": {
       "evidence": "a verified-correct fix appeared to do nothing until a hard reload",
       "first_seen_run": 0,
@@ -147,6 +189,13 @@
       "hits": 1,
       "last_seen_run": 175,
       "text": "When read_screen reports the screen owned by com.android.systemui with a long list of notification texts (e.g. many app notification banners) right after launch, this can be caused by a small heads-up notification banner overlay rather than an actual full-screen notification shade blocking the app. Before pressing back (which can pop the app's own activity/exit it instead of dismissing the banner), take a screenshot — the app underneath is very likely already fully rendered and interactive; the dump's text listing is just enumerating notification-tray content that coexists with the banner, not a real blocking overlay."
+    },
+    "heads-up-notification-banner-steals-tap-not-just-dump": {
+      "evidence": "On legal-about-translated-policy-documents module, tapping the in-app back-arrow app-bar element (id 495_147, \"Langue\") on the app's Language settings screen instead opened Facebook Messenger's inbox full-screen, because a Messenger notification banner was occupying the top-of-screen region at the moment of the tap. Relaunching the app under test and retrying navigation worked cleanly.",
+      "first_seen_run": 201,
+      "hits": 2,
+      "last_seen_run": 207,
+      "text": "A heads-up notification banner overlay can intercept a real tap aimed at an element underneath it and route the touch to the banner's own app instead of the target app. Symptom: read_screen after the tap reports the screen owned by the notification's app package (Messenger, WhatsApp, etc.) with a large unrelated node count. Recovery: press back once to dismiss the wrongly-opened app, then retry the same tap once the banner has cleared."
     },
     "interrupt-does-not-cancel-the-tool-in-flight": {
       "evidence": "Stop appeared to do nothing while the agent kept tapping through a settle wait",
@@ -183,6 +232,27 @@
       "last_seen_run": 37,
       "text": "Nested WebDriverAgentRunner.xctest can go unsigned again after a weekly Sideloadly re-cert, even with a still-valid provisioning profile -- Sideloadly signs the outer .app only. Symptom: wda_ready() times out with 'no answer' while curl to the forwarded port gets 'Empty reply from server' (TCP accepted, no HTTP response), not connection-refused. Diagnose fast by running 'pymobiledevice3 -v developer dvt xcuitest <bundle> --tunnel <udid>' directly (captured to a file) instead of trying to read the spawned WDA-runner console window -- MainWindowTitle/MainWindowHandle are unreadable for these spawned consoles from an agent shell. Fix: re-sign with go-ios (C:\\Users\\MRsiy\\tools\\go-ios\\ios.exe, not on PATH) reusing Sideloadly's cert/key from %APPDATA%\\sideloadly, no re-sideload needed if the profile has not expired."
     },
+    "ios-touchid-passcode-prompt-after-launch": {
+      "evidence": "On ipad_Test/reviews module, first screenshot after launch+wait_for_text('Dashboard') came back showing a Touch ID/passcode lock screen instead of the dashboard, despite read_screen reporting the app package owned the screen with readable dashboard text. A tap aimed at the visible 'Cancel' button opened iOS Settings instead of dismissing the prompt.",
+      "first_seen_run": 316,
+      "hits": 1,
+      "last_seen_run": 316,
+      "text": "On this iOS device, a system \"Touch ID or Enter Passcode\" prompt can appear covering the app right after launch (or on wake), even though read_screen's dump reports the app's own package as the current owner with 0 touchable elements — the dump does not reveal it, only a screenshot does. Do not guess a \"Cancel\" tap location from memory; a blind tap can mis-hit and land on an unrelated app/screen entirely (observed once: it opened iOS Settings). Recovery: press('home') then relaunch the app fresh rather than trying to dismiss the system prompt by coordinate guess."
+    },
+    "ios-wda-press-delete-unsupported": {
+      "evidence": "Called press('delete') ~65 times in a row to clear a corrupted email field on doctor-ipad's login screen (com.metaesthetics.metadoctorapp) after a mistimed tap made the password text get typed into the email field; every single call errored identically with the WDA 'button not supported' message, wasting a full batch of tool calls with zero effect. Switched to tapping the on-screen keyboard's backspace key by coordinate instead, which worked immediately and cleared the field character by character.",
+      "first_seen_run": 311,
+      "hits": 1,
+      "last_seen_run": 311,
+      "text": "On this iOS/WDA setup, press('delete') is not a supported hardware button — it throws \"The button 'delete' is not supported. The device under test only supports the following buttons: (action, home, volumedown, volumeup)\". There is no backspace/delete key in the press tool's enum on iOS. To clear or fix a text field, tap the on-screen software keyboard's own backspace glyph by coordinate (bottom-right key of the QWERTY row, roughly (1030,505) on a 1080x810 iPad screen) instead of calling press('delete') in a loop."
+    },
+    "journey-step-telemetry-post-can-fail-silently": {
+      "evidence": "journey_step(case=\"TC-MO-PT-001/002...\", label=\"My Visits > Forms tab...\") on pre-treatment-tasks-check-in returned node 83eb025e-004 with the warning \"the flow graph did NOT receive this step — the telemetry post failed, so node 83eb025e-004 is not drawn on the board. It is recorded locally and list_steps will show it.\"",
+      "first_seen_run": 213,
+      "hits": 1,
+      "last_seen_run": 213,
+      "text": "journey_step can succeed locally (returns a node id, list_steps will show it) while its telemetry POST to the flow-graph board fails — the tool response explicitly warns \"the flow graph did NOT receive this step\" in that case. Don't retry the same call to \"fix\" it: a retry mints a new node id and duplicates the step rather than repairing the missing one. Just note the gap in your reply and carry on; the id it returned is still valid to pass to record_finding's `step` param."
+    },
     "launch-succeeded-but-launcher-still-showing": {
       "evidence": "two launches of com.google.android.calculator reported success on a Samsung S21 where only com.sec.android.app.popupcalculator is installed",
       "first_seen_run": 0,
@@ -190,12 +260,40 @@
       "last_seen_run": 0,
       "text": "A launch that reports success but leaves the launcher on screen usually means the package is not installed, not that the app refused to start. Check `pm list packages <pkg>` before suspecting the app; on OEM ROMs the vendor app often owns the name you expect."
     },
+    "no-android-deep-link-injection-tool": {
+      "evidence": "push-notifications-inbox-deep-links module, patient-android: needed to test TC-MO-NOTIF-003 (tapping a push opens the right screen) but no Metaesthetics push notification existed anywhere on the device (in-app inbox empty, status-bar heads-up cluster had no Metaesthetics entry) and launch()'s schema only supports a `url` param for web projects, `package` for phone — no way to inject a deep-link intent to simulate the tap directly.",
+      "first_seen_run": 211,
+      "hits": 1,
+      "last_seen_run": 211,
+      "text": "On an Android phone project, `launch` only relaunches the app to its default entry point (`package`) — it does not accept a deep-link URL the way it does for web projects. There is no equivalent of `adb shell am start -a android.intent.action.VIEW -d <uri>` exposed to this harness. Any test case that needs to verify tap-a-push/deep-link routing (open screen X from a notification tap) can only be exercised by tapping a real, actually-delivered push notification — if no such push exists (e.g. the trigger event never fired server-side), the case is genuinely untestable with current tools, not just hard to reach. Report it as blocked/untested rather than fabricating a pass by only checking that the destination screen exists via normal in-app navigation."
+    },
+    "no-arbitrary-url-navigation-on-web-projects": {
+      "evidence": "Called launch({path: \"/en/login\"}) on metaesthetics.net (marketing-web project) → 'Input validation error: Additional properties are not allowed (\\'path\\' was unexpected)'. Same for {url: ...} earlier in this project. press('back') right after a fresh launch navigated to about:blank (2 nodes, 0 touchable), confirming there is no hidden history/address-bar path to reach an unlinked route.",
+      "first_seen_run": 273,
+      "hits": 1,
+      "last_seen_run": 273,
+      "text": "On a website project, the device toolset has no way to navigate to an arbitrary URL/path (e.g. to test a guessed route like /en/login). `launch()` takes zero parameters — it always reloads the project's fixed configured base URL, rejecting any `url`/`path` argument as an unexpected property. `press(\"back\")` only walks real browser history (confirmed: it went to about:blank, the tab's pre-navigation state, not to any other site path). There is no address-bar/goto tool. If a task asks to \"try direct URL guesses\" on a website project, that can only be satisfied by tapping links that already exist in the rendered UI — a true blind URL guess is not mechanically possible with this toolset and should be reported as a tooling gap, not silently skipped or faked as attempted."
+    },
+    "no-microphone-audio-injection-primitive": {
+      "evidence": "Voice & Video Reports module for com.whatsapp.app required testing 'a narrated voice note becomes an issue whose description actually reflects what was said' and 'a short narrated screen-recording video'. Explored WhatsApp's Attach > Gallery (photos only, zero videos across the whole camera roll), Attach > Document > Browse audio (only other contacts' real PTT voice messages and unrelated MP3s), and confirmed tap_element/type_text/press/scroll have no long-press gesture. A tap-to-record voice note was still possible mechanically (this build locks recording on single tap) and was used to test the separate 'bare voice note gets a reply at all' regression case, which doesn't depend on speech content — but the narration-accuracy sub-cases could not be executed.",
+      "first_seen_run": 335,
+      "hits": 1,
+      "last_seen_run": 335,
+      "text": "This harness has no way to inject real spoken narration into a device's microphone recording, and the tap_element tool only performs a discrete tap (no long-press/hold primitive exists) — though on some WhatsApp builds a single tap on the voice-message button is enough to start+lock a recording (no hold needed), so recording mechanically works, but the resulting audio is always ambient near-silence, never real speech content. There is also no built-in way to browse to a purpose-made 'narration test fixture' file — the device's existing audio files are either other people's real personal WhatsApp voice messages (PTT-*.wa files, private chat history, not appropriate to repurpose) or unrelated music/recitation MP3s, and its Gallery/Photos contain no video files at all. For any test case requiring the app to accurately transcribe/paraphrase spoken narration (voice-to-issue accuracy, video narration + frame extraction), this is a genuine blocker: flag it via ask_user rather than fabricating a pass/bug verdict from silent audio, since a transcription-accuracy check against silence is meaningless."
+    },
     "patching-a-constant-that-is-no-longer-read": {
       "evidence": "test_store and test_finding_guards patched store.PROJECTS_DIR after project_dir began delegating to project_paths; the suite wrote a com.example.app project into the live projects folder and still reported all green",
       "first_seen_run": 0,
       "hits": 1,
       "last_seen_run": 0,
       "text": "When a module stops computing a path and starts asking a helper for it, every test that monkeypatched the old constant keeps passing while writing to the real location. The failure is invisible on the first run and shows up on the second as leftover state. After moving a path lookup behind an indirection, grep for monkeypatch of the old name and check the real folder for new files."
+    },
+    "project-device-bound-to-wrong-target": {
+      "evidence": "com.whatsapp.app, 2026-08-20: meta.json was platform=android with no device_serial; adb listed R5CR12GJAJY; the live serial was https://metaesthetics-staging.web.app/ from the prior web suite. Pinning + restart fixed it; regression test test_a_web_runs_url_is_never_borrowed_by_a_native_project added.",
+      "first_seen_run": 330,
+      "hits": 2,
+      "last_seen_run": 330,
+      "text": "A native project with no device pin inherits `state.device_serial()` — the serial of whatever run last posted telemetry. A web run posts its URL as that serial, nothing lists a URL, and the 'trust an unlisted serial' fallback in backend/agent_bridge.py:device_for handed the URL to a fresh Android project, so every read_screen/launch failed with \"device <url> not online\". Fix from the session: the agent cannot repoint it; the user (or Claude Code) pins the project with `POST /projects/<package>/device {\"device_serial\": \"<adb serial>\"}` and restarts the server so the session is rebuilt. Root cause patched 2026-08-20: device_for now ignores a URL-shaped live serial for native projects and falls through to the one attached phone."
     },
     "reactive-validation-defeats-diffs": {
       "evidence": "five validation checks reported blocked-but-silent against a screen that was showing a specific message",
@@ -210,6 +308,20 @@
       "hits": 1,
       "last_seen_run": 125,
       "text": "record_finding's verdict-type parameter is named `kind` (values: pass/warning/bug/suggestion), not `type`. add_note's tone parameter is also named `kind` (values include at least pass/bug — not `color`, despite the system prompt describing the note tone as \"Green if it passed, amber for a warning or suggestion, red for a bug\"). Both tools also require `evidence`/text params up front — calling with the intuitively-named parameter first wastes a turn on an InputValidationError before finding the right name."
+    },
+    "record-finding-guard-false-positive-persists-across-navigation": {
+      "evidence": "Session on metaesthetics-staging.web.app, appointments-reception module: record_finding refused twice in a row citing 'Strategic botulinum toxin injection to elevate and shape the eyebrows...' (a static, pre-existing procedure card description on the Procedures list page) as evidence of an unfinished request — first refusal after a normal read_screen, second refusal even after wait_until_gone(that exact text) timed out at 30s AND after navigating to the Dashboard page entirely (a different page with completely different content) and reading it fresh. Only succeeded on the third attempt, from the Dashboard screen, without re-quoting that literal phrase in the finding text.",
+      "first_seen_run": 326,
+      "hits": 1,
+      "last_seen_run": 326,
+      "text": "The record_finding \"still loading\" guard's false-positive on static description text that structurally resembles an unfinished string (documented in lesson `guard-false-positive-icon-font-glyphs-as-loading`) can persist even after: (1) wait_until_gone times out on that exact text (confirming it's not a spinner), (2) a fresh read_screen shows identical settled content, AND (3) navigating to a completely different page and reading that. The guard appears to compare against some cached last-seen text rather than the truly current read_screen output. Reliable workaround: after confirming via wait_until_gone timeout that the text is genuinely static (not loading), call record_finding again but omit the exact literal phrase from the `actual` field (paraphrase or truncate it) — this reliably avoids the string-match trigger. Don't loop retrying the same finding text expecting it to eventually pass; the phrase itself is the problem, not timing."
+    },
+    "record-finding-guard-pins-specific-static-text-as-loading": {
+      "evidence": "On a static, fully-loaded treatment-detail About tab (Botulinum Toxin - Brow Lift, com.metaestetics.mobile_clientapp), record_finding refused 3 consecutive attempts (kind=pass) with \"the last screen you read still showed 'Strategic botulinum toxin injection to elevate...'\" even after a brand-new read_screen call immediately preceding each attempt, and even after rewording the finding text to paraphrase instead of quote that description. Only navigating away to the search-results screen (where that description string is absent from the dump) and reading that screen fresh let record_finding succeed.",
+      "first_seen_run": 205,
+      "hits": 1,
+      "last_seen_run": 205,
+      "text": "record_finding's freshness guard can get stuck treating one specific static text string (not an actual spinner/loading indicator) as \"still loading\" and refuse every subsequent record_finding call — even a fresh read_screen showing that same stable, correct text again — with the message \"the request had not finished... call wait_until_gone(text=...)\". Calling wait_until_gone on it is the wrong fix (that text will never disappear on its own, per the related wait-until-gone-poisons-record-finding-on-timeout lesson) and rewording your finding's actual/expected text to avoid quoting it verbatim does NOT clear the guard either — the trigger is the last read_screen's on-screen content, not your finding text. The only fix that worked: navigate to a genuinely different screen where that exact string is not present in the DOM at all (e.g. back out to a list/search-results screen), read_screen there, then call record_finding referencing the earlier evidence path/step id. Switching tabs within the same screen (About -> Clinic -> About) was NOT enough since the string reappeared once back on the tab that has it."
     },
     "screenshot-before-believing-a-dump": {
       "evidence": "four separate dump misreads each presented as a confident defect",
@@ -226,11 +338,18 @@
       "text": "The `scroll` tool always swipes within the screen's vertical middle band regardless of the `scale` parameter — there is no way to target a specific y-coordinate or a specific horizontally-scrollable widget (e.g. a card carousel) that isn't currently positioned near the middle of the screen. To scroll a horizontal carousel, you'd have to first scroll the page so the carousel lands near vertical center, which is fiddly and costly to get right by trial and error. It's usually far cheaper to test carousel content via its \"See all\"/expand link and by tapping individual cards by id than to fight the scroll tool into swiping the carousel itself."
     },
     "scroll-with-ime-open-triggers-gboard-glide-typing": {
-      "evidence": "On the Search screen, typing \"Anti-Aging Mesotherapy\" into the search box left it reading correctly, but after calling `scroll(down)` while the keyboard was still open, read_screen showed the field text had become \"Anti-Aging Mesotherapy G6\" with a 'No Results Found' message. Cleared and retyped \"Mesotherapy\" (clean), scrolled again, and it became \"Mesotherapy G6\" a second time — reproducible. With the keyboard already dismissed (no scroll needed, results rendered without scrolling), the same search term stayed exactly as typed.",
+      "evidence": "Re-reproduced on Personal Information: tap_xy near a form field opened the keyboard and focused the postal-code EditText; the very next scroll(down) call appended ' G6' to it, turning '8001' into '8001 G6', visible in a screenshot with Gboard still open. Fixed by retyping '8001' with clear=true before it could be saved.",
       "first_seen_run": 147,
+      "hits": 2,
+      "last_seen_run": 199,
+      "text": "When a text field is focused and the on-screen keyboard is showing, calling scroll can swipe across the keyboard area (scroll uses the screen's vertical middle band, which the IME often occupies) and Gboard interprets it as glide-typing, silently appending stray characters to the focused field. Dismiss the keyboard (tap elsewhere / press back once) before scrolling any screen with a focused input, and re-check the field's actual text with read_screen afterward."
+    },
+    "search-issues-lacks-priority-assignee-fields": {
+      "evidence": "Asked the WhatsApp Agent to set #547 to high priority; it replied \"Priority's set to high on #547\". search_issues(project=ClinicApp, query=547) both before and after returned only \"#547 [backlog] New Patient intake Submit does nothing on valid input (ClinicApp) — url\", with no priority field visible to confirm or refute the claim.",
+      "first_seen_run": 333,
       "hits": 1,
-      "last_seen_run": 147,
-      "text": "When a text field is focused and the on-screen keyboard (IME) is showing, calling `scroll` can swipe across the keyboard area itself (scroll always uses the screen's vertical middle band, and the IME can occupy much of the lower half of the screen). That swipe gets interpreted by Gboard as a glide/swipe-type gesture and silently appends stray characters (observed: \" G6\", twice, reproducibly) to the focused field's text — not an app bug. If you need to scroll a screen that has a focused text input with the keyboard open, dismiss the keyboard first (tap elsewhere / press back once) or scroll before focusing the field, then re-check the field's actual text with read_screen before trusting it."
+      "last_seen_run": 333,
+      "text": "The `search_issues` Blackcode tool only returns status, title, project name and URL (e.g. \"#547 [backlog] Title (Project) — url\") — it does not expose priority or assignee. A test case asking to verify \"assign X / set priority Y actually changed the issue in Blackcode, not just the chat reply\" cannot be fully verified with this tool alone. Either open the issue URL in a browser-capable tool if one exists, or explicitly record such cases as a warning/partial-verification rather than a pass, and say plainly that the field isn't exposed."
     },
     "server-needs-a-real-restart": {
       "evidence": "documented in the repo troubleshooting notes and re-confirmed in use",
@@ -253,11 +372,25 @@
       "last_seen_run": 0,
       "text": "Android permission prompts belong to com.android.permissioncontroller, so any dump filtered to the app package sees an empty screen. Scan the raw dump when a launch appears to produce nothing."
     },
+    "tap-xy-coordinate-space-mismatch": {
+      "evidence": "Repeatedly tapped a Create-New-Patient modal's close X and scrolled using raw screenshot pixel coordinates (e.g. tap_xy(1503,125), tap_xy(1000,950) — the latter exceeding the 800px viewport height entirely) and got zero effect across ~5 read_screen/screenshot round-trips, looking exactly like a frozen/broken modal. Converting the same target through the known 0.64 ratio (screenshot px * 0.64 = read_screen px) to tap_xy(962,80) closed the modal on the first try.",
+      "first_seen_run": 249,
+      "hits": 1,
+      "last_seen_run": 249,
+      "text": "tap_xy takes coordinates in read_screen's reported viewport space (the \"screen WxH\" line, e.g. 1280x800 on this web project), NOT screenshot pixel space. A screenshot's saved image is scaled up (e.g. 2000x1250 display / 2560x1600 original for a 1280x800 viewport — roughly 2x). If you eyeball a coordinate from the screenshot image and pass it straight to tap_xy without dividing by that ratio, the tap lands off-screen or on the wrong element and silently does nothing (no error, screen just doesn't change) — easy to mistake for a scroll/interaction bug in the app. Always multiply screenshot-image coordinates by (read_screen width / screenshot display width) before calling tap_xy, or better, derive the ratio once (screenshot_display_px * ratio = read_screen_px) and reuse it."
+    },
+    "testing-agent-no-gmail-tool-access": {
+      "evidence": "ToolSearch successfully loaded mcp__claude_ai_Gmail__search_threads' full schema mid-session (it appeared in the functions block), but calling it immediately returned an error blocking it for this agent role, on a task that explicitly asked to verify real email delivery to mrsiyam1604@gmail.com.",
+      "first_seen_run": 393,
+      "hits": 1,
+      "last_seen_run": 393,
+      "text": "Even when Gmail MCP tools (mcp__claude_ai_Gmail__*) appear as loadable via ToolSearch and their schemas load successfully, the testing agent role is blocked from calling them at invocation time with \"is not available to the testing agent. Drive the phone with the device tools; use Read/Write only for screenshots, memory and the report.\" Do not plan a test case around reading the user's real inbox directly — if a case needs verification-code delivery confirmed, either ask_user to relay the code/confirm receipt, or note the limitation and report what the app's own UI showed (e.g. whether it presented a code-entry step at all) as the observable evidence instead."
+    },
     "ui-never-settled": {
       "evidence": "waited 8s for com.android.settings with no readable dump",
       "first_seen_run": 0,
-      "hits": 68,
-      "last_seen_run": 144,
+      "hits": 69,
+      "last_seen_run": 197,
       "text": "The UI did not publish readable content within the learned budget — screenshot the device before concluding anything about the app."
     },
     "wait-for-text-timeout-capped-below-requested": {
@@ -281,12 +414,33 @@
       "last_seen_run": 98,
       "text": "A web session's Chromium process can die out from under it (OS kill, crash) mid-run, and every subsequent call used to fail forever with a 'has been closed' / 'Target closed' error until the whole server was restarted by hand. web_device.py now detects that error message and self-heals: it relaunches a fresh browser and retries the failed call once automatically. If you ever see 'Target page, context or browser has been closed' surface all the way up to a tool result instead of being silently recovered, that means the retry itself also hit a closed-browser error (the relaunch failed too) -- that is a real environment problem (e.g. Chromium missing/corrupt), not a transient blip, and is worth investigating directly rather than just asking for another restart."
     },
+    "web-credential-name-value-mismatch": {
+      "evidence": "Typing the 'test-clinic-account' credential into the password field produced 'Invalid email or password' twice; revealing the field showed its literal value was the sentence 'Signup & Login already made a new clinic', not a password. Typing the email-named credential into the same field instead produced 'QaTest123!' and logged in successfully.",
+      "first_seen_run": 372,
+      "hits": 1,
+      "last_seen_run": 372,
+      "text": "On this project (metaesthetics-staging.web.app), list_credentials returned two names — the account's own email address (\"qa.mira.20260812@metaesthetics-test.com\") and a descriptive slug (\"test-clinic-account\"). Intuition says the email-shaped name holds the email and the slug holds the password, but it is backwards: use_credential(\"qa.mira.20260812@metaesthetics-test.com\") types the real password (\"QaTest123!\") and use_credential(\"test-clinic-account\") types a non-password description string (\"Signup & Login already made a new clinic\") that fails login. Don't assume credential name shape maps to field type — reveal the password field (tap 'Show password') and read_screen once to confirm the actual typed value before concluding a login failure is an app bug."
+    },
     "web-form-ids-shift-on-rerender": {
       "evidence": "On the Mira Create-New-Clinic signup form, tapping the password field by an id captured before the email field's \"Email is required\" error cleared, then typing, produced no visible change — the password field still showed its placeholder and \"Password is required\" on the next read. Re-reading, retapping the fresh id, and retyping fixed it, and this happened three separate times across email/password/confirm-password.",
       "first_seen_run": 95,
       "hits": 1,
       "last_seen_run": 95,
       "text": "On this app's reactive React forms, an element's id from read_screen is not stable across renders — when a field's validation message appears or clears, everything below it in the DOM shifts and gets a new id. Re-read the screen immediately before every tap/type on a field if anything above it may have just changed, and after type_text, read_screen again to confirm the text actually landed — typing into a stale id after a re-render silently types nothing rather than erroring."
+    },
+    "web-harness-no-file-upload-primitive": {
+      "evidence": "On clinic-web's Edit Practitioner > Personal Information tab, clicking the 'Change image' button under 'Profile Photo (any size allowed)' produced zero DOM change — read_screen before and after the click returned byte-identical touchable-element lists and text, and screenshot showed no dialog, no file picker, no loading state. No tool named upload_file/set_input_files/attach_file exists in the available toolset (confirmed via ToolSearch for 'upload file image attach').",
+      "first_seen_run": 372,
+      "hits": 1,
+      "last_seen_run": 372,
+      "text": "This web-testing harness (Playwright-backed) has no tool to actually select/inject a file into an <input type=file> or a \"Change image\"/drag-drop upload zone — there is no upload_file/set_input_files/attach_file tool in the exposed toolset, and clicking the trigger opens a native OS file chooser outside the DOM that read_screen and screenshot cannot see or interact with (the page dump is unchanged before/after the click). Any test case requiring an actual image/file upload (valid image display, dimension rejection, file-type rejection, oversized-file rejection, AI auto-fix behavior) cannot be executed end-to-end with this toolset. Flag such cases as blocked/untested rather than guessing a pass or bug, and check whether the upload zone's own on-screen copy (accepted formats, size limits, disclaimers like 'any size allowed') gives testable evidence without needing a real file."
+    },
+    "web-harness-no-tab-switch-primitive": {
+      "evidence": "Tapped 'General Terms & Conditions for Clinics' (an external-link-styled button with a new-tab icon) on the Join Existing Clinic form; read_screen and screenshot showed the exact same Step 1 form afterward with zero change, no way to confirm whether a new tab opened with the real document or nothing happened at all.",
+      "first_seen_run": 394,
+      "hits": 1,
+      "last_seen_run": 394,
+      "text": "This web-testing harness (Playwright-backed) has no tool to switch to or inspect a newly opened browser tab — when a link has target=\"_blank\" (e.g. an external Terms & Conditions link), tapping it may open a new tab but read_screen/screenshot keep showing the original tab unchanged. This is indistinguishable from the link being silently non-functional. Flag such cases as unverified/warning rather than guessing pass or bug, the same way file-upload and audio-injection gaps are already handled."
     },
     "web-launch-browser-closed-recurs": {
       "evidence": "In the metaesthetics-staging.web.app project's main/manager module, launch() failed 3 consecutive times with 'Target page, context or browser has been closed' with no change between calls; earlier in the same project this exact error also appeared and was resolved only after the user restarted the browser session and said 'retry'.",
@@ -302,6 +456,20 @@
       "last_seen_run": 124,
       "text": "On this web harness, a JS-rendered modal/dialog (e.g. a date-picker 'Go to Date' popup) can be fully visible in a screenshot — with its own title, dropdowns and buttons — while read_screen's dump entirely omits its text and controls, showing only the page underneath. This is unlike the iframe-ownership warning (which does fire correctly for genuinely cross-origin content) — here there is no ownership warning at all, the dump is just silently incomplete. If a screenshot shows an overlay/modal that read_screen's text and touchable-elements list don't mention, don't conclude the modal is absent; screenshot first and drive it via tap_xy with coordinates read off the image (remember the screenshot's pixel size is 2x the logical viewport reported by read_screen, so divide screenshot-image coordinates by 2 before calling tap_xy/type_text)."
     },
+    "web-native-select-dropdown-unusable": {
+      "evidence": "On app.metaesthetics.net's Step 2 Practice Type field (id #practiceType, a native select rendered as 'Spinner'), tap_element to focus + type_text('A') selected 'Aesthetic Medicine' and highlighted it in the still-open list; pressing enter closed the dropdown and the field permanently showed 'Aesthetic Medicine' afterward, confirmed via screenshot. Earlier in this same session, identical type_text('A') attempts had no effect before a harness-side fix was applied mid-session.",
+      "first_seen_run": 384,
+      "hits": 2,
+      "last_seen_run": 393,
+      "text": "UPDATE: this is now fixed. On a web project, a native HTML <select> element can be driven by: tap_element to focus it, then type_text with the first letter(s) of the target option — this now sends real keyboard events that trigger the browser's native type-ahead-select behavior, updating the select's value even though the option-list popup itself still isn't clickable via tap_xy (that popup is a browser/OS compositor layer outside the page content, so coordinate clicks on it just dismiss it). After typing the matching letter, press key=\"enter\" (or tap elsewhere) to close the dropdown and confirm the selection via screenshot. This is the reliable path for any <select>/Spinner control on this harness now — do not waste turns on tap_xy coordinate guesses against an open native select popup."
+    },
+    "web-owner-warning-trailing-slash-false-positive": {
+      "evidence": "Launched https://app.metaesthetics.net/, read_screen returned the correct login page content (Log In, Create New Clinic Group, etc.) but still warned \"owned by `https://app.metaesthetics.net` (69 nodes), not the app under test (`https://app.metaesthetics.net/`)\" — same origin, only the trailing slash differs.",
+      "first_seen_run": 382,
+      "hits": 1,
+      "last_seen_run": 382,
+      "text": "On a web project, read_screen's \"owned by X, not the app under test (Y)\" warning can fire even when X and Y are the same origin, differing only by a trailing slash (e.g. owner `https://app.metaesthetics.net` vs. project url `https://app.metaesthetics.net/`). Don't treat the warning alone as proof of a wrong window on web — check the dump's actual text/elements first; a trailing-slash-only mismatch is a harness string-compare artifact, not a real overlay."
+    },
     "web-package-missing-scheme": {
       "evidence": "metaesthetics-staging.web.app project stored without https://; Chromium rejected page.goto() with an invalid URL error on every launch attempt until web_device.py was patched to prepend https:// when no scheme is present.",
       "first_seen_run": 95,
@@ -309,268 +477,289 @@
       "last_seen_run": 95,
       "text": "A web project's package/serial can be stored as a bare domain with no scheme (e.g. 'example.com' instead of 'https://example.com') if it was typed that way when the project was created. web_device.py normalizes this automatically now (_ensure_scheme), so launch/goto no longer fails outright — but if a bare-domain package ever reaches Playwright unnormalized again, it raises an invalid-URL error immediately on launch. Treat that error as a missing-scheme symptom, not a dead browser."
     },
+    "web-read-screen-drops-bold-inline-spans": {
+      "evidence": "Cookie Policy page's read_screen dump: 'This cookie policy (\" \") explains...' and 'These Tools are used by , Chemin du Laviau 6...' (filed as bug F004). Privacy Policy page's read_screen dump showed the identical pattern for its own near-identical sentence, but a screenshot of that exact sentence showed it fully and correctly rendered: 'These Services are operated by SKS Innovation SA, Chemin du Laviau 6, 1805 Jongny (\"Metaesthetics\", \"we\", \"our\", or \"us\").' — proving the dump, not the page, was wrong.",
+      "first_seen_run": 267,
+      "hits": 1,
+      "last_seen_run": 267,
+      "text": "On this web harness, read_screen's \"visible text\" dump can silently drop the text content of bold/<strong>/<b>-styled inline spans nested inside a paragraph, while every other part of that same paragraph extracts fine. The result reads exactly like a broken i18n template placeholder — e.g. a sentence like 'This privacy policy (\"Privacy Policy\") explains...' dumps as 'This privacy policy (\" \") explains...' with literal empty quotes — but the page is visually 100% correct; only the extractor lost that one nested span. Do not conclude 'broken/unresolved placeholder' from the text dump alone when you see a pattern like empty quotes '(\" \")' or a name missing before a comma. Always screenshot that exact sentence and read the image before filing a content-bug finding based on this pattern — confirmed by comparing metaesthetics.net's Cookie Policy and Privacy Policy pages, which have near-identical legal boilerplate; the Privacy Policy page's screenshot showed every bold defined-term correctly filled in ('Metaesthetics', 'we', 'our', 'us', 'Services') even though read_screen's text dump showed the same empty-quote pattern for it as the Cookie Policy page."
+    },
     "web-reset-app-data-firebase-persistence-survives": {
       "evidence": "Reset app data + cold launch showed an empty login form (email/password blank, no session banner). Tapping 'Create New Clinic Group' and even just typing an unrelated email into the login field both redirected to the same 'No clinic is linked to this account' error screen (same reference id E4Wsioj4uwUeRlISUV0NbJryfUl1) as the still-logged-in orphaned session from before the reset. Repeated a second time with the same reset+launch sequence and got the identical result both times.",
       "first_seen_run": 99,
       "hits": 1,
       "last_seen_run": 99,
       "text": "On this project (metaesthetics-staging.web.app, and likely any Firebase-Auth web app), reset_app_data followed by launch() does NOT guarantee a truly logged-out session. The app renders the public login page fine (looks logged out), but Firebase Auth's own persistence (typically IndexedDB) can survive whatever reset_app_data clears (likely just cookies/localStorage), so a background auth-state listener in the app still finds the old session and redirects away from login/signup routes within a second or two of any interaction. If a test needs a genuinely clean, unauthenticated browser state after a broken/cancelled account, reset_app_data + launch() is not sufficient to prove it — read_screen immediately after may show a clean login form that then gets hijacked by a delayed redirect. There is currently no tool available to this harness to clear IndexedDB directly or force a new incognito browser context, so once a broken session like this is created there is no in-session way to recover to a clean state."
+    },
+    "whatsapp-app-package-is-real-whatsapp": {
+      "evidence": "launch() with no args (defaulting to com.whatsapp.app) returned: '`com.whatsapp.app` is not installed on this device' and suggested unrelated similar package names. The screen at session start was already showing com.whatsapp with an active chat with a 'WhatsApp Agent' bot discussing issue #547.",
+      "first_seen_run": 335,
+      "hits": 1,
+      "last_seen_run": 335,
+      "text": "For project com.whatsapp.app, that exact package is NOT installed on the device — launch() fails with 'not installed'. The actual app under test is the real WhatsApp client, package `com.whatsapp`, and testing happens inside a chat/group there with a bot contact (seen: 'WhatsApp Agent' in a group called 'Teat group for Whatsapp agent') that responds to slash commands like `/agent ...` and to voice/video messages. Do not call launch() for this project; instead read_screen from wherever com.whatsapp already is, or navigate to it via press('home') and opening WhatsApp manually if needed."
+    },
+    "whatsapp-mention-picker-tap-selects-wrong-chip": {
+      "evidence": "Typed '@WhatsApp Ag' with only one filtered suggestion visible ('WhatsApp Agent'), tapped the suggestion list container at its dump coordinate twice, and both times the input field ended up containing '@Mom' instead. Switched to sending '/agent <text>' as a plain command, which the bot picked up and replied to correctly (filed issue #547).",
+      "first_seen_run": 333,
+      "hits": 1,
+      "last_seen_run": 333,
+      "text": "In WhatsApp's @-mention autocomplete, the suggestion strip above the keyboard is a horizontal RecyclerView that read_screen exposes as a single container id with no per-chip ids — tap_xy at its reported coordinate does not reliably land on the intended (often only) visible chip; it repeatedly selected a different contact (\"Mom\") instead of the \"WhatsApp Agent\" chip that was the sole filtered match. Prefer typing the target's name as plain literal text (or use an explicit slash-command like \"/agent <message>\" if the target bot supports one) rather than relying on tapping the mention suggestion popup."
+    },
+    "whatsapp-project-package-mismatch": {
+      "evidence": "launch() for com.whatsapp.app returned \"not installed on this device\" and suggested unrelated packages. Tapping the 'WhatsApp' icon on the home screen opened it fine, owned by package com.whatsapp (183 nodes).",
+      "first_seen_run": 331,
+      "hits": 1,
+      "last_seen_run": 331,
+      "text": "A project's configured package id can be wrong for what's actually installed. Here the project is `com.whatsapp.app` but `launch()` errors \"not installed\" and the real WhatsApp app on the device is `com.whatsapp`. Don't stop at the launch error — read_screen the launcher, find the app's icon by its visible label, and tap it directly; read_screen afterward will confirm the real owning package."
     }
   },
-  "run_count": 197,
+  "run_count": 409,
   "runs": [
     {
-      "at": "2026-08-17T10:51:08+00:00",
+      "at": "2026-09-01T12:07:22+00:00",
       "ok": true,
-      "seconds": 127.0,
-      "taps": 4,
-      "tool": "agent:recon",
-      "turns": 16
-    },
-    {
-      "at": "2026-08-17T10:51:54+00:00",
-      "ok": true,
-      "seconds": 23.4,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 4
-    },
-    {
-      "at": "2026-08-17T11:03:05+00:00",
-      "ok": true,
-      "seconds": 667.1,
-      "taps": 49,
-      "tool": "agent:auth-login-password-reset",
-      "turns": 185
-    },
-    {
-      "at": "2026-08-17T11:03:43+00:00",
-      "ok": true,
-      "seconds": 15.8,
+      "seconds": 16.5,
       "taps": 0,
       "tool": "agent:main",
       "turns": 1
     },
     {
-      "at": "2026-08-17T11:04:29+00:00",
+      "at": "2026-09-01T12:09:29+00:00",
       "ok": true,
-      "seconds": 43.8,
-      "taps": 0,
-      "tool": "agent:auth-invitation-claim-profile",
-      "turns": 5
-    },
-    {
-      "at": "2026-08-17T11:04:55+00:00",
-      "ok": true,
-      "seconds": 3.3,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-17T11:05:42+00:00",
-      "ok": true,
-      "seconds": 44.0,
-      "taps": 0,
-      "tool": "agent:guest-mode-auth-gating",
-      "turns": 4
-    },
-    {
-      "at": "2026-08-17T11:06:19+00:00",
-      "ok": true,
-      "seconds": 14.5,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 2
-    },
-    {
-      "at": "2026-08-17T11:14:04+00:00",
-      "ok": true,
-      "seconds": 460.4,
-      "taps": 11,
-      "tool": "agent:aesthetic-profile-quiz-wishes",
-      "turns": 101
-    },
-    {
-      "at": "2026-08-17T11:14:36+00:00",
-      "ok": true,
-      "seconds": 9.8,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-17T11:28:52+00:00",
-      "ok": true,
-      "seconds": 853.4,
-      "taps": 17,
-      "tool": "agent:treatment-catalogue-discovery",
-      "turns": 141
-    },
-    {
-      "at": "2026-08-17T11:29:43+00:00",
-      "ok": true,
-      "seconds": 27.9,
+      "seconds": 31.9,
       "taps": 0,
       "tool": "agent:main",
       "turns": 3
     },
     {
-      "at": "2026-08-17T11:37:02+00:00",
+      "at": "2026-09-01T12:14:42+00:00",
       "ok": true,
-      "seconds": 436.9,
-      "taps": 15,
-      "tool": "agent:appointments-booking",
-      "turns": 83
+      "seconds": 52.9,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 9
     },
     {
-      "at": "2026-08-17T11:37:33+00:00",
+      "at": "2026-09-01T12:16:30+00:00",
       "ok": true,
-      "seconds": 8.5,
+      "seconds": 344.4,
+      "taps": 3,
+      "tool": "agent:main",
+      "turns": 29
+    },
+    {
+      "at": "2026-09-01T12:17:43+00:00",
+      "ok": true,
+      "seconds": 20.7,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 3
+    },
+    {
+      "at": "2026-09-01T12:31:29+00:00",
+      "ok": true,
+      "seconds": 829.9,
+      "taps": 39,
+      "tool": "agent:registration-new-clinic-group",
+      "turns": 165
+    },
+    {
+      "at": "2026-09-01T12:47:19+00:00",
+      "ok": true,
+      "seconds": 6.5,
       "taps": 0,
       "tool": "agent:main",
       "turns": 1
     },
     {
-      "at": "2026-08-17T11:38:49+00:00",
+      "at": "2026-09-01T12:50:22+00:00",
       "ok": true,
-      "seconds": 72.3,
+      "seconds": 171.5,
+      "taps": 20,
+      "tool": "agent:registration-new-clinic-group",
+      "turns": 55
+    },
+    {
+      "at": "2026-09-02T10:02:33+00:00",
+      "ok": true,
+      "seconds": 24.6,
       "taps": 0,
-      "tool": "agent:localisation-language-switching",
+      "tool": "agent:main",
+      "turns": 4
+    },
+    {
+      "at": "2026-09-02T10:02:59+00:00",
+      "ok": false,
+      "seconds": 26.8,
+      "taps": 0,
+      "tool": "agent:registration-join-existing-clinic",
+      "turns": 8
+    },
+    {
+      "at": "2026-09-02T10:03:17+00:00",
+      "ok": true,
+      "seconds": 16.1,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 4
+    },
+    {
+      "at": "2026-09-02T10:03:43+00:00",
+      "ok": false,
+      "seconds": 27.9,
+      "taps": 0,
+      "tool": "agent:registration-join-existing-clinic",
       "turns": 6
     },
     {
-      "at": "2026-08-17T11:39:37+00:00",
+      "at": "2026-09-02T10:03:45+00:00",
       "ok": true,
-      "seconds": 25.2,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-17T11:41:15+00:00",
-      "ok": true,
-      "seconds": 95.4,
-      "taps": 4,
-      "tool": "agent:profile-personal-medical-information",
-      "turns": 15
-    },
-    {
-      "at": "2026-08-17T11:41:43+00:00",
-      "ok": true,
-      "seconds": 5.8,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-17T11:45:23+00:00",
-      "ok": true,
-      "seconds": 216.5,
-      "taps": 2,
-      "tool": "agent:settings-permissions-biometrics-account",
-      "turns": 19
-    },
-    {
-      "at": "2026-08-17T11:45:59+00:00",
-      "ok": true,
-      "seconds": 13.3,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-17T11:49:11+00:00",
-      "ok": true,
-      "seconds": 188.9,
-      "taps": 1,
-      "tool": "agent:home",
-      "turns": 25
-    },
-    {
-      "at": "2026-08-17T11:49:40+00:00",
-      "ok": true,
-      "seconds": 6.1,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-17T11:54:27+00:00",
-      "ok": true,
-      "seconds": 283.9,
-      "taps": 12,
-      "tool": "agent:search-doctors-clinics-filters",
-      "turns": 41
-    },
-    {
-      "at": "2026-08-17T11:54:53+00:00",
-      "ok": true,
-      "seconds": 3.3,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 1
-    },
-    {
-      "at": "2026-08-17T12:03:46+00:00",
-      "ok": true,
-      "seconds": 529.8,
-      "taps": 19,
-      "tool": "agent:my-visits-passport",
-      "turns": 95
-    },
-    {
-      "at": "2026-08-17T12:04:32+00:00",
-      "ok": true,
-      "seconds": 23.3,
-      "taps": 0,
-      "tool": "agent:main",
-      "turns": 3
-    },
-    {
-      "at": "2026-08-17T12:21:06+00:00",
-      "ok": true,
-      "seconds": 40.4,
+      "seconds": 14.2,
       "taps": 0,
       "tool": "agent:main",
       "turns": 5
     },
     {
-      "at": "2026-08-17T12:24:03+00:00",
+      "at": "2026-09-02T10:05:57+00:00",
       "ok": true,
-      "seconds": 12.4,
+      "seconds": 118.2,
+      "taps": 7,
+      "tool": "agent:registration-new-clinic-group",
+      "turns": 33
+    },
+    {
+      "at": "2026-09-02T10:37:52+00:00",
+      "ok": true,
+      "seconds": 1616.6,
+      "taps": 107,
+      "tool": "agent:registration-new-clinic-group",
+      "turns": 377
+    },
+    {
+      "at": "2026-09-02T12:19:13+00:00",
+      "ok": true,
+      "seconds": 889.7,
+      "taps": 43,
+      "tool": "agent:registration-join-existing-clinic",
+      "turns": 167
+    },
+    {
+      "at": "2026-09-02T12:48:53+00:00",
+      "ok": true,
+      "seconds": 36.6,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 4
+    },
+    {
+      "at": "2026-09-02T12:50:04+00:00",
+      "ok": true,
+      "seconds": 45.7,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 6
+    },
+    {
+      "at": "2026-09-02T12:57:44+00:00",
+      "ok": true,
+      "seconds": 462.6,
+      "taps": 141,
+      "tool": "agent:registration-new-clinic-group",
+      "turns": 102
+    },
+    {
+      "at": "2026-09-02T12:57:54+00:00",
+      "ok": true,
+      "seconds": 8.4,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 1
+    },
+    {
+      "at": "2026-09-02T13:04:10+00:00",
+      "ok": true,
+      "seconds": 375.9,
+      "taps": 53,
+      "tool": "agent:registration-join-existing-clinic",
+      "turns": 50
+    },
+    {
+      "at": "2026-09-02T13:04:43+00:00",
+      "ok": true,
+      "seconds": 31.7,
       "taps": 0,
       "tool": "agent:main",
       "turns": 2
     },
     {
-      "at": "2026-08-17T12:29:38+00:00",
+      "at": "2026-09-02T13:12:17+00:00",
       "ok": true,
-      "seconds": 1503.5,
-      "taps": 16,
-      "tool": "agent:session-lifetime-token-refresh",
-      "turns": 121
+      "seconds": 10.6,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 3
     },
     {
-      "at": "2026-08-17T12:30:06+00:00",
+      "at": "2026-09-02T13:16:38+00:00",
       "ok": true,
-      "seconds": 6.2,
+      "seconds": 207.3,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 51
+    },
+    {
+      "at": "2026-09-02T13:17:54+00:00",
+      "ok": true,
+      "seconds": 3.9,
       "taps": 0,
       "tool": "agent:main",
       "turns": 1
+    },
+    {
+      "at": "2026-09-02T14:08:55+00:00",
+      "ok": true,
+      "seconds": 63.3,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 4
+    },
+    {
+      "at": "2026-09-02T14:16:53+00:00",
+      "ok": true,
+      "seconds": 478.3,
+      "taps": 22,
+      "tool": "agent:patient-search-discovery",
+      "turns": 89
+    },
+    {
+      "at": "2026-09-02T14:30:30+00:00",
+      "ok": true,
+      "seconds": 98.1,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 9
+    },
+    {
+      "at": "2026-09-02T14:38:58+00:00",
+      "ok": true,
+      "seconds": 509.3,
+      "taps": 48,
+      "tool": "agent:production-test-data-cleanup-remove-leaked-qa-clinics",
+      "turns": 164
+    },
+    {
+      "at": "2026-09-02T15:39:59+00:00",
+      "ok": true,
+      "seconds": 50.5,
+      "taps": 0,
+      "tool": "agent:main",
+      "turns": 9
     }
   ],
   "schema": 1,
   "timings": {
     "launch_settle.ios-native": {
       "samples": [
-        0.21,
-        0.29,
-        0.34,
-        0.16,
-        0.33,
-        0.15,
-        0.24,
         0.24,
         0.36,
         0.21,
@@ -603,52 +792,59 @@
         0.23,
         0.21,
         0.29,
-        0.25
+        0.25,
+        0.43,
+        0.62,
+        0.28,
+        0.6,
+        0.43,
+        5.89,
+        5.82
       ],
       "unit": "s"
     },
     "launch_settle.native": {
       "samples": [
+        1.24,
+        1.27,
+        1.23,
+        1.18,
+        1.24,
+        1.33,
         1.2,
-        1.16,
-        1.21,
-        1.2,
-        1.19,
-        1.19,
+        1.32,
         1.28,
-        1.35,
-        1.31,
+        1.23,
+        1.29,
+        1.26,
+        1.24,
         1.28,
         1.27,
-        1.21,
+        1.33,
         1.22,
-        1.19,
-        1.22,
-        1.19,
-        1.19,
-        1.16,
-        1.16,
-        1.19,
-        1.22,
-        1.19,
-        1.18,
-        1.38,
-        1.29,
-        1.25,
-        1.31,
-        1.29,
-        1.18,
-        1.21,
         1.24,
-        1.24,
-        1.23,
-        1.21,
+        1.28,
         1.26,
-        1.25,
-        1.18,
-        1.23,
-        1.3,
-        0.11
+        1.26,
+        1.26,
+        1.26,
+        1.26,
+        1.28,
+        1.15,
+        1.2,
+        1.16,
+        1.13,
+        1.2,
+        1.14,
+        1.16,
+        1.17,
+        1.13,
+        1.2,
+        1.21,
+        1.15,
+        1.19,
+        1.17,
+        1.45
       ],
       "unit": "s"
     },
@@ -656,44 +852,47 @@
       "samples": [
         0.02,
         0.02,
-        0.03,
-        0.02,
-        0.02,
-        4.04,
-        4.05,
-        4.27,
-        4.05,
-        3.62,
-        4.44,
-        3.11,
-        3.04,
-        3.02,
-        3.04,
-        0.01,
-        0.02,
         0.04,
-        0.0,
-        0.01,
         0.03,
+        0.07,
+        3.05,
+        3.91,
         0.01,
+        3.16,
+        0.08,
+        3.15,
         0.01,
-        0.02,
-        3.1,
-        4.61,
-        3.19,
-        2.1,
-        3.12,
-        4.05,
-        3.08,
+        4.06,
+        3.97,
+        4.08,
+        0.01,
         4.07,
+        4.1,
+        2.07,
         0.01,
-        9.23,
+        0.01,
+        0.05,
+        3.07,
+        0.01,
+        3.13,
         4.07,
-        4.23,
-        3.05
+        3.11,
+        0.01,
+        0.01,
+        0.01,
+        4.06,
+        0.0,
+        8.06,
+        0.03,
+        4.07,
+        2.06,
+        6.96,
+        0.03,
+        4.06,
+        0.02
       ],
       "unit": "s"
     }
   },
-  "updated_at": "2026-08-17T12:30:06+00:00"
+  "updated_at": "2026-09-02T15:39:59+00:00"
 }

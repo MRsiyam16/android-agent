@@ -16,11 +16,19 @@ class ProjectCreatePayload(BaseModel):
     # Where to put the project folder. Absent means the default `projects/<package>/`, which
     # is what telemetry from a bare `run_agent.py` still creates.
     root: Optional[str] = None
-    # "android" | "ios" | "web". Absent defaults to "android" for back-compat with every
-    # existing caller. For a web project, `package` holds the target URL rather than a
-    # package/bundle id — the same field-sharing `device_tools.DeviceSession` already does
-    # between Android package names and iOS bundle ids.
+    # "android" | "ios" | "web" | "windows". Absent defaults to "android" for back-compat with
+    # every existing caller. For a web project, `package` holds the target URL rather than a
+    # package/bundle id; for windows, it holds the target executable's path — the same
+    # field-sharing `device_tools.DeviceSession` already does between Android package names
+    # and iOS bundle ids.
     platform: Optional[str] = None
+    # Windows-only: the VirtualBox VM name (device.create_device's `serial`). Lets a Windows
+    # project set its VM at creation instead of a separate pin-device call; a harmless no-op
+    # for the other three platforms, which resolve their device some other way.
+    device_serial: Optional[str] = None
+    # Windows-only: which snapshot WindowsDevice.restore_snapshot() targets for this project.
+    # Absent falls back to config.WINDOWS_DEFAULT_SNAPSHOT.
+    snapshot_name: Optional[str] = None
 
 
 class TelemetryPayload(BaseModel):
@@ -57,6 +65,19 @@ class CommandPayload(BaseModel):
     # these would open a second, disconnected one instead of reaching the one on screen.
     package: Optional[str] = None
     slug: Optional[str] = None
+
+
+class WindowsResetPayload(BaseModel):
+    """Manual "Reset VM to clean snapshot" trigger — see `/device/windows/restore-snapshot`.
+
+    Deliberately its own route rather than the agent's `reset_app_data` tool: a snapshot
+    restore reboots the whole VM and routinely takes minutes, far past
+    `config.AGENT_TOOL_TIMEOUT_SECONDS` — see `windows_device.py`'s module docstring.
+    """
+    package: Optional[str] = None
+    slug: Optional[str] = None
+    device_serial: Optional[str] = None
+    snapshot_name: Optional[str] = None
 
 
 class ViewportPayload(BaseModel):

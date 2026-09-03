@@ -66,6 +66,10 @@ async def create_project(payload: ProjectCreatePayload):
     updates: dict[str, Any] = {}
     if payload.platform:
         updates["platform"] = payload.platform.lower()
+    if payload.device_serial:
+        updates["device_serial"] = payload.device_serial.strip()
+    if payload.snapshot_name:
+        updates["snapshot_name"] = payload.snapshot_name.strip()
     # Reachability (a bad URL, an uninstalled app) is discovered honestly on first `launch`,
     # the same way `is_installed` already works — no validation of `package` here.
     meta = projects.write_meta(package, **updates)

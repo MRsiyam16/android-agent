@@ -30,6 +30,15 @@ class TestCreateDevice:
         finally:
             dev.close()
 
+    def test_an_explicit_windows_platform_returns_a_windows_device(self):
+        """A VM name, like a web URL, has no shape of its own to infer from — `platform`
+        is not optional here either. See test_windows_device.py for the fuller adapter and
+        translation suite."""
+        dev = device_mod.create_device("notepad-vm", platform="windows")
+        import windows_device
+        assert isinstance(dev, windows_device.WindowsDevice)
+        assert isinstance(dev, device_mod.Device)
+
 
 class TestPlatformFromDump:
     def test_a_web_stamped_dump_is_recognised(self):
@@ -41,6 +50,13 @@ class TestPlatformFromDump:
     def test_an_ios_stamped_dump_still_reads_as_ios(self):
         assert device_mod.platform_from_dump(
             '<hierarchy rotation="0" platform="ios"></hierarchy>') == device_mod.IOS
+
+    def test_a_windows_stamped_dump_is_recognised(self):
+        import windows_device
+        xml = windows_device.render_dump({"control_type": "Window", "children": []},
+                                         "notepad.exe", "notepad-vm")
+        assert 'platform="windows"' in xml
+        assert device_mod.platform_from_dump(xml) == device_mod.WINDOWS
 
     def test_an_unstamped_dump_still_reads_as_android(self):
         """Every captured dump already in this suite predates this platform and must keep
@@ -62,6 +78,12 @@ class TestCapabilities:
         navigates by URL, and a single browser tab has no app switcher."""
         assert not device_mod.supports(device_mod.WEB, "DEEPLINK")
         assert not device_mod.supports(device_mod.WEB, "RECENTS")
+
+    def test_windows_can_reach_recents_unlike_ios_or_web(self):
+        """Win+Tab (Task View) genuinely exists — the one non-Android platform with a real
+        app-switcher equivalent. See test_windows_device.py for the fuller capability suite."""
+        assert device_mod.supports(device_mod.WINDOWS, "RECENTS")
+        assert not device_mod.supports(device_mod.WINDOWS, "CLEAR_DATA")
 
 
 class TestDetectToolkit:

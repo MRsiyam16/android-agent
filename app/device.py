@@ -21,6 +21,7 @@ logger = logging.getLogger("device")
 ANDROID = "android"
 IOS = "ios"
 WEB = "web"
+WINDOWS = "windows"
 
 
 @runtime_checkable
@@ -74,11 +75,18 @@ class Device(Protocol):
 #                 asynchronously seconds after the fact. Web has its own analogue (console
 #                 errors, synchronous) but it is different enough in shape to leave unflagged.
 #   RECENTS       open the app switcher. Android: yes. iOS: not reachable via XCUITest. Web:
-#                 no such concept in a single browser tab.
+#                 no such concept in a single browser tab. Windows: yes, Win+Tab (Task View)
+#                 genuinely exists — the one platform besides Android that has this.
+#
+#   Windows has none of DEEPLINK (no generic desktop-app URI-scheme convention), CLEAR_DATA
+#   (the only real reset is a full VM snapshot restore — see windows_device.py's module
+#   docstring for why that is deliberately not wired to clear_app_data), or LIVE_LOG (no
+#   crash-log reading yet, see docs/WINDOWS_SETUP.md).
 CAPABILITIES: dict[str, frozenset[str]] = {
     ANDROID: frozenset({"DEEPLINK", "CLEAR_DATA", "LIVE_LOG", "RECENTS"}),
     IOS: frozenset(),
     WEB: frozenset({"CLEAR_DATA"}),
+    WINDOWS: frozenset({"RECENTS"}),
 }
 
 _UDID_RE = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$|^[0-9A-Fa-f]{40}$")
@@ -129,6 +137,8 @@ def platform_from_dump(xml: str) -> str:
     head = (xml or "")[:200]
     if 'platform="web"' in head:
         return WEB
+    if 'platform="windows"' in head:
+        return WINDOWS
     return IOS if 'platform="ios"' in head else ANDROID
 
 
@@ -147,10 +157,10 @@ def create_device(serial: Optional[str] = None,
 
     `platform` wins when given — pass it when the caller already knows, so a phone that is
     unplugged at this exact moment produces a clear connection error rather than being
-    misrouted to the other adapter and a confusing one. This is not optional for web: a URL has
-    no shape `platform_of()` can infer the way a UDID's shape identifies iOS, so a web target
-    must always arrive with `platform="web"` explicit (see backend/projects.py's `platform`
-    field) rather than being guessed here.
+    misrouted to the other adapter and a confusing one. This is not optional for web or
+    windows: a URL has no shape `platform_of()` can infer the way a UDID's shape identifies
+    iOS, and neither does a VM name, so both must always arrive with `platform` explicit (see
+    backend/projects.py's `platform` field) rather than being guessed here.
     """
     resolved = (platform or platform_of(serial)).lower()
     if resolved == WEB:
@@ -159,6 +169,9 @@ def create_device(serial: Optional[str] = None,
     if resolved == IOS:
         import ios_device
         return ios_device.IOSDevice(serial)
+    if resolved == WINDOWS:
+        import windows_device
+        return windows_device.WindowsDevice(serial)
     return adb_device.AdbDevice(serial)
 
 
@@ -200,4 +213,7 @@ def detect_toolkit(xml: str) -> str:
     if platform == IOS:
         import ios_device
         return ios_device.detect_toolkit(xml)
+    if platform == WINDOWS:
+        import windows_device
+        return windows_device.detect_toolkit(xml)
     return adb_device.detect_toolkit(xml)

@@ -228,6 +228,42 @@ _RESPONSIVE_ISSUES_JS = r"""
 """
 
 
+# Run by `select_option()` against one (x, y, option) triple at a time. Walks up from
+# `elementFromPoint` rather than requiring the exact element, because the dump's reported
+# center for a `<select>` sometimes lands on a styled wrapper or the option-list popup's own
+# stacking context in a few frameworks — the nearest enclosing `<select>` is still correct.
+_SELECT_OPTION_JS = r"""
+(args) => {
+  const { x, y, option } = args;
+  let node = document.elementFromPoint(x, y);
+  let select = node ? node.closest("select") : null;
+  if (!select && node && node.tagName && node.tagName.toLowerCase() === "select") {
+    select = node;
+  }
+  if (!select) {
+    return { ok: false, reason: "no <select> element at that point" };
+  }
+  const options = Array.from(select.options);
+  const needle = String(option).trim().toLowerCase();
+  const match = options.find(o => o.text.trim().toLowerCase() === needle)
+    || options.find(o => o.value.trim().toLowerCase() === needle)
+    || options.find(o => o.text.trim().toLowerCase().includes(needle));
+  if (!match) {
+    return {
+      ok: false,
+      reason: `no option matching ${JSON.stringify(option)}`,
+      available: options.map(o => o.text.trim()),
+    };
+  }
+  select.focus();
+  select.value = match.value;
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  return { ok: true, selected: match.text.trim() };
+}
+"""
+
+
 def render_dom(tree: Optional[dict], origin: str) -> str:
     """Render a collected DOM tree as the `<node>` XML that `screen.py` already parses.
 
@@ -456,9 +492,22 @@ class WebDevice:
                     f"the browser installed on this machine, so it has to actually be "
                     f"installed. Set WEB_BROWSER_CHANNEL=chromium in app/.env to go back to "
                     f"Playwright's own build.") from exc
+            # `device_scale_factor` makes Chromium render into a backing store that many
+            # times bigger than the OS window (2x by default — see WEB_SCREENSHOT_SCALE),
+            # purely so screenshots come out sharp. In headless mode nothing is on screen, so
+            # that oversized buffer is free sharpness. In headed mode the OS window itself is
+            # still sized in physical, unscaled pixels (`--window-size` above), so Chromium is
+            # carrying a 2x-rendered page inside a 1x-sized window all session long — and every
+            # forced layout/paint (read_screen's getComputedStyle-heavy DOM walk, a tap, a
+            # modal opening or closing) is a chance for a frame to briefly present at the
+            # oversized scale before the window catches up. That is the flicker: not a one-time
+            # launch snap, but this mismatch being reconciled over and over for as long as the
+            # window is open. Screenshots are re-encoded through Pillow in capture() regardless,
+            # so headed runs give up nothing by rendering at native (1x) scale instead.
+            scale = 1.0 if not config.WEB_HEADLESS else config.WEB_SCREENSHOT_SCALE
             self._context = self._browser.new_context(
                 viewport={"width": width, "height": height},
-                device_scale_factor=config.WEB_SCREENSHOT_SCALE)
+                device_scale_factor=scale)
             self._page = self._context.new_page()
             self._page.on("console", self._on_console)
             self._page.on("pageerror", self._on_pageerror)
@@ -638,6 +687,29 @@ class WebDevice:
             self._call(lambda: self._page.mouse.click(int(x), int(y)))
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(f"click({x},{y}) failed: {exc}") from exc
+
+    def select_option(self, x: int, y: int, option: str) -> str:
+        """Pick an option on the native `<select>` at (x, y) — no pixel click involved.
+
+        A `<select>`'s open option list is an OS-compositor popup, not page content: it paints
+        over the page (so screenshots show it) but sits outside the DOM the page's own mouse
+        events land in, so a `click()` at an option's visible position lands on the page behind
+        it instead and just closes the dropdown. Setting `.value` in-page sidesteps the popup
+        entirely — the popup never has to open.
+        """
+        def _do() -> dict[str, Any]:
+            return self._page.evaluate(_SELECT_OPTION_JS, {
+                "x": int(x), "y": int(y), "option": str(option)})
+        try:
+            result = self._call(_do)
+        except Exception as exc:  # noqa: BLE001
+            raise DeviceError(f"select_option({option!r}) failed: {exc}") from exc
+        if not result or not result.get("ok"):
+            reason = (result or {}).get("reason", "unknown error")
+            available = (result or {}).get("available") or []
+            hint = f" Options on that element: {', '.join(available)}." if available else ""
+            raise DeviceError(f"select_option({option!r}) at ({x},{y}) failed: {reason}.{hint}")
+        return str(result.get("selected", ""))
 
     def long_click(self, x: int, y: int, duration: float = 0.8) -> None:
         def _do() -> None:

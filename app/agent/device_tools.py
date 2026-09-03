@@ -95,11 +95,26 @@ def _same_origin(a: str, b: str) -> bool:
 
 
 class DeviceSession:
-    """One agent chat session's view of the device, plus its evidence trail."""
+    """One agent chat session's view of the device, plus its evidence trail.
+
+    Normally one device ("a"). A module wired to a *pair* of devices — see `peer_serial` —
+    also gets a "b" slot, entirely mirrored: its own connection, its own last-read screen,
+    its own action count. The two never share state, because the whole point of driving two
+    phones from one chat is comparing what one shows against what the other shows a moment
+    later — collapsing them into one `last_xml` would make every read of device b overwrite
+    the evidence a verdict about device a was about to be judged against.
+
+    This is deliberately narrow rather than a general N-device session: nothing here
+    generalises past two, and every device tool that takes `device` defaults to "a" so an
+    ordinary single-device module (the overwhelming majority) never sees the parameter at
+    all — `has_peer` gates it out of every tool schema built for a session without one.
+    """
 
     def __init__(self, package: str, slug: str, serial: Optional[str] = None,
                  emit: Optional[Callable[[dict[str, Any]], Any]] = None,
-                 platform: Optional[str] = None):
+                 platform: Optional[str] = None,
+                 peer_serial: Optional[str] = None, peer_platform: Optional[str] = None,
+                 package_a: Optional[str] = None, package_b: Optional[str] = None):
         # `package` holds whatever identifies the app on this platform: an Android package
         # name, or an iOS bundle id. The two are the same concept and are never mixed within
         # a project, so they share the field rather than the name being generalised across
@@ -110,6 +125,15 @@ class DeviceSession:
         self.platform = platform
         self.emit = emit or (lambda _e: None)
 
+        # The identifier to launch/compare against on each slot. Almost always just
+        # `package` twice over — but a project's package is a *storage key* (the folder its
+        # findings live under), and on a platform where the real package/bundle id differs
+        # from that key (a project named for the product rather than for one platform's
+        # install id), `package_a`/`package_b` let launch() and the "wrong app on screen"
+        # check target the thing that is actually installed rather than the folder name.
+        self.package_a = package_a or package
+        self.package_b = package_b or package
+
         self._device: Optional[Device] = None
         self._journey = None
         self._section: Optional[str] = None
@@ -118,6 +142,18 @@ class DeviceSession:
         self.last_texts: list[str] = []
         self.shot_count = 0
         self.tap_count = 0
+
+        # -- device b: only populated when this module drives a second phone ----------------
+        self.peer_serial = peer_serial
+        self.peer_platform = peer_platform
+        self.has_peer = bool(peer_serial or peer_platform)
+        self._device_b: Optional[Device] = None
+        self.last_elements_b: list[dict[str, Any]] = []
+        self.last_xml_b: str = ""
+        self.last_texts_b: list[str] = []
+        self.shot_count_b = 0
+        self.tap_count_b = 0
+        self.actions_since_read_b = 0
         # How many actions have been taken since the screen was last read. The prompt already
         # says "never act twice without reading in between" and "never judge a submit while a
         # request is in flight" — but a rule the model is merely *told* is a rule it can drop
@@ -216,6 +252,34 @@ class DeviceSession:
                 f"{config.AGENT_TOOL_TIMEOUT_SECONDS:.0f}s. Check the cable and that the "
                 f"screen is on, then try again.") from exc
 
+    # -- device b: the peer phone, only reachable when `has_peer` -----------------
+    def _connect_b(self) -> Device:
+        if self._device_b is None:
+            self._device_b = create_device(self.peer_serial, self.peer_platform)
+            self.peer_serial = self._device_b.serial
+        return self._device_b
+
+    async def device_b(self) -> Device:
+        """Same as `device()`, for the peer phone."""
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._connect_b),
+                timeout=config.AGENT_TOOL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as exc:
+            raise DeviceError(
+                f"Connecting to device b took longer than "
+                f"{config.AGENT_TOOL_TIMEOUT_SECONDS:.0f}s. Check the cable and that the "
+                f"screen is on, then try again.") from exc
+
+    async def device_at(self, which: str) -> Device:
+        """Either slot, by name — the one dispatch point every tool routes through."""
+        return await (self.device_b() if which == "b" else self.device())
+
+    @property
+    def resolved_platform_b(self) -> str:
+        from device import ANDROID, platform_from_serial
+        return self.peer_platform or platform_from_serial(self.peer_serial) or ANDROID
+
     async def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Run a blocking device call off the event loop, with a hard timeout."""
         return await asyncio.wait_for(
@@ -260,9 +324,14 @@ class DeviceSession:
         except Exception as exc:  # noqa: BLE001 - telemetry must never break a tool
             logger.warning("emit failed: %s", exc)
 
-    async def capture(self, note: str = "") -> Path:
-        """Save a screenshot into the sub-project's evidence folder and return its path."""
-        d = await self.device()
+    async def capture(self, note: str = "", which: str = "a") -> Path:
+        """Save a screenshot into the sub-project's evidence folder and return its path.
+
+        `which="b"` shoots the peer phone instead, prefixed `b-` in the filename — both
+        devices share one evidence folder, and without the prefix a device-a and a device-b
+        shot from the same module could collide on the same running count.
+        """
+        d = await self.device_at(which)
         # `screenshot_b64` is the cross-platform method on the `Device` protocol; `d.d` is
         # AdbDevice's uiautomator2 handle and does not exist on IOSDevice at all — calling it
         # directly here used to raise `'IOSDevice' object has no attribute 'd'` on every iOS
@@ -270,9 +339,14 @@ class DeviceSession:
         # requires a screenshot).
         b64 = await self.run(d.screenshot_b64)
         raw = Image.open(io.BytesIO(base64.b64decode(b64)))
-        self.shot_count += 1
+        if which == "b":
+            self.shot_count_b += 1
+            count, prefix = self.shot_count_b, "b-"
+        else:
+            self.shot_count += 1
+            count, prefix = self.shot_count, ""
         safe = re.sub(r"[^a-z0-9]+", "-", note.lower()).strip("-")[:40] or "shot"
-        path = store.shots_dir(self.package, self.slug) / f"{self.shot_count:03d}-{safe}.jpg"
+        path = store.shots_dir(self.package, self.slug) / f"{prefix}{count:03d}-{safe}.jpg"
         path.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(
             lambda: raw.convert("RGB").save(path, format="JPEG",
@@ -285,8 +359,93 @@ class DeviceSession:
         return path
 
 
+# -- dual-device dispatch --------------------------------------------------------------------
+# Every device tool routes through these instead of touching `session.<attr>` directly, so the
+# same tool body serves slot a and slot b without becoming two copies of itself. A session with
+# no peer only ever sees which="a" — `_which` coerces "b" back to "a" when `has_peer` is False,
+# so a stray argument on an ordinary single-device module is a no-op rather than a wrong-target
+# tap on a phone that was never connected.
+_DEVICE_ARG_SCHEMA = {
+    "type": "string", "enum": ["a", "b"],
+    "description": "Which phone this call targets. Defaults to 'a'. See the system prompt "
+                   "for which device is 'a' and which is 'b'.",
+}
+
+
+def _with_device_arg(props: dict[str, Any], session: DeviceSession) -> dict[str, Any]:
+    """A tool's `properties` dict, plus `device` when — and only when — this session has a
+    second phone. Omitted entirely otherwise, so an ordinary module never sees a parameter
+    that would always have to resolve to "a" anyway."""
+    if not session.has_peer:
+        return props
+    return {**props, "device": _DEVICE_ARG_SCHEMA}
+
+
+def _which(session: DeviceSession, args: dict[str, Any]) -> str:
+    picked = str(args.get("device") or "a").strip().lower()
+    return "b" if picked == "b" and session.has_peer else "a"
+
+
+def _target_package(session: DeviceSession, which: str) -> str:
+    return session.package_b if which == "b" else session.package_a
+
+
+def _last(session: DeviceSession, which: str) -> tuple[str, list[dict[str, Any]], list[str]]:
+    if which == "b":
+        return session.last_xml_b, session.last_elements_b, session.last_texts_b
+    return session.last_xml, session.last_elements, session.last_texts
+
+
+def _set_last(session: DeviceSession, which: str, xml: str, elements: list[dict[str, Any]],
+             texts: list[str]) -> None:
+    if which == "b":
+        session.last_xml_b, session.last_elements_b, session.last_texts_b = xml, elements, texts
+        session.actions_since_read_b = 0
+    else:
+        session.last_xml, session.last_elements, session.last_texts = xml, elements, texts
+        session.actions_since_read = 0
+
+
+def _bump_actions(session: DeviceSession, which: str) -> None:
+    if which == "b":
+        session.actions_since_read_b += 1
+    else:
+        session.actions_since_read += 1
+
+
+def _bump_taps(session: DeviceSession, which: str) -> None:
+    if which == "b":
+        session.tap_count_b += 1
+    else:
+        session.tap_count += 1
+
+
+def _peer_block_reason(session: DeviceSession) -> Optional[str]:
+    """`guards.finding_block_reason`, mirrored for device b.
+
+    Not folded into that function: it takes a `DeviceSession` and reads `.actions_since_read`
+    / `.last_texts` directly, which are — deliberately — always device a's. Duplicating the
+    two checks here (rather than generalising guards.py itself) keeps the single-device path,
+    which is every other project in this harness, completely untouched.
+    """
+    if session.actions_since_read_b:
+        return (
+            f"You have acted {session.actions_since_read_b} time(s) on device b since its "
+            f"last read_screen, so what you are describing is not what its screen currently "
+            f"shows. Call read_screen(device=\"b\"), confirm the state, and file it then.")
+    stalled = in_flight_text(session.last_texts_b)
+    if stalled is not None:
+        return (
+            f"Device b's last read screen still showed {stalled!r}, which means its request "
+            f"had not finished. Call wait_until_gone(text={stalled!r}, device=\"b\"), read "
+            f"again, and judge that.")
+    return None
+
+
 def _render_screen(session: DeviceSession, xml: str, w: int, h: int,
-                   texts: list[str], elements: list[dict[str, Any]]) -> str:
+                   texts: list[str], elements: list[dict[str, Any]],
+                   target_package: Optional[str] = None) -> str:
+    target = target_package or session.package
     ranking = package_ranking(xml)
     top_pkg = ranking[0][0] if ranking else ""
     lines: list[str] = []
@@ -294,10 +453,10 @@ def _render_screen(session: DeviceSession, xml: str, w: int, h: int,
     if not ranking:
         lines.append("WARNING: the dump has no readable nodes. The UI has probably not "
                      "rendered yet — wait, then read again. Do not conclude anything.")
-    elif top_pkg != session.package:
+    elif top_pkg != target:
         lines.append(
             f"WARNING: the screen is owned by `{top_pkg}` ({ranking[0][1]} nodes), not the app "
-            f"under test (`{session.package}`). A dump shows only the topmost window, so the "
+            f"under test (`{target}`). A dump shows only the topmost window, so the "
             f"app's own screen is hidden behind this one — most likely a system permission "
             f"dialog, another app's floating overlay, or the launcher. Deal with this first; "
             f"anything you conclude about the app right now would be about the wrong window.")
@@ -391,9 +550,11 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "touchable element with an id you can tap. Call this after every action that could "
           "change the screen. Returns a warning if another app or a system dialog is covering "
           "the app under test.",
-          {"type": "object", "properties": {}, "additionalProperties": False})
-    async def read_screen(_args: dict[str, Any]) -> dict[str, Any]:
-        d = await session.device()
+          {"type": "object", "properties": _with_device_arg({}, session),
+           "additionalProperties": False})
+    async def read_screen(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
+        d = await session.device_at(which)
         try:
             xml = await session.run(d.dump_xml)
             w, h = await session.run(lambda: d.window_size)
@@ -401,20 +562,23 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
             return _err(f"Could not read the screen: {exc}")
         texts = screen_texts(xml)
         elements = screen_elements(xml, w, h)
-        session.last_xml, session.last_elements, session.last_texts = xml, elements, texts
-        session.actions_since_read = 0
-        return _ok(_render_screen(session, xml, w, h, texts, elements))
+        _set_last(session, which, xml, elements, texts)
+        return _ok(_render_screen(session, xml, w, h, texts, elements,
+                                  target_package=_target_package(session, which)))
 
     @tool("screenshot",
           "Capture a screenshot and save it as evidence. Returns a file path — use the Read "
           "tool on that path to actually look at the image. Required before filing any finding.",
           {"type": "object",
-           "properties": {"note": {"type": "string",
-                                   "description": "Optional short label, e.g. 'login-empty-submit'"}},
+           "properties": _with_device_arg(
+               {"note": {"type": "string",
+                        "description": "Optional short label, e.g. 'login-empty-submit'"}},
+               session),
            "additionalProperties": False})
     async def screenshot(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
         try:
-            path = await session.capture(args.get("note") or "shot")
+            path = await session.capture(args.get("note") or "shot", which=which)
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Screenshot failed: {exc}")
         return _ok(f"Saved to {path}\nRead that path to view the image.")
@@ -424,13 +588,16 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "this instead of a fixed sleep: a splash screen publishes nodes with no text, so "
           "text is the only honest readiness signal.",
           {"type": "object",
-           "properties": {"text": {"type": "string"},
-                          "timeout": {"type": "number", "description": "Seconds, default 20"}},
+           "properties": _with_device_arg(
+               {"text": {"type": "string"},
+                "timeout": {"type": "number", "description": "Seconds, default 20"}},
+               session),
            "required": ["text"], "additionalProperties": False})
     async def wait_for_text(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
         needle = str(args["text"]).lower()
         deadline = time.monotonic() + float(args.get("timeout") or 20)
-        d = await session.device()
+        d = await session.device_at(which)
         last: list[str] = []
         while time.monotonic() < deadline:
             # Checked every pass, not just at entry: this loop can hold the turn for the full
@@ -456,13 +623,16 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "still in flight; a progress overlay hides the form underneath and makes a correct "
           "rejection look like it was accepted.",
           {"type": "object",
-           "properties": {"text": {"type": "string"},
-                          "timeout": {"type": "number", "description": "Seconds, default 30"}},
+           "properties": _with_device_arg(
+               {"text": {"type": "string"},
+                "timeout": {"type": "number", "description": "Seconds, default 30"}},
+               session),
            "required": ["text"], "additionalProperties": False})
     async def wait_until_gone(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
         needle = str(args["text"]).lower()
         deadline = time.monotonic() + float(args.get("timeout") or 30)
-        d = await session.device()
+        d = await session.device_at(which)
         while time.monotonic() < deadline:
             if session.cancelled:
                 return _ok("Stopped while waiting for the text to clear.")
@@ -480,10 +650,12 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
     @tool("check_crash",
           "Check the device log for a crash or ANR involving the app under test since the "
           "last call. Call after any action that might destabilise it.",
-          {"type": "object", "properties": {}, "additionalProperties": False})
-    async def check_crash(_args: dict[str, Any]) -> dict[str, Any]:
-        d = await session.device()
-        excerpt = await session.run(d.read_new_crashes, session.package)
+          {"type": "object", "properties": _with_device_arg({}, session),
+           "additionalProperties": False})
+    async def check_crash(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
+        d = await session.device_at(which)
+        excerpt = await session.run(d.read_new_crashes, _target_package(session, which))
         if excerpt:
             return _ok(f"CRASH / ANR detected:\n{excerpt}")
         return _ok("No crash or ANR in the log since the last check.")
@@ -498,7 +670,7 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "for. This is how you follow a link the app showed you but did not make clickable.\n\n"
           "Returns what is on screen once it settles.",
           {"type": "object",
-           "properties": {
+           "properties": _with_device_arg({
                "url": {"type": "string",
                        "description": "Web projects: the full URL to navigate to, any path or "
                                       "query string. Defaults to the project's own URL."},
@@ -506,18 +678,20 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
                            "description": "Phone projects: the package/bundle id to launch. "
                                           "Defaults to the app under test. On web this is "
                                           "treated the same as `url`."},
-           },
+           }, session),
            "additionalProperties": False})
     async def launch(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
         # `url` and `package` are the same argument. The tool description has said since it was
         # written that a web project's `package` is a URL, and an agent still spent a run
         # concluding the harness could not navigate anywhere: it guessed `launch({url: ...})`,
         # got InputValidationError, guessed `launch({path: ...})`, got the same, and wrote a
         # permanent "this harness cannot open a URL" lesson into system memory over a
         # capability that was one argument name away. Twice-guessed is the name it wants.
-        pkg = args.get("url") or args.get("package") or session.package
-        d = await session.device()
-        is_web = session.resolved_platform == "web"
+        pkg = args.get("url") or args.get("package") or _target_package(session, which)
+        d = await session.device_at(which)
+        resolved_platform = session.resolved_platform_b if which == "b" else session.resolved_platform
+        is_web = resolved_platform == "web"
         try:
             if await session.run(d.is_locked):
                 return _err("The device is locked and I cannot unlock it. Ask the user to "
@@ -545,46 +719,49 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
             return _ok(f"Stopped while waiting for {pkg} to become readable.")
         w, h = await session.run(lambda: d.window_size)
         elements = screen_elements(xml, w, h)
-        session.last_xml, session.last_elements = xml, elements
-        session.last_texts = screen_texts(xml)
-        session.actions_since_read = 0
+        _set_last(session, which, xml, elements, screen_texts(xml))
         header = f"Launched {pkg}; UI became readable after {waited}s.\n"
         # Same site, different page is not a mislabelled project. Without this, every deep-link
         # navigation on a web project — the normal way to reach a page the app links to but
         # does not make clickable — was answered with "anything you record now is filed under
         # the wrong app", which reads as a warning not to do it.
-        same_site = is_web and _same_origin(pkg, session.package)
-        if pkg != session.package and not same_site:
+        target = _target_package(session, which)
+        same_site = is_web and _same_origin(pkg, target)
+        if pkg != target and not same_site:
             # Otherwise the mislabelling is silent: findings and flow-graph steps are keyed to
             # the project, so they would be filed against an app that was never opened.
             header += (f"NOTE: this project is `{session.package}`, so anything you record now "
                        f"is filed under that package even though you are testing `{pkg}`. "
                        f"Mention the mismatch in your reply so the user can move the module to "
                        f"the right project.\n")
-        return _ok(header + _render_screen(session, xml, w, h, screen_texts(xml), elements))
+        return _ok(header + _render_screen(session, xml, w, h, screen_texts(xml), elements,
+                                           target_package=target))
 
     @tool("tap_element",
           "Tap an element by the id from the last read_screen. Ids are the reliable way to "
           "tap: matching on a label instead can hit the wrong widget, because the app bar "
           "often carries the same accessibility label as the screen's primary button.",
           {"type": "object",
-           "properties": {"id": {"type": "string", "description": "id from read_screen, e.g. 540_1180"},
-                          "why": {"type": "string", "description": "What you expect this to do"}},
+           "properties": _with_device_arg({
+               "id": {"type": "string", "description": "id from read_screen, e.g. 540_1180"},
+               "why": {"type": "string", "description": "What you expect this to do"}}, session),
            "required": ["id"], "additionalProperties": False})
     async def tap_element(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
         target = str(args["id"])
-        match = next((e for e in session.last_elements if e["id"] == target), None)
+        _, elements, _ = _last(session, which)
+        match = next((e for e in elements if e["id"] == target), None)
         if match is None:
-            known = ", ".join(e["id"] for e in session.last_elements[:15])
+            known = ", ".join(e["id"] for e in elements[:15])
             return _err(f"No element with id={target} on the last read screen. Call read_screen "
                         f"again — the screen may have changed. Known ids: {known}")
-        d = await session.device()
+        d = await session.device_at(which)
         try:
             await session.run(d.click, match["x"], match["y"])
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Tap failed: {exc}")
-        session.tap_count += 1
-        session.actions_since_read += 1
+        _bump_taps(session, which)
+        _bump_actions(session, which)
         await session._emit({"type": "agent_tap", "x": match["x"], "y": match["y"],
                              "label": match["label"]})
         return _ok(f"Tapped {match['label']!r} at ({match['x']},{match['y']}). "
@@ -595,19 +772,23 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "default so a back header sharing the button's label cannot be hit by mistake. "
           "Fails when the text is ambiguous, rather than guessing.",
           {"type": "object",
-           "properties": {"text": {"type": "string"},
-                          "include_appbar": {"type": "boolean",
-                                             "description": "Set true only to tap the header itself"}},
+           "properties": _with_device_arg({
+               "text": {"type": "string"},
+               "include_appbar": {"type": "boolean",
+                                  "description": "Set true only to tap the header itself"}},
+               session),
            "required": ["text"], "additionalProperties": False})
     async def tap_text(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
         needle = str(args["text"]).lower()
         include_appbar = bool(args.get("include_appbar"))
-        pool = [e for e in session.last_elements if include_appbar or not e["in_appbar"]]
+        _, elements, _ = _last(session, which)
+        pool = [e for e in elements if include_appbar or not e["in_appbar"]]
         exact = [e for e in pool if e["label"].lower() == needle]
         partial = [e for e in pool if needle in e["label"].lower()]
         candidates = exact or partial
         if not candidates:
-            hidden = [e for e in session.last_elements if needle in e["label"].lower()]
+            hidden = [e for e in elements if needle in e["label"].lower()]
             if hidden:
                 return _err(f"{args['text']!r} only matches an element in the app bar. If you "
                             f"really mean the header, pass include_appbar=true — but if you "
@@ -618,31 +799,67 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
             return _err(f"{args['text']!r} is ambiguous — {len(candidates)} matches: {listing}. "
                         f"Tap by id instead so the choice is explicit.")
         match = candidates[0]
-        d = await session.device()
+        d = await session.device_at(which)
         try:
             await session.run(d.click, match["x"], match["y"])
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Tap failed: {exc}")
-        session.tap_count += 1
-        session.actions_since_read += 1
+        _bump_taps(session, which)
+        _bump_actions(session, which)
         await session._emit({"type": "agent_tap", "x": match["x"], "y": match["y"],
                              "label": match["label"]})
         return _ok(f"Tapped {match['label']!r} at ({match['x']},{match['y']}). "
                    f"Call read_screen to see the result.")
 
+    @tool("select_option",
+          "Web only. Pick an option on a native <select> dropdown by its id from read_screen "
+          "(web-tag=\"select\") and the option's visible text. Do NOT tap the element open and "
+          "then tap_element/tap_xy an option's position — the open option list renders as a "
+          "browser-level popup outside the page, so screenshots can show it but a page click "
+          "at that position lands on the page behind it and just closes the dropdown without "
+          "selecting anything. This sets the value directly, bypassing that popup entirely.",
+          {"type": "object",
+           "properties": _with_device_arg({
+               "id": {"type": "string", "description": "Element id from read_screen"},
+               "option": {"type": "string",
+                          "description": "The option's visible text (or its value)"}}, session),
+           "required": ["id", "option"], "additionalProperties": False})
+    async def select_option(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
+        target = str(args["id"])
+        _, elements, _ = _last(session, which)
+        match = next((e for e in elements if e["id"] == target), None)
+        if match is None:
+            known = ", ".join(e["id"] for e in elements[:15])
+            return _err(f"No element with id={target} on the last read screen. Call read_screen "
+                        f"again — the screen may have changed. Known ids: {known}")
+        d = await session.device_at(which)
+        select_fn = getattr(d, "select_option", None)
+        if select_fn is None:
+            return _err("select_option is web-only; this session is not driving a browser.")
+        try:
+            selected = await session.run(select_fn, match["x"], match["y"], str(args["option"]))
+        except (DeviceError, asyncio.TimeoutError) as exc:
+            return _err(f"select_option failed: {exc}")
+        _bump_actions(session, which)
+        return _ok(f"Selected {selected!r} on {match['label']!r}. "
+                   f"Call read_screen to see the result.")
+
     @tool("tap_xy", "Tap raw coordinates. Prefer tap_element; use this only when an element "
                     "has no dump entry (a canvas, a custom-drawn control).",
           {"type": "object",
-           "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
+           "properties": _with_device_arg(
+               {"x": {"type": "integer"}, "y": {"type": "integer"}}, session),
            "required": ["x", "y"], "additionalProperties": False})
     async def tap_xy(args: dict[str, Any]) -> dict[str, Any]:
-        d = await session.device()
+        which = _which(session, args)
+        d = await session.device_at(which)
         try:
             await session.run(d.click, int(args["x"]), int(args["y"]))
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Tap failed: {exc}")
-        session.tap_count += 1
-        session.actions_since_read += 1
+        _bump_taps(session, which)
+        _bump_actions(session, which)
         await session._emit({"type": "agent_tap", "x": int(args["x"]), "y": int(args["y"]),
                              "label": "raw tap"})
         return _ok(f"Tapped ({args['x']},{args['y']}).")
@@ -651,16 +868,18 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "Type into the focused field. Tap the field first. Forms usually validate as you "
           "type, so an error can already be on screen before you submit.",
           {"type": "object",
-           "properties": {"text": {"type": "string"},
-                          "clear": {"type": "boolean", "description": "Clear the field first"}},
+           "properties": _with_device_arg({
+               "text": {"type": "string"},
+               "clear": {"type": "boolean", "description": "Clear the field first"}}, session),
            "required": ["text"], "additionalProperties": False})
     async def type_text(args: dict[str, Any]) -> dict[str, Any]:
-        d = await session.device()
+        which = _which(session, args)
+        d = await session.device_at(which)
         try:
             await session.run(d.send_keys, str(args["text"]), bool(args.get("clear")))
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Typing failed: {exc}")
-        session.actions_since_read += 1
+        _bump_actions(session, which)
         return _ok(f"Typed {args['text']!r}.")
 
     @tool("use_credential",
@@ -668,9 +887,12 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "Use this instead of asking the user to paste a password into the chat. Call "
           "list_credentials to see which names exist.",
           {"type": "object",
-           "properties": {"name": {"type": "string", "description": "e.g. test_email, test_password"}},
+           "properties": _with_device_arg(
+               {"name": {"type": "string", "description": "e.g. test_email, test_password"}},
+               session),
            "required": ["name"], "additionalProperties": False})
     async def use_credential(args: dict[str, Any]) -> dict[str, Any]:
+        which = _which(session, args)
         name = str(args["name"])
         secrets = store.get_secrets(session.package)
         if name not in secrets:
@@ -691,12 +913,12 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
                             f"a redaction, so the value is gone — ask the user for it again "
                             f"once the project folder is reachable.")
             secrets = await asyncio.to_thread(store.get_secrets, session.package)
-        d = await session.device()
+        d = await session.device_at(which)
         try:
             await session.run(d.send_keys, secrets[name], True)
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"Typing the credential failed: {exc}")
-        session.actions_since_read += 1
+        _bump_actions(session, which)
         return _ok(f"Typed the stored value for {name!r} (not shown here).")
 
     @tool("list_credentials", "Names of the test credentials stored for this app. Values are "
@@ -708,15 +930,18 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
 
     @tool("press", "Press a hardware/navigation key: back, home, enter, recent, delete.",
           {"type": "object",
-           "properties": {"key": {"type": "string", "enum": ["back", "home", "enter", "recent", "delete"]}},
+           "properties": _with_device_arg(
+               {"key": {"type": "string",
+                        "enum": ["back", "home", "enter", "recent", "delete"]}}, session),
            "required": ["key"], "additionalProperties": False})
     async def press(args: dict[str, Any]) -> dict[str, Any]:
-        d = await session.device()
+        which = _which(session, args)
+        d = await session.device_at(which)
         try:
             await session.run(d.press, str(args["key"]))
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"press failed: {exc}")
-        session.actions_since_read += 1
+        _bump_actions(session, which)
         return _ok(f"Pressed {args['key']}.")
 
     @tool("scroll", "Scroll the screen. Direction is the direction the *content* moves, so "
@@ -725,16 +950,19 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
                     "that on a launcher home screen these map to the launcher's own gestures — "
                     "'up' pulls the notification shade down, 'down' opens the app drawer.",
           {"type": "object",
-           "properties": {"direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
-                          "scale": {"type": "number", "description": "Fraction of screen height, default 0.6"}},
+           "properties": _with_device_arg({
+               "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+               "scale": {"type": "number", "description": "Fraction of screen height, default 0.6"}},
+               session),
            "required": ["direction"], "additionalProperties": False})
     async def scroll(args: dict[str, Any]) -> dict[str, Any]:
-        d = await session.device()
+        which = _which(session, args)
+        d = await session.device_at(which)
         try:
             await session.run(d.scroll, str(args["direction"]), float(args.get("scale") or 0.6))
         except (DeviceError, asyncio.TimeoutError) as exc:
             return _err(f"scroll failed: {exc}")
-        session.actions_since_read += 1
+        _bump_actions(session, which)
         return _ok(f"Scrolled {args['direction']}. Call read_screen to see what is visible now.")
 
     @tool("reset_app_data",
@@ -744,14 +972,16 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "launch, which belongs to another package. Always False on iOS — sign out through "
           "the app's own UI there instead.",
           {"type": "object",
-           "properties": {"confirm": {"type": "boolean",
-                                      "description": "Must be true — this destroys app state"}},
+           "properties": _with_device_arg(
+               {"confirm": {"type": "boolean",
+                            "description": "Must be true — this destroys app state"}}, session),
            "required": ["confirm"], "additionalProperties": False})
     async def reset_app_data(args: dict[str, Any]) -> dict[str, Any]:
         if not args.get("confirm"):
             return _err("reset_app_data needs confirm=true; it destroys the app's local state.")
-        d = await session.device()
-        cleared = await session.run(d.clear_app_data, session.package)
+        which = _which(session, args)
+        d = await session.device_at(which)
+        cleared = await session.run(d.clear_app_data, _target_package(session, which))
         if not cleared:
             return _err("Clearing app data is not supported on this platform (or did not "
                         "succeed) — the persisted session is still there. Sign out through "
@@ -767,13 +997,14 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
           "Returns the node id — record the screen a verdict is about *before* filing it, and "
           "pass that id to record_finding as `step`, so the board can outline the screen.",
           {"type": "object",
-           "properties": {
+           "properties": _with_device_arg({
                "label": {"type": "string", "description": "What this step did, e.g. \"Submit empty form\""},
                "case": {"type": "string", "description": "Test case name; starts a new chain when it changes"},
-           },
+           }, session),
            "required": ["label"], "additionalProperties": False})
     async def journey_step(args: dict[str, Any]) -> dict[str, Any]:
-        await session.device()
+        which = _which(session, args)
+        await session.device_at(which)
         j = session.journey()
         case = args.get("case")
         section = f"{session.slug} / {case}" if case else session.slug
@@ -781,9 +1012,10 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
             await asyncio.to_thread(j.start_section, section)
             session._section = section
             j._prev_node = None  # a new case starts its own chain, not a branch off the last one
+        step_xml, _, _ = _last(session, which)
         try:
             node = await asyncio.to_thread(j.step, str(args["label"]),
-                                           None, session.last_xml or None)
+                                           None, step_xml or None)
         except Exception as exc:  # noqa: BLE001
             return _err(f"Could not post the step: {exc}")
         # Indexed so the agent can find this node again by its label — see list_steps. The
@@ -846,7 +1078,10 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
                                        "screen — red for a bug, amber for a warning or a "
                                        "suggestion. Omit it if this outcome is not about one "
                                        "particular screen you recorded; do not guess an id."},
-           },
+           } | ({"device": {**_DEVICE_ARG_SCHEMA,
+                            "description": "Which phone's last-read screen the timing check "
+                                           "should apply to. Defaults to 'a'."}}
+                if session.has_peer else {}),
            "required": ["title", "expected", "actual", "evidence"],
            "additionalProperties": False})
     async def record_finding(args: dict[str, Any]) -> dict[str, Any]:
@@ -866,7 +1101,8 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
         # *premature verdicts*, and one of them flipped to PASS once the overlay cleared —
         # a pass read off a mid-flight screen is as wrong as a defect read off one, and
         # "the app is fine" is the more expensive of the two to be wrong about.
-        blocked = finding_block_reason(session)
+        which = _which(session, args)
+        blocked = _peer_block_reason(session) if which == "b" else finding_block_reason(session)
         if blocked is not None:
             return _err(blocked)
 
@@ -1446,11 +1682,12 @@ def build_device_server(session: DeviceSession, *, can_file_findings: bool = Tru
              list_credentials, press, scroll, reset_app_data,
              journey_step, record_finding, add_note, link_finding, list_steps,
              list_findings, file_issue, search_issues, check_issue_status, learn_lesson,
-             ask_user, propose_subprojects, check_responsive, note_put, note_get, set_test_account]
+             ask_user, propose_subprojects, check_responsive, select_option, note_put,
+             note_get, set_test_account]
     if not can_file_findings:
         tools = [t for t in tools if t.name not in VERDICT_TOOLS]
     if session.resolved_platform != "web":
-        tools = [t for t in tools if t.name != "check_responsive"]
+        tools = [t for t in tools if t.name not in ("check_responsive", "select_option")]
     return create_sdk_mcp_server(name="device", version="1.0.0", tools=tools)
 
 
@@ -1485,9 +1722,9 @@ def _device_tool_names(*, can_file_findings: bool = True, web: bool = False) -> 
 
     Derived from one list rather than written out twice: an allow-list that disagrees with what
     `build_device_server` registered is a tool the agent can see and cannot call, or one it can
-    call that nobody meant it to have. `web=True` adds `check_responsive`, which
-    `build_device_server` itself only registers for a web session (see its own filter at the
-    end) — the two have to agree for the same reason.
+    call that nobody meant it to have. `web=True` adds `check_responsive` and `select_option`,
+    which `build_device_server` itself only registers for a web session (see its own filter at
+    the end) — the two have to agree for the same reason.
     """
     short = ["read_screen", "screenshot", "wait_for_text", "wait_until_gone", "check_crash",
              "launch", "tap_element", "tap_text", "tap_xy", "type_text", "use_credential",
@@ -1498,7 +1735,7 @@ def _device_tool_names(*, can_file_findings: bool = True, web: bool = False) -> 
              # The one channel out of this module another app's agent can read.
              "note_put", "note_get", "set_test_account"]
     if web:
-        short = short + ["check_responsive"]
+        short = short + ["check_responsive", "select_option"]
     return [f"mcp__device__{name}" for name in short
             if can_file_findings or name not in VERDICT_TOOLS]
 

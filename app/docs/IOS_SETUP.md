@@ -8,6 +8,84 @@ Windows 11 with no Mac involved at any point.
 
 ---
 
+## Quick fix: "the agent can't reach the iPhone"
+
+Start here before reading anything else below — this has recurred every 2-7 days (2026-08-06,
+2026-08-19, 2026-08-21), and it is one of two unrelated causes. Tell them apart first:
+
+```bash
+netstat -ano | grep ":8100"
+```
+
+**Nothing listening at all** → the iPhone stack was never started. This project's Android and
+iOS stacks are brought up by *different* launchers — `python start.py` (or the Android `.bat`)
+only checks adb; it does nothing for the phone and fails silently by simply never bringing WDA
+up. Use `python start_ios.py` (or `Start QA Tester AI (iPhone).bat`) instead whenever an
+iPhone is in play. It brings up the tunnel (elevated — accept the UAC prompt), the runner and
+the forward, in order, and only then starts the dashboard.
+
+**Something is listening on 8100, but `curl http://127.0.0.1:8100/status` hangs or returns
+"Empty reply from server"** → this is **the signing trap** (full explanation below): the nested
+`WebDriverAgentRunner.xctest` has lost its code signature, almost always because Sideloadly
+re-signed the outer `.app` again (its own re-signs never touch the nested binary) and the
+go-ios fix from last time got overwritten. `start_ios.py` will sit there printing dots and
+eventually time out with "no answer" — that timeout, plus an empty `/status` reply while
+something *is* listening, is the tell. Fix:
+
+1. **Confirm it (optional but fast — under 15s, and gives you the exact error instead of a
+   guess):**
+   ```bash
+   pymobiledevice3 -v developer dvt xcuitest com.facebook.WebDriverAgentRunner.xctrunner.5CHADS2ZKH \
+     --tunnel <udid> > diag.log 2>&1
+   ```
+   then check `diag.log` for `missing code signature`. Don't try to read the spawned "WDA
+   runner" console window instead — `Get-Process | select MainWindowTitle` returns a blank
+   title and `MainWindowHandle 0` for these spawned consoles, elevated or not; they are
+   unreadable from a script. This direct command is the only fast way to see the real error.
+
+2. **Check the provisioning profile hasn't actually expired** (if it has, you need a fresh
+   Sideloadly re-sideload first — see [step 7](#7-re-sign-properly--the-signing-trap) below —
+   otherwise skip straight to re-signing):
+   ```bash
+   ls C:\Users\MRsiy\tools\wda\profiles_today\*.mobileprovision
+   ```
+   Decode `ExpirationDate` per the note in step 7. If a still-valid one is already sitting
+   there from a previous fix, reuse it — no need to re-sideload.
+
+3. **Re-sign and reinstall** (needs the user's explicit go-ahead — this touches the Apple ID
+   cert's private key; ask every time, it is not standing permission):
+   ```bash
+   openssl pkcs12 -export -inkey "%APPDATA%\sideloadly\key.pem" \
+     -in "%APPDATA%\sideloadly\cert-<appleid>.pem" -out signing_fix.p12 \
+     -passout pass:<any-new-password> -legacy
+
+   C:\Users\MRsiy\tools\go-ios\ios.exe ui install wda --p12file=signing_fix.p12 \
+     --p12password=<the-same-password> \
+     --profile=<the-still-valid-profile-from-step-2>.mobileprovision \
+     --bundleid=com.facebook.WebDriverAgentRunner.xctrunner.5CHADS2ZKH --udid=<udid>
+   ```
+   `go-ios` (`ios.exe`) is **not on PATH** — it lives at `C:\Users\MRsiy\tools\go-ios\ios.exe`,
+   with `wintun.dll` beside it. `WDA_BUNDLE_ID` is already pinned in `app/.env` as
+   `com.facebook.WebDriverAgentRunner.xctrunner.5CHADS2ZKH` — reuse it rather than re-deriving
+   it from `pymobiledevice3 apps list`. Delete `signing_fix.p12` once the install succeeds;
+   don't leave exported key material lying around.
+
+4. **Before retrying, kill any stale forward.** If a previous `start_ios.py` attempt already
+   timed out once, its "WDA forward" console is very likely still alive holding port 8100 even
+   though the runner behind it died — closing a console window does not reliably kill the
+   forward's child `python.exe`. A forward that survives a dead runner is *not* self-healing
+   (`bring_up()` never checks whether 8100 is already owned before spawning a new one), so the
+   next attempt will just talk to the same dead forward and time out again identically.
+   ```bash
+   netstat -ano | grep ":8100"
+   powershell -Command "Stop-Process -Id <pid> -Force"
+   ```
+
+5. Re-run `python start_ios.py` (or the `.bat`). With tunneld already up this skips the UAC
+   prompt and normally reports WDA ready in well under 30 seconds.
+
+---
+
 ## What you get, and what you do not
 
 Working: launch and terminate apps, tap, long-press, swipe, type, hardware volume buttons,
@@ -225,6 +303,8 @@ whole argument for the $99.
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `netstat` shows nothing on 8100 at all | The iPhone stack was never started — Android's `start.py`/`.bat` doesn't bring it up | [Quick fix](#quick-fix-the-agent-cant-reach-the-iphone), use `start_ios.py` |
+| Something listens on 8100 but `/status` hangs / empty reply | The signing trap, recurring | [Quick fix](#quick-fix-the-agent-cant-reach-the-iphone) |
 | `usbmux list` returns `[]` | Partial driver stack, or a front-panel USB port | Rear port, replug, confirm AMDS is alive |
 | Apple MSI fails with **1603** | Installer polls AMDS for `RUNNING`, which never happens here | Install right after a reboot |
 | `Developer Mode is disabled` | Expected on first mount | It is what makes the menu appear; enable on device |

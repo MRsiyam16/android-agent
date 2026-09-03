@@ -651,6 +651,81 @@ function noteRow(note) {
   return box;
 }
 
+// -- reports ----------------------------------------------------------------------------
+//
+// A snapshot of `ecosystem_report` written to a file instead of said in chat — for a download,
+// or for someone who will never open this dashboard. The manager writes these from the
+// conversation (`export_report`); the button here is the same action for when nobody wants to
+// type a chat message to get one.
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function renderReports() {
+  canvasTitle.textContent = 'Reports';
+  canvasSub.textContent = 'Snapshots of the whole product — every app, every open defect, '
+    + 'worst first — as a file to download, save, or send to someone who has never opened '
+    + 'this dashboard. Ask the manager to "write an HTML report" for one from chat, or make '
+    + 'one straight from here.';
+
+  const genRow = el('div', 'report-generate');
+  const fmtSelect = document.createElement('select');
+  fmtSelect.className = 'agent-select';
+  [['markdown', 'Markdown (.md)'], ['html', 'HTML (.html)']].forEach(([value, label]) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    fmtSelect.appendChild(opt);
+  });
+  const genBtn = el('button', 'chip-btn accent', '+ Generate report');
+  const genNote = el('span', 'retest-note', '');
+  genBtn.addEventListener('click', async () => {
+    genBtn.disabled = true;
+    genNote.textContent = 'writing…';
+    genNote.className = 'retest-note';
+    try {
+      await api(ecoUrl('/reports'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: fmtSelect.value }),
+      });
+      await show('reports');
+      return;
+    } catch (err) {
+      genNote.textContent = err.message;
+      genNote.className = 'retest-note failed';
+    }
+    genBtn.disabled = false;
+  });
+  genRow.append(fmtSelect, genBtn, genNote);
+  canvas.appendChild(genRow);
+
+  const rows = await api(ecoUrl('/reports'));
+  if (!rows.length) {
+    canvas.appendChild(empty('No reports written yet. Generate one above, or ask the manager '
+                             + 'to "write an HTML report of the whole product" from chat.'));
+    return;
+  }
+  rows.forEach((r) => canvas.appendChild(reportRow(r)));
+}
+
+function reportRow(r) {
+  const box = el('div', 'retest');
+  const head = el('div', 'retest-head');
+  head.append(chip(r.format.toUpperCase(), 'member-role'),
+              el('span', 'retest-title', r.filename),
+              el('span', 'retest-ref', formatBytes(r.size)));
+  const link = el('a', 'chip-btn accent', '↓ Download');
+  link.href = ecoUrl(`/reports/${encodeURIComponent(r.filename)}`);
+  head.appendChild(link);
+  box.appendChild(head);
+  box.appendChild(el('div', 'retest-reason', r.modified_at));
+  return box;
+}
+
 function campaignCard(campaign) {
   const box = el('div', 'campaign' + (campaign.status === 'running' ? ' live' : ''));
 
@@ -844,6 +919,7 @@ async function show(name, arg) {
     else if (name === 'retests') await renderRetests();
     else if (name === 'campaigns') await renderCampaigns();
     else if (name === 'scratchpad') await renderScratchpad();
+    else if (name === 'reports') await renderReports();
     else renderOverview();
   } catch (err) {
     canvas.appendChild(el('div', 'canvas-warn', 'Could not load this view: ' + err.message));

@@ -18,7 +18,8 @@ import config
 import device
 
 from .. import agent_bridge, devices, projects, state
-from ..schemas import CommandPayload, ResponsiveSweepPayload, ViewportPayload
+from ..schemas import (CommandPayload, ResponsiveSweepPayload, ViewportPayload,
+                       WindowsResetPayload)
 
 logger = logging.getLogger("server.device")
 router = APIRouter()
@@ -38,10 +39,16 @@ async def _resolve_for_project(package: str | None, slug: str | None, serial: st
         session = agent_bridge.sessions.peek(package, slug)
         if session is not None:
             return await session.device.device()
-    platform = (projects.read_meta(package) or {}).get("platform") if package else None
+    meta = projects.read_meta(package) or {} if package else {}
+    platform = meta.get("platform")
     eff_serial = serial
     if not eff_serial and (platform or "").lower() == "web":
         eff_serial = package  # a web project's "serial" is its URL, i.e. its package
+    if not eff_serial and (platform or "").lower() == "windows":
+        # A VM name, unlike an adb serial or iOS UDID, is never "whatever's attached" — it
+        # must come from the project's own pin, same rule agent_bridge.device_for() already
+        # applies for the agent-session path.
+        eff_serial = meta.get("device_serial")
     if not eff_serial:
         eff_serial = state.device_serial()
     return await asyncio.to_thread(devices.resolve_device, eff_serial, platform)
@@ -212,6 +219,31 @@ async def set_viewport(payload: ViewportPayload):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not resize the viewport: {exc}") from exc
     return {"ok": True, "width": w, "height": h, "screenshot_b64": b64}
+
+
+@router.post("/device/windows/restore-snapshot")
+async def restore_windows_snapshot(payload: WindowsResetPayload):
+    """Manually reset a Windows target to its clean VM snapshot.
+
+    Deliberately not the agent's `reset_app_data` tool, and deliberately no timeout wrapper
+    here — a VirtualBox snapshot restore reboots the whole guest and routinely takes minutes,
+    which is exactly why this lives on its own route instead of overloading a tool the agent
+    can call mid-conversation. Same `getattr`-gated "adapter has more capability than the
+    shared Device Protocol" shape as `/device/viewport` above.
+    """
+    d = await _resolve_for_project(payload.package, payload.slug, payload.device_serial)
+    restore = getattr(d, "restore_snapshot", None)
+    if restore is None:
+        raise HTTPException(
+            status_code=400, detail="This device does not support a snapshot restore.")
+    snapshot_name = payload.snapshot_name
+    if not snapshot_name and payload.package:
+        snapshot_name = (projects.read_meta(payload.package) or {}).get("snapshot_name")
+    try:
+        await asyncio.to_thread(restore, snapshot_name)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Snapshot restore failed: {exc}") from exc
+    return {"ok": True}
 
 
 @router.post("/device/responsive-sweep")

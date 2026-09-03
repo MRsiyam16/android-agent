@@ -61,7 +61,8 @@ Paths are relative to `app/`.
 | Area | Files |
 |---|---|
 | Exploration loop | `run_agent.py`, `extractor.py` (state hashing), `graph.py` |
-| Device control | `adb_device.py` (uiautomator2 wrapper), `journey.py` (scripted flows) |
+| Device control | `device.py` (platform dispatch), `adb_device.py`/`ios_device.py`/`web_device.py`/`windows_device.py` (per-platform adapters), `journey.py` (scripted flows) |
+| Windows VM control | `vbox.py` (VBoxManage lifecycle), `windows_agent.py` (in-guest control server — runs *inside* the VM, not on this machine) |
 | Server entry | `server.py` — a façade; the implementation is in `backend/` |
 | HTTP endpoints | `backend/routes/{pages,telemetry,projects,device,agent}.py` |
 | Server internals | `backend/{app,state,naming,projects,devices,schemas,paths}.py` |
@@ -135,6 +136,15 @@ deskclock board is 6.5 MB, about 1.6M tokens. `.claude/settings.json` denies it.
 at one app on one day. The real suite is `tests/`, which `pytest.ini` restricts collection
 to.
 
+**"The agent can't reach the iPhone."** Two unrelated causes, and it recurs every 2-7 days —
+see `docs/IOS_SETUP.md`'s [Quick fix](docs/IOS_SETUP.md#quick-fix-the-agent-cant-reach-the-iphone)
+section first. Short version: `python start.py` (Android) never brings up the iOS stack at
+all — nothing on port 8100 means use `python start_ios.py` instead. Something *listening* on
+8100 that gives an empty `/status` reply is the signing trap (Sideloadly re-signed the outer
+`.app` but not the nested `.xctest`) — fixed by re-signing with go-ios
+(`C:\Users\MRsiy\tools\go-ios\ios.exe`, off PATH), which needs the user's explicit go-ahead
+each time since it touches the Apple ID cert's private key.
+
 ---
 
 ## System memory
@@ -178,3 +188,4 @@ not as part of the app.
 - `docs/ARCHITECTURE.md` — state hashing and exploration algorithms
 - `docs/SETUP.md`, `docs/EXAMPLES.md`
 - `docs/PUBLISH_CHECKLIST.md` — what to check before tagging a release
+- `docs/WINDOWS_SETUP.md` — one-time VirtualBox VM setup for testing Windows desktop apps

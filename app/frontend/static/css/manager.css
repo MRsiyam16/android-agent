@@ -85,6 +85,12 @@
 }
 .chip-btn.accent { color: var(--accent-blue); border-color: rgba(0, 153, 255, 0.4); }
 
+/* ---------------- REPORTS ---------------- */
+.report-generate {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 16px; padding-bottom: 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
 .rail-foot {
   margin-top: auto; padding: 14px 8px 4px; font-size: 11px; color: var(--ink-faint);
   border-top: 1px solid var(--hairline); overflow-wrap: anywhere;

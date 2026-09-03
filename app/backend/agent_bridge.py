@@ -110,10 +110,13 @@ def device_for(package: str) -> tuple[Optional[str], Optional[str]]:
 
     live = state.device_serial()
     found = attached()
-    if live:
+    if live and not _looks_like_url(live):
         match = next((d for d in found if d["serial"] == live), None)
         # No match means nothing is listing it — trust it rather than override, since a
         # headless run posting telemetry is exactly a device this process cannot enumerate.
+        # The one exception is above: a web run posts its URL as the serial, and nothing
+        # lists a URL, so without that guard a fresh Android project created right after a
+        # website suite was handed "https://…" and failed with "device not online".
         if match is None or not platform or match.get("platform") == platform:
             return live, platform
 
@@ -126,6 +129,12 @@ def device_for(package: str) -> tuple[Optional[str], Optional[str]]:
         logger.info("%s: %d %s devices attached and none pinned — pin one with "
                     "POST /projects/{package}/device", package, len(same_kind), platform)
     return None, platform
+
+
+def _looks_like_url(serial: str) -> bool:
+    """A web target's "serial" is its URL; no ADB serial or UDID has a scheme or a dot-host."""
+    s = serial.strip().lower()
+    return "://" in s or s.startswith("www.") or (("." in s) and ("/" in s))
 
 
 # -- starting one -------------------------------------------------------------------------

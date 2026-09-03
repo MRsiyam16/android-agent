@@ -1,0 +1,10 @@
+# Deps for windows_agent.py only — installed inside the Windows VM (or on a Windows host for
+# stage-1 local development), never part of the main project's requirements.txt: pywinauto/
+# pywin32/mss make no sense on a checkout that isn't itself the automation target.
+#
+#     python -m pip install -r requirements-windows-guest.txt
+#
+# fastapi/uvicorn are already in requirements.txt and are not repeated here.
+pywinauto>=0.6.9
+pywin32>=306
+mss>=9.0.1

@@ -340,3 +340,24 @@ def issue_status(number: int) -> dict[str, Any]:
         "updated_at": data.get("updated_at"), "completed_at": data.get("completed_at"),
         "url": _issue_url(data.get("id")),
     }
+
+
+#: `bk issues issue edit --status` accepts exactly these (`bk meta`'s issue_statuses).
+#: Validated here rather than left to the CLI so a typo reads as a Python ValueError pointing
+#: at this call, not a `bk` exit-6 buried behind `_EXIT_HINTS`.
+ISSUE_STATUSES = ("backlog", "todo", "in_progress", "done", "cancelled")
+
+
+def update_issue_status(number: int, status: str) -> dict[str, Any]:
+    """Change an issue's status directly — e.g. reopening one a retest disproved.
+
+    `create_issue`/`comment_issue` are the only writes this module had until a retest needed
+    more: a QA finding can prove a "done" issue is still broken, and until now nothing here
+    could act on that beyond leaving a comment for a human to notice and reopen by hand. This
+    is the same `bk issues issue edit --status` a human runs at a terminal, just wrapped like
+    every other call in this module.
+    """
+    if status not in ISSUE_STATUSES:
+        raise ValueError(f"Unknown issue status {status!r}; must be one of {ISSUE_STATUSES}")
+    _run(["issues", "issue", "edit", str(int(number)), "--status", status])
+    return issue_status(number)

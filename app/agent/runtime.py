@@ -105,6 +105,24 @@ def _tool_summary(name: str, payload: dict[str, Any]) -> str:
     return short
 
 
+def _peer_config(package: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """A second device wired to every module of this project, if one is configured.
+
+    Quick and project-specific rather than a general multi-device feature: nothing here
+    proposes a UI for pairing devices, or a way to do this for more than one project at a
+    time. It reads four plain fields off the project's own meta.json —
+    `peer_device_serial`/`peer_platform` (the second phone) and `primary_app_id`/`peer_app_id`
+    (what to launch/compare against on each, when the project's package differs from what is
+    actually installed) — so wiring a project for two-device testing is one `write_meta` call,
+    and every module the project already has picks it up automatically without a route or
+    schema change anywhere else.
+    """
+    from backend import projects as backend_projects
+    meta = backend_projects.read_meta(package) or {}
+    return (meta.get("peer_device_serial") or None, meta.get("peer_platform") or None,
+            meta.get("primary_app_id") or None, meta.get("peer_app_id") or None)
+
+
 class AgentSession:
     """A conversation with one module's tester."""
 
@@ -127,11 +145,25 @@ class AgentSession:
 
         self.emit = stamped
         self.stepper = Stepper()
+        peer_serial, peer_platform, package_a, package_b = _peer_config(package)
         self.device = DeviceSession(package, slug, serial=serial, platform=platform,
-                                    emit=stamped)
+                                    emit=stamped, peer_serial=peer_serial,
+                                    peer_platform=peer_platform,
+                                    package_a=package_a, package_b=package_b)
 
         self._client: Optional[ClaudeSDKClient] = None
         self._lock = asyncio.Lock()
+        # Guards `connect()` itself, separately from `_lock` (which guards a whole turn).
+        # `warm()` and `_send_locked()` both call `connect()` directly, and its only guard used
+        # to be `if self._client is not None: return` — no protection against two callers
+        # passing that check before either had assigned `self._client`. A module re-selected in
+        # the dashboard at the same moment a queued message reached it did exactly that: two
+        # `ClaudeSDKClient`s spawned, both resuming the same CLI session id, and the turn wedged
+        # forever with neither the CLI's own interrupt nor a Stop click able to unstick it —
+        # only killing both orphaned `claude.exe` processes by hand did. A lock scoped to just
+        # the connect-or-reuse decision fixes this without making `warm()` wait out an entire
+        # in-flight turn the way sharing `_lock` would.
+        self._connect_lock = asyncio.Lock()
         self._resume_failed = False
         self.busy = False
         self.session_id: Optional[str] = None
@@ -250,7 +282,9 @@ class AgentSession:
         # this agent actually told" answerable instead of inferred.
         prompt_path = workdir / "system-prompt.md"
         prompt_text = prompts.build_system_prompt(
-            self.package, self.slug, title, scope, platform=self.device.resolved_platform)
+            self.package, self.slug, title, scope, platform=self.device.resolved_platform,
+            peer_platform=(self.device.resolved_platform_b if self.device.has_peer else None),
+            package_a=self.device.package_a, package_b=self.device.package_b)
         try:
             prompt_path.write_text(prompt_text, encoding="utf-8")
             system_prompt: Any = {"type": "file", "path": str(prompt_path)}
@@ -296,48 +330,57 @@ class AgentSession:
     async def connect(self) -> None:
         if self._client is not None:
             return
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            # Loud, because the failure is invisible otherwise: everything works, and the
-            # subscription the user is paying for is bypassed in favour of metered billing.
-            logger.warning(
-                "ANTHROPIC_API_KEY is set in this process. It overrides the Claude Code "
-                "subscription profile, so agent calls will be billed per token. Unset it "
-                "unless that is what you want.")
-        try:
-            client = ClaudeSDKClient(options=self._options())
-            await client.connect()
-        except CLINotFoundError as exc:
-            # The SDK reports every `FileNotFoundError` from the spawn as "CLI not found",
-            # including Windows' [WinError 206] "the filename or extension is too long" —
-            # which is not about the filename at all, it is the whole command line being over
-            # 32,767 characters. Told "install the CLI", you go and check a binary that is
-            # present and works, and the actual cause is never even suspected. So the two are
-            # told apart here, by looking at whether the file the SDK named is really absent.
-            named = str(exc).rsplit(":", 1)[-1].strip()
-            if named and os.path.isfile(named):
+        async with self._connect_lock:
+            # Re-checked with the lock held: a caller that was waiting on this lock while
+            # another connected has nothing left to do. Without this second check, both would
+            # still spawn a CLI process each — the lock would only make it happen one after
+            # another instead of at the same instant, not stop the duplicate.
+            if self._client is not None:
+                return
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                # Loud, because the failure is invisible otherwise: everything works, and the
+                # subscription the user is paying for is bypassed in favour of metered billing.
+                logger.warning(
+                    "ANTHROPIC_API_KEY is set in this process. It overrides the Claude Code "
+                    "subscription profile, so agent calls will be billed per token. Unset it "
+                    "unless that is what you want.")
+            try:
+                client = ClaudeSDKClient(options=self._options())
+                await client.connect()
+            except CLINotFoundError as exc:
+                # The SDK reports every `FileNotFoundError` from the spawn as "CLI not found",
+                # including Windows' [WinError 206] "the filename or extension is too long" —
+                # which is not about the filename at all, it is the whole command line being
+                # over 32,767 characters. Told "install the CLI", you go and check a binary
+                # that is present and works, and the actual cause is never even suspected. So
+                # the two are told apart here, by looking at whether the file the SDK named is
+                # really absent.
+                named = str(exc).rsplit(":", 1)[-1].strip()
+                if named and os.path.isfile(named):
+                    raise RuntimeError(
+                        f"The Claude Code CLI is installed and runnable at {named}, so this is "
+                        f"not a missing CLI — the spawn itself failed. On Windows the usual "
+                        f"cause is the command line exceeding 32,767 characters, which the SDK "
+                        f"reports as a missing file. This module's system prompt is passed as "
+                        f"a file for exactly that reason; if it is being passed inline, check "
+                        f"the warning above. ({exc})") from exc
                 raise RuntimeError(
-                    f"The Claude Code CLI is installed and runnable at {named}, so this is "
-                    f"not a missing CLI — the spawn itself failed. On Windows the usual cause "
-                    f"is the command line exceeding 32,767 characters, which the SDK reports "
-                    f"as a missing file. This module's system prompt is passed as a file for "
-                    f"exactly that reason; if it is being passed inline, check the warning "
-                    f"above. ({exc})") from exc
-            raise RuntimeError(
-                "The Claude Code CLI was not found. Install it with "
-                "`npm i -g @anthropic-ai/claude-code`, then run `claude` once to sign in "
-                f"with your subscription. ({exc})") from exc
-        except Exception as exc:  # noqa: BLE001
-            # A stored session id can go stale (transcript pruned, different machine). Losing
-            # the history is a nuisance; refusing to start at all would be worse.
-            if self._resume_failed:
-                raise
-            logger.warning("Could not resume the previous conversation (%s) — starting a fresh "
-                           "one for %s/%s", exc, self.package, self.slug)
-            self._resume_failed = True
-            client = ClaudeSDKClient(options=self._options())
-            await client.connect()
-        self._client = client
-        await self._read_server_info(client)
+                    "The Claude Code CLI was not found. Install it with "
+                    "`npm i -g @anthropic-ai/claude-code`, then run `claude` once to sign in "
+                    f"with your subscription. ({exc})") from exc
+            except Exception as exc:  # noqa: BLE001
+                # A stored session id can go stale (transcript pruned, different machine).
+                # Losing the history is a nuisance; refusing to start at all would be worse.
+                if self._resume_failed:
+                    raise
+                logger.warning(
+                    "Could not resume the previous conversation (%s) — starting a fresh one "
+                    "for %s/%s", exc, self.package, self.slug)
+                self._resume_failed = True
+                client = ClaudeSDKClient(options=self._options())
+                await client.connect()
+            self._client = client
+            await self._read_server_info(client)
         logger.info("agent session connected for %s/%s (model=%s, %s)",
                     self.package, self.slug, self.model, self.subscription or "auth unknown")
         await self.emit({"slug": self.slug, "package": self.package, "type": "agent_ready",
@@ -499,21 +542,32 @@ class AgentSession:
         # Only for sessions that drive something: the ecosystem manager has no device, and
         # locking it out because a phone is busy would be a rule about hardware applied to a
         # tier that cannot touch any.
-        lock_key = None
+        lock_keys: list[str] = []
         if not ecosystem.supervises(self.package):
-            lock_key = device_locks.key_for(
-                self.device.resolved_platform, self.device.serial, self.package)
+            wanted = [device_locks.key_for(
+                self.device.resolved_platform, self.device.serial, self.package)]
+            # A peer device is a second target this turn can touch, so it needs the same
+            # mutual exclusion as the primary one — otherwise this module and some other run
+            # could tap the iPhone at the same moment, and both would file findings about a
+            # screen the other had just changed.
+            if self.device.has_peer:
+                wanted.append(device_locks.key_for(
+                    self.device.resolved_platform_b, self.device.peer_serial, self.package))
             try:
-                await asyncio.to_thread(device_locks.acquire, lock_key, self.package, self.slug)
+                for key in wanted:
+                    await asyncio.to_thread(device_locks.acquire, key, self.package, self.slug)
+                    lock_keys.append(key)
             except device_locks.DeviceBusy as exc:
+                for key in lock_keys:
+                    device_locks.release(key, self.package, self.slug)
                 await self.emit({"slug": self.slug, "type": "agent_error", "message": str(exc)})
                 return
 
         try:
             await self._send_locked(text)
         finally:
-            if lock_key is not None:
-                device_locks.release(lock_key, self.package, self.slug)
+            for key in lock_keys:
+                device_locks.release(key, self.package, self.slug)
 
     async def _send_locked(self, text: str) -> None:
         """The turn itself, with this session's target already taken."""
