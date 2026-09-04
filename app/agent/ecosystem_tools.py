@@ -1201,6 +1201,15 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                 campaign_id=campaign_id)
         except ValueError as exc:
             return _err(str(exc))
+        except OSError as exc:
+            # The verdict never reached disk, so it must not be told it did: the worker polls
+            # GET /verifications/{job_id} for exactly this record, and a false "Reported" here
+            # is the answer sitting unread while the pipeline 404s on it. Nothing was recorded,
+            # so the manager is free to try again once the disk problem is fixed.
+            return _err(
+                f"Failed to record {verdict} for {job_id}: could not write the verification "
+                f"log ({exc}). Nothing was reported — GET /verifications/{job_id} will still "
+                f"404. Tell the user the write failed before trying again.")
 
         tally = _tally_line(_counts(record["findings"])) if record["findings"] else "no findings"
         return _ok(f"Reported {verdict} for {job_id} ({member['role']}/{slug}; {tally}). The "

@@ -88,6 +88,13 @@ def _load() -> dict[str, Any]:
 
 
 def _save(data: dict[str, Any]) -> None:
+    """Write the log atomically. Raises OSError on failure — never swallowed.
+
+    A verdict that failed to reach disk is not a verdict: the worker polls
+    `GET /verifications/{job_id}` for it and would otherwise 404 for the life of the job while
+    `report_verification` had already told the manager "Reported". The caller must see this
+    failure and answer honestly instead.
+    """
     path = _path()
     data["updated_at"] = _now()
     try:
@@ -97,6 +104,7 @@ def _save(data: dict[str, Any]) -> None:
         tmp.replace(path)
     except OSError as exc:
         logger.warning("could not write the verification log: %s", exc)
+        raise
 
 
 def resolve_findings(package: str, module: str,
@@ -176,7 +184,13 @@ def get(job_id: str) -> Optional[dict[str, Any]]:
 
 
 def list_recent(limit: int = 20) -> list[dict[str, Any]]:
-    """The most recently reported verifications, newest first."""
-    rows = [dict(v) for v in _load()["jobs"].values()]
-    rows.sort(key=lambda r: str(r.get("reported_at") or ""), reverse=True)
-    return rows[:max(0, int(limit))]
+    """The most recently reported verifications, newest first.
+
+    `jobs` is insertion-ordered (oldest reported first), so the tie-break for two records
+    reported in the same second is the original index, descending — a stable sort on
+    `reported_at` alone would leave same-second ties in insertion order, i.e. oldest of the
+    tied records first, which is backwards from what this function promises.
+    """
+    rows = list(enumerate(_load()["jobs"].values()))
+    rows.sort(key=lambda pair: (str(pair[1].get("reported_at") or ""), pair[0]), reverse=True)
+    return [dict(record) for _, record in rows][:max(0, int(limit))]

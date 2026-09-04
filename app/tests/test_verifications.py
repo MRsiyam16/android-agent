@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -119,12 +120,13 @@ class TestReporting:
         assert verifications.get(JOB) is None
 
     def test_recent_verifications_come_back_newest_first(self, eco):
+        """Not just "some two of the three" — the two newest, in newest-first order. Records
+        reported in the same second must not fall back to insertion (oldest-first) order."""
         for index in range(3):
             verifications.report(f"dj_{index}", verdict="pass", finding_ids=[], note="",
                                  package=ANDROID, module="bm-612")
         rows = verifications.list_recent(2)
-        assert len(rows) == 2
-        assert {r["job_id"] for r in rows} <= {"dj_0", "dj_1", "dj_2"}
+        assert [r["job_id"] for r in rows] == ["dj_2", "dj_1"]
 
     def test_it_lives_in_this_instances_notebook(self, eco):
         verifications.report(JOB, verdict="blocked", finding_ids=[], note="no device",
@@ -211,6 +213,25 @@ class TestReportVerificationTool:
             "module": "bm-612", "app": "patient-android"})
         assert "pass" in out and "fail" in out and "blocked" in out
 
+    def test_a_write_failure_is_reported_as_a_failure_not_reported(self, eco, monkeypatch):
+        """`_save` used to swallow OSError, so a verdict that never reached disk still came
+        back as "Reported" — the worker then polls GET /verifications/{job_id} and 404s for
+        the life of the job. The tool must say the write failed, not claim success, and
+        nothing should be on file for the worker to find either."""
+        file_finding("pass")
+
+        def _boom(self, target):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(Path, "replace", _boom)
+        out = call("report_verification", {
+            "job_id": JOB, "verdict": "pass", "finding_ids": ["F001"],
+            "note": "fixed", "module": "bm-612", "app": "patient-android"})
+        assert "Reported" not in out
+        assert "fail" in out.lower()
+        assert verifications.get(JOB) is None
+        assert TestClient(create_app()).get(f"/verifications/{JOB}").status_code == 404
+
     def test_listing_says_when_nothing_has_been_answered(self, eco):
         assert "No verification job" in call("list_verifications", {})
 
@@ -245,7 +266,7 @@ class TestRoutes:
             verifications.report(f"dj_{index}", verdict="pass", finding_ids=[], note="",
                                  package=ANDROID, module="bm-612")
         rows = TestClient(create_app()).get("/verifications?limit=2").json()
-        assert len(rows) == 2
+        assert [r["job_id"] for r in rows] == ["dj_2", "dj_1"]
 
     def test_there_is_no_way_to_post_a_verdict(self, eco):
         """A verdict is written by an agent that watched a run. An endpoint that could record
