@@ -11,6 +11,10 @@
       "Read(./app/projects/**/screenshots/**)",
       "Read(./app/projects/**/shots/**)",
       "Read(./app/projects/**/chat.jsonl)",
+      "Read(./app/verify-projects/**/flow-graph.json)",
+      "Read(./app/verify-projects/**/screenshots/**)",
+      "Read(./app/verify-projects/**/shots/**)",
+      "Read(./app/verify-projects/**/chat.jsonl)",
       "Read(./app/**/*.jpg)",
       "Read(./app/**/*.png)"
     ]

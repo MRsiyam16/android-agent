@@ -68,7 +68,20 @@ def _row(platform: str, ready: bool, detail: str, *, fix: str = "",
 # -- what is there right now ----------------------------------------------------------------
 
 def _android_status() -> dict[str, Any]:
+    """An emulator counts. `adb devices` is the whole answer, and it does not distinguish.
+
+    `emulator-5554` in state `device` is an Android target that can be launched into, tapped,
+    dumped and screenshotted — every adapter in this codebase talks to it through the same
+    `-s <serial>` that a cable gives. Treating "no phone plugged in" as "Android is down" was
+    wrong the moment the verifier started running patched builds on an AVD: the run would be
+    refused with a fix telling somebody to find a USB cable for a device already up.
+
+    So each device is stamped `emulator` and the detail says which, because the distinction
+    still matters to a *person* choosing where to run something — an AVD cannot vouch for a
+    camera, a fingerprint, a push notification or how the app performs on real hardware.
+    """
     import adb_device
+    import emulator
 
     try:
         serials = adb_device.list_serials()
@@ -76,15 +89,23 @@ def _android_status() -> dict[str, Any]:
         return _row(ANDROID, False, f"adb is not usable: {exc}",
                     fix="Install the Android platform-tools and put adb on PATH, or set "
                         "ADB_PATH in app/.env.")
-    devices = [adb_device.describe_serial(s) for s in serials]
+    devices = [{**adb_device.describe_serial(s), "emulator": emulator.is_emulator(s)}
+               for s in serials]
     if not devices:
-        return _row(ANDROID, False, "adb works, but no phone is attached and authorised.",
-                    fix="Plug the phone in, unlock it, and accept the USB-debugging prompt. "
-                        "`adb devices` should then list it as `device`, not `unauthorized`.")
-    return _row(ANDROID, True,
-                f"{len(devices)} device(s): "
-                + ", ".join(f"{d.get('label') or d['serial']}" for d in devices),
-                devices=devices)
+        return _row(ANDROID, False, "adb works, but no phone or emulator is attached.",
+                    fix="Plug the phone in, unlock it, and accept the USB-debugging prompt — "
+                        "`adb devices` should then list it as `device`, not `unauthorized`. "
+                        "For a fix-verification run that does not need real hardware, start "
+                        "the emulator instead: `python emulator.py --ensure` (headless AVD "
+                        f"{config.ANDROID_AVD_NAME}, a minute or two to boot).")
+    physical = [d for d in devices if not d["emulator"]]
+    detail = (f"{len(devices)} device(s): "
+              + ", ".join(f"{d.get('label') or d['serial']}"
+                          + (" [emulator]" if d["emulator"] else "") for d in devices))
+    if not physical:
+        detail += (" — emulator only, which is fine for most runs but cannot vouch for the "
+                   "camera, biometrics, push notifications or performance.")
+    return _row(ANDROID, True, detail, devices=devices)
 
 
 def _ios_status() -> dict[str, Any]:
