@@ -86,6 +86,34 @@ protocol turns "could not check" into "checked".**
 A job is answered once. `report_verification` refuses a second, different verdict, because the
 pipeline has already read and acted on the first.
 
+## Why a finished run always comes back to the supervisor
+
+The first live job (`dj_mtmktpjk8488988f`, Blackcode #456) was lost in the gap this section
+closes. The supervisor's `run_journey` was refused because the module slug did not exist yet;
+it created the module, then reached for **`run_module`** instead of retrying. The module agent
+did its job — tested the fix, filed the bug — but `run_module` starts a run and returns, and
+nothing wakes a session that is not spoken to. The supervisor sat idle for 13 minutes, the
+worker polled for 45, and the job was reported `blocked` by timeout. A human typing "the run
+finished, report it" was the only thing that produced a verdict.
+
+Three changes, so that cannot recur:
+
+- **A finished run in a verifier notebook hands the supervisor a turn** — the same
+  `_hand_turn` a campaign step uses, from `campaign_runner._loose_run_ended`. It fires for any
+  module run that no job was walking, keyed on the ecosystem
+  (`ecosystem.is_verifier` — a `-verify` name, or `PROJECTS_DIR=verify-projects`), because
+  there is no record of an "open job": the brief arrives as a chat message and the first thing
+  written to disk is the verdict. The turn names the module, the role, the findings and their
+  kinds, and says to call `report_verification`. A busy supervisor is retried on the same clock
+  as a campaign review, and a supervisor that never frees up raises a person.
+- **`run_journey` creates a module that does not exist**, with the step's `expect` (or the
+  journey's `instruction`) as its scope, instead of refusing. `create_module` is unchanged —
+  commissioning work without running it is still its own act. And in a verifier ecosystem a
+  **one-step** journey is allowed, because a Bugmaster job is one case on one role and it must
+  still go through a campaign to get the review turn.
+- **The supervisor prompt forbids `run_module` for a verification job** and says plainly that a
+  job left without a verdict is its failure, not the tester's.
+
 ## The rule that matters
 
 **A verification run never files a Blackcode issue.** The build under test is deployed nowhere,

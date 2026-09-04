@@ -1535,17 +1535,37 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
                 + "\n\nBring them up with start_app, and tell the user plainly which device "
                   "needs plugging in, waking or unlocking.")
 
-    def _resolve_step(raw: dict[str, Any]) -> tuple[Optional[dict[str, Any]], str]:
-        """One journey step, resolved against the store. (step, error)."""
+    def _resolve_step(raw: dict[str, Any],
+                      scope_if_new: str = "") -> tuple[Optional[dict[str, Any]], str]:
+        """One journey step, resolved against the store. (step, error).
+
+        A slug that does not exist yet is **created** rather than refused. The refusal was
+        costing a whole round trip for nothing: the caller already said which app, which slug
+        and what the run must establish, which is exactly what `create_module` is handed — so
+        the only thing the error bought was the supervisor calling `create_module` and then
+        having to remember to come back. On the first live verification job it did not come
+        back; it called `run_module` instead, and the verdict was lost (see
+        `backend/campaign_runner.py`). `create_module` is unchanged: commissioning work without
+        running it is still its own act.
+        """
         member = _resolve_app(str(raw.get("app") or ""))
         if member is None:
             return None, f"no app {raw.get('app')!r} — the apps are: {_app_names()}"
         slug = str(raw.get("module") or "").strip()
+        if not slug:
+            return None, "a step needs a module slug"
         entry = store.get_subproject(member["package"], slug)
         if entry is None:
-            known = [str(s.get("slug")) for s in store.list_subprojects(member["package"])]
-            return None, (f"{member['role']} has no module {slug!r} — it has: "
-                          + (", ".join(known) or "none"))
+            if store.is_main_slug(slug):
+                return None, (f"{slug!r} is {member['role']}'s manager module — name the part "
+                              f"of the app this step covers instead")
+            scope = str(raw.get("expect") or "") or scope_if_new
+            try:
+                entry = store.create_subproject(member["package"], slug, scope, "approved")
+            except OSError as exc:
+                return None, f"{member['role']} has no module {slug!r} and it could not be "\
+                             f"created: {exc}"
+        slug = str(entry.get("slug") or slug)
         return {"package": member["package"], "role": member["role"], "module": slug,
                 "title": str(entry.get("title") or slug),
                 "scope": str(entry.get("scope") or ""),
@@ -1634,7 +1654,10 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
           "looks for the actual appointment rather than for any appointment. A journey without "
           "`expect` on each step is just several unrelated tests in a row.\n\n"
           "Every app it names is checked for a ready device before anything starts, and every "
-          "one is held for the whole journey so a sweep cannot take one halfway through.",
+          "one is held for the whole journey so a sweep cannot take one halfway through.\n\n"
+          "A module slug that does not exist yet is created here, with `expect` (or the "
+          "journey's `instruction`) as its scope — you do not have to call `create_module` "
+          "first and then come back.",
           {"type": "object",
            "properties": {
                "goal": {"type": "string",
@@ -1661,13 +1684,22 @@ def build_ecosystem_server(session: Any, name: str) -> dict[str, Any]:
         from backend.campaign_runner import runner
 
         raw_steps = args.get("steps") or []
-        if len(raw_steps) < 2:
+        # One step is a journey here and only here. On the product board a single-step journey
+        # is a `run_module` written the long way. On the verifier it is the *whole* protocol —
+        # a Bugmaster job is one case on one role — and it must go through a campaign, because
+        # a campaign is the only thing that hands the supervisor the turn on which the verdict
+        # gets written. Refusing it there would leave `run_module` as the only way to run a
+        # verification, which is exactly the path that lost a verdict.
+        if len(raw_steps) < 2 and not ecosystem_mod.is_verifier(name):
             return _err("A journey needs at least two steps in different apps — otherwise it "
                         "is a single module run, which is what run_module is for.")
+        if not raw_steps:
+            return _err("A journey needs at least one step.")
 
+        instruction = str(args.get("instruction") or "")
         steps, errors = [], []
         for index, raw in enumerate(raw_steps, start=1):
-            step, problem = await asyncio.to_thread(_resolve_step, raw)
+            step, problem = await asyncio.to_thread(_resolve_step, raw, instruction)
             if problem:
                 errors.append(f"step {index}: {problem}")
             else:

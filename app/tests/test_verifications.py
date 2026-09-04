@@ -275,6 +275,81 @@ class TestRoutes:
         assert client.post(f"/verifications/{JOB}", json={"verdict": "pass"}).status_code == 405
 
 
+# -- a finished run coming back ------------------------------------------------------------------
+class TestTheRunComesBack:
+    """The gap that lost the first live job (`dj_mtmktpjk8488988f`, Blackcode #456).
+
+    The supervisor started the run with `run_module`, which returns immediately, and a session
+    only wakes when something is said to it. The module found the bug and filed it; nothing told
+    the supervisor, so no `report_verification` was ever called and the worker timed out into
+    `blocked`. Here a run that ends with no job walking it pushes a turn at the supervisor —
+    but only in a verifier notebook, where nobody is watching and a worker is on a clock.
+    """
+
+    @staticmethod
+    def _turns(monkeypatch) -> list[tuple[str, str, str]]:
+        from backend import agent_bridge
+
+        calls: list[tuple[str, str, str]] = []
+        monkeypatch.setattr(agent_bridge, "start_run",
+                            lambda p, s, t, **kw: calls.append((p, s, t)) or {"started": True})
+        monkeypatch.delenv("PROJECTS_DIR", raising=False)
+        return calls
+
+    @staticmethod
+    def _end(package: str, slug: str, kind: str = "agent_done", findings: int = 1) -> None:
+        from backend.campaign_runner import CampaignRunner
+
+        asyncio.run(CampaignRunner().notice(
+            {"type": kind, "package": package, "slug": slug, "findings": findings}))
+
+    def test_a_finished_run_hands_the_supervisor_the_verdict_turn(self, eco, monkeypatch):
+        turns = self._turns(monkeypatch)
+        file_finding("bug")
+        self._end(ANDROID, "bm-612")
+        assert len(turns) == 1
+        package, slug, text = turns[0]
+        assert (package, slug) == (NAME, "main")
+        assert "bm-612" in text and "patient-android" in text
+        assert "F001" in text and "bug" in text
+        assert "report_verification" in text
+
+    def test_a_run_that_errored_still_comes_back(self, eco, monkeypatch):
+        """`blocked` is an answer and silence is not — a run that fell over is exactly the case
+        where the supervisor would otherwise never speak again."""
+        turns = self._turns(monkeypatch)
+        self._end(ANDROID, "bm-612", kind="agent_error", findings=0)
+        assert len(turns) == 1 and "report_verification" in turns[0][2]
+
+    def test_a_run_in_a_normal_ecosystem_does_not(self, tmp_path, monkeypatch):
+        """On the product board a finished run is somebody's to ask about, and a turn per run
+        would wake the manager on every module the user starts by hand."""
+        monkeypatch.setattr(project_paths, "DEFAULT_PROJECTS_DIR", tmp_path)
+        turns = self._turns(monkeypatch)
+        backend_projects.write_meta(ANDROID, platform="android")
+        ecosystem.tag(ANDROID, "metaesthetics", "patient-android")
+        store.create_subproject(ANDROID, "booking")
+        ecosystem.create_supervisor("metaesthetics")
+        store.create_subproject("metaesthetics", "Main")
+        self._end(ANDROID, "booking")
+        assert turns == []
+
+    def test_a_one_step_journey_is_allowed_here_and_creates_its_module(self, eco, monkeypatch):
+        """The whole protocol is one case on one role — and it has to be a job, because a job
+        is the only thing that hands the supervisor the turn the verdict is written on."""
+        import stacks
+
+        monkeypatch.setattr(stacks, "status", lambda platform: {
+            "platform": platform, "ready": True, "detail": "stubbed", "fix": "",
+            "devices": [], "starting": False})
+        self._turns(monkeypatch)
+        out = call("run_journey", {"goal": "does #456 work now", "instruction": "re-run TC-1",
+                                   "steps": [{"app": "patient-android", "module": "bm-456",
+                                              "expect": "the slot books"}]})
+        assert "Journey planned and started" in out
+        assert store.get_subproject(ANDROID, "bm-456") is not None
+
+
 # -- the prompt ---------------------------------------------------------------------------------
 def test_the_prompt_tells_the_manager_what_a_bugmaster_message_is(eco):
     """A tool the prompt does not name is one the agent will not reach for — and this one is
@@ -283,6 +358,10 @@ def test_the_prompt_tells_the_manager_what_a_bugmaster_message_is(eco):
     assert "Bugmaster verification job" in prompt
     assert "report_verification" in prompt and "list_verifications" in prompt
     assert "run_journey" in prompt
+    # The rule bought by dj_mtmktpjk8488988f: run_module gives no review turn, so a job started
+    # that way has no moment at which a verdict gets written.
+    assert "Never use `run_module` for one of these." in prompt
+    assert "A job with no verdict is a failure of yours" in prompt
     # The rule the whole separation exists for.
     assert "Never file a Blackcode issue for one of these runs." in prompt
     assert "deployed nowhere" in prompt

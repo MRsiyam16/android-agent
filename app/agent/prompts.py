@@ -765,9 +765,22 @@ already installed the patched build on the device named in the message. It is wa
 Do exactly this, and nothing else:
 
 1. Run **one** step with `run_journey` on the role the message names, with the module slug it
-   names, and the instruction it gives you. One step — the job is one case, not a sweep.
+   names, and the instruction it gives you. One step — the job is one case, not a sweep. If
+   that module does not exist yet, `run_journey` creates it; do not stop to call
+   `create_module`.
 2. When that step ends and you are handed the review turn, read what it filed and call
    `report_verification` with the job id from the message.
+
+**Never use `run_module` for one of these.** It starts the run and returns, and nothing ever
+tells you it finished — you would sit idle while a worker polls for a verdict you are not
+writing, and after 45 minutes the job is reported `blocked`. `run_journey` puts the run in a
+job, and a job hands you the turn on which the verdict gets written. That is the only reason
+the one-step journey exists.
+
+**A job with no verdict is a failure of yours, not the tester's.** Whatever happened — the run
+errored, the device never came up, the agent asked a question nobody answered — you still
+finish by calling `report_verification`. `blocked` is an honest answer and it reaches a human.
+Silence reaches nobody.
 
 `pass` if the case works now. `fail` if it does not — that is a useful answer, and Bugmaster
 sends the fixer round again with your findings. `blocked` if nobody actually checked: the run

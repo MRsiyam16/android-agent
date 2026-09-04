@@ -22,6 +22,11 @@ whatever the manager did with it. A turn that errors, runs out of window, or sim
 all advance the job. The manager's control comes from having the turn and the tools, not from
 being load-bearing.
 
+**A run outside a job still ends somewhere.** `run_module` starts one and returns, so nothing
+would ever tell the supervisor it finished. On the product board that is a person's job to ask
+about; in a verifier notebook it is a lost verdict on a 45-minute clock, so `_loose_run_ended`
+hands the supervisor the same turn a step ending would.
+
 **Failures go to the manager, not to the user.** A step that fails hands over the error and an
 instruction to diagnose it: bring a stack back up, retry the step, re-target it. The user is
 raised only when the manager cannot proceed without them — and then loudly, on the dashboard
@@ -349,10 +354,11 @@ class CampaignRunner:
             return
 
         campaign = campaigns.active_for(package)
-        if campaign is None:
-            return
-        step = campaigns.running_step(campaign)
+        step = campaigns.running_step(campaign) if campaign is not None else None
         if step is None or step["module"] != slug or step["package"] != package:
+            # No job is walking this run, so nothing else in the system will notice it ended.
+            # In a verifier notebook that silence is the whole failure mode — see below.
+            await self._loose_run_ended(package, slug, kind, event)
             return
 
         if kind == "agent_blocked":
@@ -372,6 +378,65 @@ class CampaignRunner:
             return
 
         await self._step_ended(campaign, step, kind, event)
+
+    async def _loose_run_ended(self, package: str, slug: str, kind: str,
+                               event: dict[str, Any]) -> None:
+        """A module run that no job was walking, in a fix-verification notebook.
+
+        `run_module` starts a run and returns immediately: the supervisor is told "it began" and
+        then hears nothing ever again, because a session only wakes when something is said to
+        it. On the product board that is merely annoying — a person eventually asks. On the
+        verifier it is a lost verdict: the run is the answer to a Bugmaster job, the caller is a
+        worker polling `GET /verifications/<job>` on a 45-minute timeout, and a supervisor that
+        never gets a turn never calls `report_verification`. That happened on the first live job
+        (`dj_mtmktpjk8488988f`, Blackcode #456): the module found the bug, filed it, and the
+        pipeline was told `blocked` because nobody read it.
+
+        So here the ending pushes. Keyed on the ecosystem rather than on an open job, because
+        there is no record of a job being open — the brief arrives as a chat message and the
+        first thing written down is the verdict itself.
+
+        The mechanism is deliberately the same `_hand_turn` a campaign step uses, over a
+        synthetic one-run "campaign" that exists only to name the ecosystem. A second way of
+        talking to a supervisor would be a second thing to keep working.
+        """
+        if kind not in _ENDINGS:
+            return
+        import ecosystem as ecosystem_mod
+
+        name = ecosystem_mod.ecosystem_of(package)
+        if not name or not ecosystem_mod.is_verifier(name):
+            return
+        if agent_store.is_main_slug(slug):
+            return                          # an app's own manager module, not a commissioned run
+
+        role = str(ecosystem_mod.role_of(package) or package)
+        note = ""
+        if kind == "agent_parked":
+            note = "the subscription window ran out mid-run"
+        elif kind == "agent_error":
+            note = str(event.get("message") or "")[:300]
+
+        findings = await asyncio.to_thread(_findings_summary, package, slug)
+        reported = await asyncio.to_thread(_last_agent_text, package, slug)
+        brief = _loose_review_brief(role, slug, _ENDINGS[kind], findings, note, reported)
+        handle = {"id": f"run:{package}/{slug}", "ecosystem": name}
+        if not await self._hand_turn(handle, brief):
+            logger.info("verifier supervisor was busy when %s/%s ended; retrying", package, slug)
+            asyncio.create_task(self._retry_loose_review(handle, brief))
+
+    async def _retry_loose_review(self, handle: dict[str, Any], brief: str) -> None:
+        """Keep offering the verdict turn. Same clock as a campaign's, for the same reason:
+        the supervisor is idle because nobody is talking to it, so waiting for a turn it has no
+        reason to take is waiting forever."""
+        for _ in range(REVIEW_RETRY_LIMIT):
+            await asyncio.sleep(REVIEW_RETRY_SECONDS)
+            if await self._hand_turn(handle, brief):
+                return
+        await self._raise_with_user(
+            handle, "A verification run has nobody to report it",
+            "A module run finished but the supervisor has been busy ever since, so no verdict "
+            "has been written and the Bugmaster worker will time out as `blocked`.")
 
     async def _step_ended(self, campaign: dict[str, Any], step: dict[str, Any], kind: str,
                           event: dict[str, Any]) -> None:
@@ -465,6 +530,44 @@ class CampaignRunner:
                                             str(step.get("note") or "")))
                 campaigns.set_review_asked(campaign["id"], asked)
         return True
+
+
+def _findings_summary(package: str, slug: str) -> tuple[int, str]:
+    """(how many, what they were) for a module that just finished.
+
+    Read off disk rather than from the event's count, because the supervisor is about to decide
+    a verdict on them: "3 findings" and "3 findings, one of them a bug" are different
+    instructions, and only the second one stops a `pass` going out over a broken fix.
+    """
+    try:
+        findings = agent_store.list_findings(package, slug)
+    except Exception:  # noqa: BLE001 - a missing module is not a failure to report
+        return 0, ""
+    lines = [f"{f.get('id')} [{f.get('kind')}] {str(f.get('title') or '').strip()}"
+             for f in findings]
+    return len(findings), "; ".join(lines)
+
+
+def _loose_review_brief(role: str, slug: str, outcome: str, findings: tuple[int, str],
+                        note: str, reported: str) -> str:
+    """What a verifier supervisor is handed when a run it commissioned ends by itself."""
+    count, listing = findings
+    lines = [f"Module `{slug}` on `{role}` finished — {outcome}. "
+             f"{count} finding(s)" + (f": {listing}" if listing else ".")]
+    if note:
+        lines += ["", f"It did not finish cleanly: {note}"]
+    if reported:
+        lines += ["", "What it said it established:", reported]
+    lines += [
+        "",
+        "**Read them and call `report_verification` for the open job** — the job id is in the "
+        "`Bugmaster verification job` message that started this. `pass` if the case works now, "
+        "`fail` if a bug finding says the fix did not work, `blocked` if nobody actually "
+        "checked. A worker is polling for that verdict on a 45-minute timeout and there is no "
+        "other way for it to arrive: a job you leave unanswered is reported as `blocked`, and "
+        "that is your failure rather than the tester's.",
+    ]
+    return "\n".join(lines)
 
 
 def _last_agent_text(package: str, slug: str) -> str:

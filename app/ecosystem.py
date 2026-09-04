@@ -51,6 +51,13 @@ RECON_SLUG = "recon"
 #: it is the one role with no app behind it, which is what `supervises` exists to detect.
 SUPERVISOR_ROLE = "supervisor"
 
+#: What marks an ecosystem as the fix-verification one, and what marks the notebook a whole
+#: verifier *instance* runs out of. Kept here rather than imported from `start_verifier`, which
+#: is a launcher: importing a launcher to ask a question about a name would drag argparse,
+#: webbrowser and the master's seeding into every module that needs the answer.
+VERIFY_SUFFIX = "-verify"
+VERIFY_NOTEBOOK = "verify-projects"
+
 _LOCK = threading.RLock()
 
 
@@ -148,6 +155,25 @@ def ecosystem_of(package: str) -> Optional[str]:
     """
     name = _meta(package).get("ecosystem")
     return str(name) if name else None
+
+
+def is_verifier(name: str = "") -> bool:
+    """Is this a fix-verification ecosystem — the QA Verifier's side of Bugmaster's bridge?
+
+    Two ways of knowing, because there are two ways of being one. The name is the reliable
+    signal (`start_verifier.ECOSYSTEM` is `metaesthetics-verify`, and any second product
+    verified later follows the same suffix). `PROJECTS_DIR` is the wider one: the whole
+    *instance* is the verifier when it was started with its own notebook, so anything running
+    there is answering the fix pipeline whatever its ecosystem is called.
+
+    Why this exists at all: a verification run is commissioned by a worker that then polls for
+    a verdict and gives up after 45 minutes. Nobody is watching. So a run that ends here has to
+    push, not wait to be asked — see `backend/campaign_runner.py`'s `_loose_run_ended`.
+    """
+    if str(name or "").strip().lower().endswith(VERIFY_SUFFIX):
+        return True
+    raw = os.environ.get("PROJECTS_DIR", "").strip().strip('"')
+    return bool(raw) and Path(raw).name == VERIFY_NOTEBOOK
 
 
 def supervises(package: str) -> Optional[str]:

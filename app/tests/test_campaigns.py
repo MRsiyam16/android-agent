@@ -505,11 +505,27 @@ class TestTools:
             {"app": "patient-android", "module": "booking", "expect": "book one"}]})
         assert "at least two steps" in out
 
-    def test_a_journey_naming_an_unknown_module_starts_nothing(self, ready_stacks, started):
+    def test_a_journey_naming_an_unknown_module_creates_it_and_runs(self, ready_stacks,
+                                                                    started):
+        """It used to refuse, and the refusal cost a round trip for nothing: the caller has
+        already said which app, which slug and what the step must establish, which is all
+        `create_module` is handed. Losing that round trip lost a live verification verdict —
+        see `docs/VERIFIER.md`."""
         out = call("run_journey", {"goal": "g", "steps": [
             {"app": "patient-android", "module": "booking", "expect": "x"},
-            {"app": "doctor-ipad", "module": "nope", "expect": "y"}]})
-        assert "step 2" in out and "no module" in out
+            {"app": "doctor-ipad", "module": "nope", "expect": "check the new list"}]})
+        assert "Journey planned and started" in out
+        entry = store.get_subproject(IPAD, "nope")
+        assert entry is not None and entry["scope"] == "check the new list"
+        assert campaigns.active_for(ANDROID) is not None
+
+    def test_a_journey_naming_an_unknown_app_still_starts_nothing(self, ready_stacks, started):
+        """The slug is the caller's to invent; the app is not. A role that does not exist is a
+        mistake, and creating something for it would hide it."""
+        out = call("run_journey", {"goal": "g", "steps": [
+            {"app": "patient-android", "module": "booking", "expect": "x"},
+            {"app": "no-such-app", "module": "nope", "expect": "y"}]})
+        assert "step 2" in out and "no app" in out
         assert campaigns.active_for(ANDROID) is None
 
     def test_only_untested_skips_what_has_already_run(self, ready_stacks, started):
